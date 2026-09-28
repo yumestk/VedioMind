@@ -2,19 +2,31 @@
 
 面向长视频的 AI 内容理解平台。用户可以上传本地视频或导入网络视频，系统在后台完成音频提取、语音转写和内容总结，并在前端展示可恢复的任务进度。
 
-> 当前重点是项目演示与异步架构闭环。鉴权、私有对象访问和生产级 URL 导入安全仍在 Roadmap 中，不建议直接部署到公网。
+> 当前重点是项目演示与异步架构闭环。完整鉴权和生产级 URL 导入安全仍在 Roadmap 中，不建议直接部署到公网。
 
 ## 核心能力
 
 - 本地视频上传到 MinIO，或通过 yt-dlp 导入网络视频。
+- 视频内容工作台集成原生播放器、AI 总结、字幕搜索、复制和导出。
+- MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取音频，SiliconFlow 完成 ASR，DeepSeek 基于 Transcript 生成总结。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
 - Transcript 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
-- 前端按 `jobId` 轮询结构化状态，刷新页面后仍可恢复当前任务。
+- 前端按媒体查询活动 Job，页面刷新后仍可恢复当前任务。
 - Flyway 管理数据库结构，新环境无需手工建表。
+
+## 视频内容工作台
+
+上传本地视频或导入网络视频后，前端会进入 `/media/{mediaId}`：
+
+- 浏览器通过 MinIO 预签名 URL 直接播放视频，支持 Range 请求与进度跳转。
+- 工作台按媒体恢复正在执行的分析任务，不依赖浏览器保存 `jobId`。
+- AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
+- 字幕支持搜索、高亮、复制，以及 TXT/Markdown 导出。
+- 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
 
 ## 异步分析链路
 
@@ -66,7 +78,7 @@ QUEUED
 
 | 层次 | 技术 |
 | --- | --- |
-| 前端 | Vue 3、Vite、Marked |
+| 前端 | Vue 3、Vue Router、Axios、Vite、Marked、DOMPurify |
 | 后端 | Java 21、Spring Boot 3、MyBatis-Plus、Undertow |
 | 异步任务 | RocketMQ 4.9.4、Redisson |
 | 数据 | MySQL 8、Redis、Flyway |
@@ -80,11 +92,12 @@ QUEUED
 | --- | --- | --- |
 | `POST` | `/media/upload` | 上传本地视频 |
 | `POST` | `/media/upload-url` | 导入网络视频 |
-| `GET` | `/media/list` | 查询当前用户媒体列表 |
+| `GET` | `/media` | 查询当前用户的轻量媒体列表 |
+| `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
+| `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
 | `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
+| `GET` | `/analysis/media/{mediaId}/active-job` | 查询媒体当前活动任务 |
 | `GET` | `/analysis/jobs/{jobId}` | 查询任务状态与进度 |
-| `GET` | `/debug/transcribe?id={mediaId}` | 单独触发文字提取（开发接口） |
-| `GET` | `/debug/download?id={mediaId}` | 转码并下载音频（开发接口） |
 
 分析任务提交成功返回 HTTP `202 Accepted`，响应示例：
 
@@ -163,12 +176,11 @@ cd ../client
 npm run build
 ```
 
-测试覆盖事务消息提交/回查、消费重试与失败终态，以及“仅执行一次 ASR、基于已保存 Transcript 生成总结”的主流程。
+当前 13 个后端测试覆盖事务消息提交/回查、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址，以及“仅执行一次 ASR、基于已保存 Transcript 生成总结”的主流程。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
-- 私有 MinIO Bucket 与短时效预签名访问 URL。
 - MinIO Multipart 直传、断点续传和真实上传进度。
 - URL 白名单、SSRF 防护、下载大小/时长限制和外部进程治理。
 - 带时间戳的字幕 Segment、章节导航和播放器联动。

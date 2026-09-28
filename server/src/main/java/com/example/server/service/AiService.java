@@ -5,11 +5,11 @@ import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.strategy.AiAnalysisStrategy;
+import com.example.server.utils.MinioUtils;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -23,19 +23,22 @@ public class AiService {
     private final AnalysisJobService analysisJobService;
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
+    private final MinioUtils minioUtils;
 
     public AiService(
             MediaFileMapper mediaFileMapper,
             @Qualifier("defaultAiStrategy") AiAnalysisStrategy aiAnalysisStrategy,
             AnalysisJobService analysisJobService,
             StringRedisTemplate redisTemplate,
-            RedissonClient redissonClient
+            RedissonClient redissonClient,
+            MinioUtils minioUtils
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.aiAnalysisStrategy = aiAnalysisStrategy;
         this.analysisJobService = analysisJobService;
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
+        this.minioUtils = minioUtils;
     }
 
     public void processAnalysisJob(String jobId, int retryCount) {
@@ -58,7 +61,7 @@ public class AiService {
             String transcript = mediaFile.getTranscriptText();
             if (transcript == null || transcript.isBlank()) {
                 analysisJobService.markStage(jobId, AnalysisJobStatus.EXTRACTING_AUDIO, 20);
-                audioFile = aiAnalysisStrategy.extractAudio(mediaFile.getFilePath());
+                audioFile = aiAnalysisStrategy.extractAudio(minioUtils.createReadUrl(mediaFile.getObjectKey()));
 
                 analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 45);
                 transcript = aiAnalysisStrategy.transcribe(audioFile);
@@ -95,29 +98,12 @@ public class AiService {
         }
     }
 
-    @Async("aiTaskExecutor")
-    public void asyncTranscribe(Long mediaId) {
-        MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) {
-            return;
-        }
-
-        File audioFile = null;
-        try {
-            audioFile = aiAnalysisStrategy.extractAudio(mediaFile.getFilePath());
-            String transcript = aiAnalysisStrategy.transcribe(audioFile);
-            mediaFile.setTranscriptText(transcript);
-            mediaFileMapper.updateById(mediaFile);
-            invalidateMediaList(mediaFile.getUserId());
-        } finally {
-            if (audioFile != null && audioFile.exists()) {
-                audioFile.delete();
-            }
-        }
-    }
-
     private void invalidateMediaList(Long userId) {
         String userIdValue = userId == null ? "anon" : String.valueOf(userId);
-        redisTemplate.delete("media:list:user:" + userIdValue);
+        try {
+            redisTemplate.delete(MediaService.MEDIA_LIST_CACHE_PREFIX + userIdValue);
+        } catch (Exception ignored) {
+            // Cache invalidation must not turn a completed AI job into a retry.
+        }
     }
 }

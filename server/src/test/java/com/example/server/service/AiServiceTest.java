@@ -5,6 +5,7 @@ import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.strategy.AiAnalysisStrategy;
+import com.example.server.utils.MinioUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
@@ -27,6 +28,7 @@ class AiServiceTest {
     private final AnalysisJobService analysisJobService = mock(AnalysisJobService.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
+    private final MinioUtils minioUtils = mock(MinioUtils.class);
     private final RLock lock = mock(RLock.class);
 
     private AiService aiService;
@@ -38,7 +40,8 @@ class AiServiceTest {
                 strategy,
                 analysisJobService,
                 redisTemplate,
-                redissonClient
+                redissonClient,
+                minioUtils
         );
         when(redissonClient.getLock("lock:analysis-job:job-1")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
@@ -56,30 +59,31 @@ class AiServiceTest {
         MediaFile media = new MediaFile();
         media.setId(42L);
         media.setUserId(7L);
-        media.setFilePath("video.mp4");
+        media.setObjectKey("video.mp4");
         File audioFile = mock(File.class);
 
         when(mediaFileMapper.selectById(42L)).thenReturn(media);
-        when(strategy.extractAudio("video.mp4")).thenReturn(audioFile);
+        when(minioUtils.createReadUrl("video.mp4")).thenReturn("https://media/video.mp4");
+        when(strategy.extractAudio("https://media/video.mp4")).thenReturn(audioFile);
         when(strategy.transcribe(audioFile)).thenReturn("the transcript");
         when(strategy.generateSummary("the transcript")).thenReturn("the summary");
 
         aiService.processAnalysisJob("job-1", 0);
 
-        verify(strategy).extractAudio("video.mp4");
+        verify(strategy).extractAudio("https://media/video.mp4");
         verify(strategy).transcribe(audioFile);
         verify(strategy).generateSummary("the transcript");
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.TRANSCRIBING, 45);
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 75);
         verify(analysisJobService).markSucceeded("job-1");
-        verify(redisTemplate).delete("media:list:user:7");
+        verify(redisTemplate).delete("media:list:v2:user:7");
     }
 
     @Test
     void reusesAnExistingTranscriptInsteadOfCallingAsrAgain() {
         MediaFile media = new MediaFile();
         media.setId(42L);
-        media.setFilePath("video.mp4");
+        media.setObjectKey("video.mp4");
         media.setTranscriptText("saved transcript");
 
         when(mediaFileMapper.selectById(42L)).thenReturn(media);

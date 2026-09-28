@@ -46,4 +46,11 @@ public class AnalysisController {
                 .map(AnalysisJobResponse::from)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Analysis job not found"));
     }
+
+    @GetMapping("/media/{mediaId}/active-job")
+    public ResponseEntity<AnalysisJobResponse> getActiveJob(@PathVariable Long mediaId) {
+        return analysisJobService.findLatestActive(mediaId)
+                .map(job -> ResponseEntity.ok(AnalysisJobResponse.from(job)))
+                .orElseGet(() -> ResponseEntity.noContent().build());
+    }
 }

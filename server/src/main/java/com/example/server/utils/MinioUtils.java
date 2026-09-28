@@ -1,94 +1,119 @@
 package com.example.server.utils;
 
+import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
-import org.springframework.beans.factory.annotation.Autowired;
+import io.minio.http.Method;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
+import org.springframework.http.MediaTypeFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class MinioUtils {
 
-    @Autowired
-    private MinioClient minioClient;
+    private static final int PLAYBACK_URL_EXPIRY_HOURS = 2;
 
-    @Value("${minio.bucketName}")
-    private String bucketName;
+    private final MinioClient minioClient;
+    private final String bucketName;
 
-    @Value("${minio.endpoint}")
-    private String endpoint;
-
-    /**
-     * 上传文件并返回访问 URL
-     */
-    public String uploadFile(MultipartFile file) throws Exception {
-        // 1. 生成新文件名 (UUID防止重名)
-        String originalFilename = file.getOriginalFilename();
-        String suffix = "";
-        if (originalFilename != null && originalFilename.contains(".")) {
-            suffix = originalFilename.substring(originalFilename.lastIndexOf("."));
-        }
-        String newFilename = UUID.randomUUID().toString() + suffix;
-
-        // 2. 上传到 MinIO
-        try (InputStream inputStream = file.getInputStream()) {
-            minioClient.putObject(
-                    PutObjectArgs.builder()
-                            .bucket(bucketName)
-                            .object(newFilename)
-                            .stream(inputStream, file.getSize(), -1)
-                            .contentType(file.getContentType())
-                            .build()
-            );
-        }
-
-        // 3. 拼接返回 Public 访问地址
-        return endpoint + "/" + bucketName + "/" + newFilename;
+    public MinioUtils(
+            MinioClient minioClient,
+            @Value("${minio.bucketName}") String bucketName
+    ) {
+        this.minioClient = minioClient;
+        this.bucketName = bucketName;
     }
 
-    /**
-     * 【新增】从 MinIO 删除文件
-     * @param fileUrl 文件的完整 URL
-     */
-    public void removeFile(String fileUrl) {
-        try {
-            // 解析文件名
-            String objectName = fileUrl.substring(fileUrl.lastIndexOf("/") + 1);
+    public String upload(MultipartFile file) throws Exception {
+        String objectKey = createObjectKey(file.getOriginalFilename());
+        String contentType = resolveContentType(file.getContentType(), file.getOriginalFilename());
 
-            // 调用 MinIO 删除
+        try (InputStream inputStream = file.getInputStream()) {
+            putObject(objectKey, inputStream, file.getSize(), contentType);
+        }
+        return objectKey;
+    }
+
+    public String upload(File file, String contentType) throws Exception {
+        String objectKey = createObjectKey(file.getName());
+        String resolvedContentType = resolveContentType(contentType, file.getName());
+
+        try (InputStream inputStream = new FileInputStream(file)) {
+            putObject(objectKey, inputStream, file.length(), resolvedContentType);
+        }
+        return objectKey;
+    }
+
+    public String createReadUrl(String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) {
+            throw new IllegalArgumentException("Media object key is missing");
+        }
+        try {
+            return minioClient.getPresignedObjectUrl(
+                    GetPresignedObjectUrlArgs.builder()
+                            .method(Method.GET)
+                            .bucket(bucketName)
+                            .object(objectKey)
+                            .expiry(PLAYBACK_URL_EXPIRY_HOURS, TimeUnit.HOURS)
+                            .build()
+            );
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to create a media read URL", exception);
+        }
+    }
+
+    public void remove(String objectKey) {
+        if (objectKey == null || objectKey.isBlank()) {
+            return;
+        }
+        try {
             minioClient.removeObject(
                     RemoveObjectArgs.builder()
                             .bucket(bucketName)
-                            .object(objectName)
+                            .object(objectKey)
                             .build()
             );
-
-            System.out.println(" MinIO 文件已删除: " + objectName);
-        } catch (Exception e) {
-            System.err.println(" MinIO 删除失败: " + e.getMessage());
+        } catch (Exception exception) {
+            throw new IllegalStateException("Failed to remove media object: " + objectKey, exception);
         }
     }
 
-    /**
-     * 【新增】上传本地 File 对象到 MinIO
-     */
-    public String uploadLocalFile(java.io.File file) throws Exception {
-        try (java.io.FileInputStream inputStream = new java.io.FileInputStream(file)) {
-            minioClient.putObject(
-                    io.minio.PutObjectArgs.builder()
-                            .bucket(bucketName)
-                            .object(file.getName()) // 文件名已经包含 UUID
-                            .stream(inputStream, file.length(), -1)
-                            .contentType("video/mp4") // 默认当 mp4 处理
-                            .build()
-            );
+    public String resolveContentType(String providedContentType, String filename) {
+        if (providedContentType != null
+                && !providedContentType.isBlank()
+                && !MediaType.APPLICATION_OCTET_STREAM_VALUE.equalsIgnoreCase(providedContentType)) {
+            return providedContentType;
         }
+        return MediaTypeFactory.getMediaType(filename == null ? "" : filename)
+                .map(MediaType::toString)
+                .orElse(MediaType.APPLICATION_OCTET_STREAM_VALUE);
+    }
 
-        return endpoint + "/" + bucketName + "/" + file.getName();
+    private void putObject(String objectKey, InputStream inputStream, long size, String contentType) throws Exception {
+        minioClient.putObject(
+                PutObjectArgs.builder()
+                        .bucket(bucketName)
+                        .object(objectKey)
+                        .stream(inputStream, size, -1)
+                        .contentType(contentType)
+                        .build()
+        );
+    }
+
+    private String createObjectKey(String filename) {
+        String suffix = "";
+        if (filename != null && filename.contains(".")) {
+            suffix = filename.substring(filename.lastIndexOf('.')).toLowerCase();
+        }
+        return UUID.randomUUID() + suffix;
     }
 }
