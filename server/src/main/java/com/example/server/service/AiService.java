@@ -1,103 +1,123 @@
 package com.example.server.service;
 
+import com.example.server.entity.AnalysisJob;
+import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.strategy.AiAnalysisStrategy;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
+import java.util.concurrent.TimeUnit;
+
 @Service
 public class AiService {
 
-    @Autowired
-    private MediaFileMapper mediaFileMapper;
+    private final MediaFileMapper mediaFileMapper;
+    private final AiAnalysisStrategy aiAnalysisStrategy;
+    private final AnalysisJobService analysisJobService;
+    private final StringRedisTemplate redisTemplate;
+    private final RedissonClient redissonClient;
 
-    @Autowired
-    @Qualifier("defaultAiStrategy")
-    private AiAnalysisStrategy aiAnalysisStrategy;
+    public AiService(
+            MediaFileMapper mediaFileMapper,
+            @Qualifier("defaultAiStrategy") AiAnalysisStrategy aiAnalysisStrategy,
+            AnalysisJobService analysisJobService,
+            StringRedisTemplate redisTemplate,
+            RedissonClient redissonClient
+    ) {
+        this.mediaFileMapper = mediaFileMapper;
+        this.aiAnalysisStrategy = aiAnalysisStrategy;
+        this.analysisJobService = analysisJobService;
+        this.redisTemplate = redisTemplate;
+        this.redissonClient = redissonClient;
+    }
 
-    // 【关键】必须注入 Redis 工具！
-    @Autowired
-    private StringRedisTemplate redisTemplate;
-
-
-    public void asyncAnalyze(Long mediaId) {
-        System.out.println(" [线程池] 开始处理任务，ID: " + mediaId);
-
-        MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) return;
+    public void processAnalysisJob(String jobId, int retryCount) {
+        RLock lock = redissonClient.getLock("lock:analysis-job:" + jobId);
+        boolean locked = false;
+        File audioFile = null;
 
         try {
-            // 1. 语音转文字
-            String text = aiAnalysisStrategy.transcribe(mediaFile.getFilePath());
-            mediaFile.setTranscriptText(text);
-
-            // 2. 智能总结
-            String summary = aiAnalysisStrategy.generateSummary(mediaFile.getFilePath());
-            mediaFile.setAiSummary(summary);
-
-            // 3. 保存数据库 (这一步你已经成功了)
-            mediaFileMapper.updateById(mediaFile);
-
-
-            // 1. 拼装缓存 Key (必须和 MediaController 里的逻辑完全一致！)
-            // Controller 里是: "media:list:user:" + (userId == null ? "anon" : userId)
-            String userIdStr = (mediaFile.getUserId() == null) ? "anon" : String.valueOf(mediaFile.getUserId());
-            String cacheKey = "media:list:user:" + userIdStr;
-
-            // 2. 狠狠地删除
-            Boolean deleteResult = redisTemplate.delete(cacheKey);
-
-            // 3. 打印显眼日志 (请在黑窗口找这句话！！！)
-            if (Boolean.TRUE.equals(deleteResult)) {
-                System.out.println(" [线程池] 缓存清除成功！Key: " + cacheKey);
-            } else {
-                System.out.println("⚠️ [线程池] 缓存不存在或清除失败 (但这不影响新数据写入)，Key: " + cacheKey);
+            locked = lock.tryLock(0, TimeUnit.SECONDS);
+            if (!locked || !analysisJobService.beginAttempt(jobId, retryCount)) {
+                return;
             }
 
-            System.out.println("✅ [线程池] 任务全部完成，前端轮询将在下一次命中新数据。");
+            AnalysisJob job = analysisJobService.getRequired(jobId);
+            MediaFile mediaFile = mediaFileMapper.selectById(job.getMediaId());
+            if (mediaFile == null) {
+                throw new IllegalArgumentException("Media does not exist: " + job.getMediaId());
+            }
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            System.err.println("❌ [线程池] 任务失败: " + e.getMessage());
+            String transcript = mediaFile.getTranscriptText();
+            if (transcript == null || transcript.isBlank()) {
+                analysisJobService.markStage(jobId, AnalysisJobStatus.EXTRACTING_AUDIO, 20);
+                audioFile = aiAnalysisStrategy.extractAudio(mediaFile.getFilePath());
 
-            // 失败也要删缓存，否则前端会一直转圈看不到“失败”两个字
-            String userIdStr = (mediaFile.getUserId() == null) ? "anon" : String.valueOf(mediaFile.getUserId());
-            redisTemplate.delete("media:list:user:" + userIdStr);
+                analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 45);
+                transcript = aiAnalysisStrategy.transcribe(audioFile);
+                if (transcript == null || transcript.isBlank()) {
+                    throw new IllegalStateException("Speech recognition returned an empty transcript");
+                }
+                mediaFile.setTranscriptText(transcript);
+                mediaFileMapper.updateById(mediaFile);
+            }
+
+            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 75);
+            String summary = mediaFile.getAiSummary();
+            if (summary == null || summary.isBlank()) {
+                summary = aiAnalysisStrategy.generateSummary(transcript);
+                if (summary == null || summary.isBlank()) {
+                    throw new IllegalStateException("The language model returned an empty summary");
+                }
+                mediaFile.setAiSummary(summary);
+                mediaFileMapper.updateById(mediaFile);
+            }
+
+            analysisJobService.markSucceeded(jobId);
+            invalidateMediaList(mediaFile.getUserId());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Analysis job was interrupted", exception);
+        } finally {
+            if (audioFile != null && audioFile.exists()) {
+                audioFile.delete();
+            }
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
-
-
-    //异步提取全文 (专门负责提取文字)
     @Async("aiTaskExecutor")
     public void asyncTranscribe(Long mediaId) {
-        System.out.println(" [线程池] 开始全文提取任务，ID: " + mediaId);
-
         MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) return;
-
-        try {
-            //只做语音转文字
-            String text = aiAnalysisStrategy.transcribe(mediaFile.getFilePath());
-            mediaFile.setTranscriptText(text);
-
-            //保存数据库
-            mediaFileMapper.updateById(mediaFile);
-
-            //强制删除 Redis 缓存
-            String userIdStr = (mediaFile.getUserId() == null) ? "anon" : String.valueOf(mediaFile.getUserId());
-            String cacheKey = "media:list:user:" + userIdStr;
-            redisTemplate.delete(cacheKey);
-
-            System.out.println(" [线程池] 全文提取完成，缓存已清除！Key: " + cacheKey);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            System.err.println(" [线程池] 提取失败: " + e.getMessage());
+        if (mediaFile == null) {
+            return;
         }
+
+        File audioFile = null;
+        try {
+            audioFile = aiAnalysisStrategy.extractAudio(mediaFile.getFilePath());
+            String transcript = aiAnalysisStrategy.transcribe(audioFile);
+            mediaFile.setTranscriptText(transcript);
+            mediaFileMapper.updateById(mediaFile);
+            invalidateMediaList(mediaFile.getUserId());
+        } finally {
+            if (audioFile != null && audioFile.exists()) {
+                audioFile.delete();
+            }
+        }
+    }
+
+    private void invalidateMediaList(Long userId) {
+        String userIdValue = userId == null ? "anon" : String.valueOf(userId);
+        redisTemplate.delete("media:list:user:" + userIdValue);
     }
 }

@@ -25,7 +25,9 @@ public class AliyunAsrUtils {
 
     public String audioToText(String filePath) {
         File file = new File(filePath);
-        if (!file.exists()) return "❌ 错误：找不到文件";
+        if (!file.exists()) {
+            throw new IllegalArgumentException("Audio file does not exist: " + filePath);
+        }
 
         String url = "https://api.siliconflow.cn/v1/audio/transcriptions";
         int maxRetries = 3; // 最大重试次数
@@ -68,16 +70,21 @@ public class AliyunAsrUtils {
                             continue;
                         } else {
                             // 如果是 400/401 等客户端错误，直接退出不重试
-                            return "❌ 识别失败: " + lastError;
+                            throw new IllegalStateException("Speech recognition rejected the request: " + lastError);
                         }
                     }
                 }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Speech recognition retry was interrupted", exception);
+            } catch (IllegalStateException exception) {
+                throw exception;
             } catch (Exception e) {
                 lastError = e.getMessage();
                 System.err.println("⚠️ 网络异常 (" + (i + 1) + "/" + maxRetries + "): " + lastError);
             }
         }
 
-        return "❌ 最终失败 (重试3次): " + lastError;
+        throw new IllegalStateException("Speech recognition failed after 3 attempts: " + lastError);
     }
 }

@@ -101,11 +101,13 @@ public class DeepSeekUtils {
 
         try (Response response = client.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                // 如果报错（比如没余额），这里会把错误原因返回去
-                return "❌ AI 请求失败: " + response.code() + " - " + response.body().string();
+                String responseBody = response.body() == null ? "" : response.body().string();
+                throw new IllegalStateException("Language model request failed: " + response.code() + " - " + responseBody);
             }
 
-            // 5. 解析 AI 返回的 JSON
+            if (response.body() == null) {
+                throw new IllegalStateException("Language model returned an empty response body");
+            }
             String resultJson = response.body().string();
             JSONObject jsonObject = JSON.parseObject(resultJson);
 
@@ -116,8 +118,7 @@ public class DeepSeekUtils {
                     .getString("content");
 
         } catch (IOException e) {
-            e.printStackTrace();
-            return "❌ 网络连接出错: " + e.getMessage();
+            throw new IllegalStateException("Language model connection failed", e);
         }
     }
 }

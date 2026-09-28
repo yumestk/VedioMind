@@ -1,232 +1,176 @@
+# VedioMind
 
+面向长视频的 AI 内容理解平台。用户可以上传本地视频或导入网络视频，系统在后台完成音频提取、语音转写和内容总结，并在前端展示可恢复的任务进度。
 
-# ViedoMind - 智能视频内容理解平台
+> 当前重点是项目演示与异步架构闭环。鉴权、私有对象访问和生产级 URL 导入安全仍在 Roadmap 中，不建议直接部署到公网。
 
-**全链路异步化 / 长任务稳定性保障 / AI 智能问答**
+## 核心能力
 
+- 本地视频上传到 MinIO，或通过 yt-dlp 导入网络视频。
+- FFmpeg 提取音频，SiliconFlow 完成 ASR，DeepSeek 基于 Transcript 生成总结。
+- RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
+- 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
+- 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
+- Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
+- Transcript 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
+- 前端按 `jobId` 轮询结构化状态，刷新页面后仍可恢复当前任务。
+- Flyway 管理数据库结构，新环境无需手工建表。
 
+## 异步分析链路
 
-  
+```mermaid
+flowchart TD
+    A[POST 创建分析任务] --> B[RocketMQ 事务半消息]
+    B --> C[本地事务创建 AnalysisJob]
+    C -->|COMMIT| D[消息对消费者可见]
+    C -->|ROLLBACK| E[撤销半消息]
+    B -. 状态不确定 .-> F[Broker 事务回查]
+    F --> C
 
+    D --> G[按 jobId 获取 Redisson 锁]
+    G --> H{任务是否已终结}
+    H -->|是| I[幂等确认]
+    H -->|否| J[提取音频]
+    J --> K[ASR 并持久化 Transcript]
+    K --> L[基于 Transcript 生成 Summary]
+    L --> M[标记 SUCCEEDED]
 
-  
+    J -->|异常| N[RocketMQ 重试]
+    K -->|异常| N
+    L -->|异常| N
+    N -->|超过上限| O[FAILED / DLQ]
 
+    P[前端轮询 Job API] --> C
+    P --> J
+    P --> K
+    P --> L
+    P --> M
+```
 
-**VedioMind** 是一个集成用户鉴权、视频上传、音频提取及 AI 自动总结的全链路视频内容理解平台。
+任务状态流转：
 
-针对视频处理场景中常见的 **“长耗时阻塞”** 、 **“高并发资源冲突”** 以及 **“大文件传输不稳定”** 等痛点，本项目抛弃了传统的同步处理模式，基于 **RocketMQ + Redisson + 分片续传** 重构了系统架构。
+```text
+QUEUED
+  → EXTRACTING_AUDIO
+  → TRANSCRIBING
+  → SUMMARIZING
+  → SUCCEEDED
 
-系统可以接入大模型api，自定义提示词，基于 Function Calling 可以实现查询信息和精准总结。
+任一处理阶段异常 → RETRYING → 下一次消费
+超过重试上限     → FAILED
+```
 
-视频平台大多只解决了“存储”和“播放”的问题。DoVideoAI 旨在解决“理解”的问题。 它通过异步架构处理长耗时任务，利用 AI 提取核心价值，让视频不再是黑盒。
-
-  
-
-
-## 项目预览
-
-项目简览
-
-
-
-
-
-
-
-
-
-
-
-L4J
-
-  
-
-
-## 核心功能
-
-1. 🚀 稳定上传体验
-
-分片断点续传：针对 GB 级大文件（如 4K 课程录像），采用 Redis 维护上传分片状态。实测在 20% 丢包率弱网环境下，上传成功率从 25% 提升至 99%。
-
-秒级响应：引入 RocketMQ 将耗时的“视频分析”动作剥离出主线程。用户上传完成后仅需 50ms 即可得到反馈，后续处理全异步化，彻底告别页面转圈卡死。
-
-1. 🛡️ 高并发防护
-
-分布式锁兜底：使用 Redisson + WatchDog 机制。当多个用户同时上传同一个热门公开课视频时，系统通过 MD5 内容指纹识别，利用分布式锁防止重复转码与 AI 分析，节省算力与 Token 开销。
-
-削峰填谷：Controller 层集成 Redis 令牌桶算法，有效遏制恶意请求与突发流量，保护后端服务不被击穿。
-
-1. 🔄 任务处理流程详解
-
-稳健入口：文件直传 MinIO，避免应用服务器带宽瓶颈。
-
-异步解耦：上传成功后，Controller 仅发送一条消息至 RocketMQ 即刻返回，将长耗时任务留给后台。
-
-安全消费：消费者通过 Redisson 锁住视频 MD5，确保同一视频在同一时刻只有一个线程在处理。
-
-智能重试：针对第三方 AI API 可能的网络抖动，设计了指数退避重试机制，确保任务最终一致性。
-
-  
-
+这里选择 RocketMQ 事务消息而不是额外引入 Outbox：项目已经依赖 RocketMQ，事务消息能够以更少的组件完成当前所需的“本地任务记录 + MQ 投递”一致性。消费者侧的幂等、状态恢复和重试仍由 `AnalysisJob`、Redisson 与 RocketMQ 共同完成。
 
 ## 技术栈
 
+| 层次 | 技术 |
+| --- | --- |
+| 前端 | Vue 3、Vite、Marked |
+| 后端 | Java 21、Spring Boot 3、MyBatis-Plus、Undertow |
+| 异步任务 | RocketMQ 4.9.4、Redisson |
+| 数据 | MySQL 8、Redis、Flyway |
+| 对象存储 | MinIO |
+| 媒体处理 | FFmpeg、yt-dlp |
+| AI | SiliconFlow ASR、DeepSeek |
 
+## 主要接口
 
-### 后端
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `POST` | `/media/upload` | 上传本地视频 |
+| `POST` | `/media/upload-url` | 导入网络视频 |
+| `GET` | `/media/list` | 查询当前用户媒体列表 |
+| `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
+| `GET` | `/analysis/jobs/{jobId}` | 查询任务状态与进度 |
+| `GET` | `/debug/transcribe?id={mediaId}` | 单独触发文字提取（开发接口） |
+| `GET` | `/debug/download?id={mediaId}` | 转码并下载音频（开发接口） |
 
-SpringBoot + RocketMQ + Redis + MySQL + MyBatis Plus + MinIO + FFmpeg
+分析任务提交成功返回 HTTP `202 Accepted`，响应示例：
 
-### 部署
-
-Docker 
-
-### 前端
-
-Vue 3 + Vite 
-
-  
-不严谨流程图
-
-```mermaid
-graph TD
-    A[客户端发起请求] --> B{Redis令牌桶限流}
-    B -- 超过阈值 --> C[拒绝请求 保障可用性]
-    B -- 获取令牌 --> D[分片并发上传]
-    D --> E(Redis记录分片状态断点续传)
-    E --> F[文件上传并合并完成]
-    
-    F --> G[封装元数据投递RocketMQ]
-    G --> H[上传接口立即返回 小于50ms]
-
-    G --> I[消费者异步拉取消息]
-    I --> J{计算文件MD5查询去重}
-    J -- 命中记录 --> K[直接关联并返回历史结果]
-    J -- 全新视频 --> L[加Redisson分布式锁]
-    
-    L --> M(WatchDog机制防止长耗时锁过期)
-    M --> N[调用FFmpeg提取音频]
-    N --> O[请求硅基流动API生成字幕与总结]
-    O --> P(指数退避重试兜底网络抖动)
-    P --> Q[保存结果释放锁并清理资源]
-
-    R[用户发起智能问答] --> S[Redis获取最近十轮对话]
-    S --> T[触发Function Calling机制]
-    T --> U[数据库检索相关视频信息]
-    U --> V[大模型结合上下文生成回复]
+```json
+{
+  "id": "84473eac-7f71-4307-a11c-d3ebd7654cef",
+  "mediaId": 42,
+  "status": "QUEUED",
+  "progress": 0,
+  "retryCount": 0,
+  "errorMessage": null,
+  "createdAt": "2026-09-28T14:30:00",
+  "startedAt": null,
+  "finishedAt": null
+}
 ```
 
+## 本地运行
 
+### 1. 环境要求
 
-  
+- JDK 21
+- Node.js 22（Vite 最低要求为 20.19）
+- Docker 与 Docker Compose
+- FFmpeg
+- yt-dlp
 
-
-## 我的开发环境
-
-
-| 组件              | 版本           | 备注                                |
-| --------------- | ------------ | --------------------------------- |
-| **JDK**         | 21.0.8       | 支持 Spring Boot 3 即可               |
-| **Node**        | v22.18.0     | 前端构建依赖                            |
-| **MySQL**       | 8.0          | Docker 镜像 `mysql:8.0`             |
-| **Redis**       | Latest (7.x) | Docker 镜像 `redis:latest`          |
-| **RocketMQ**    | 4.9.4        | Docker 镜像 `apache/rocketmq:4.9.4` |
-| **LangChain4j** | DeepSeek     | 硅基流动送14元免费额度                      |
-| **FFmpeg**      | Latest       | 推荐 2025 年后的 Snapshot 版本           |
-| **yt-dlp**      | Latest       | 建议定期 `update` 保持解析库最新             |
-
-
-  
-
-
-## 如何本地部署
-
-
-
-### 中间件部署 (Docker Compose)
-
-本项目依赖多个中间件封装为 Docker Compose 文件。
+### 2. 启动中间件
 
 ```bash
-# 在项目的根目录下，直接一键启动所有服务
-# (包含 MySQL, Redis, MinIO, RocketMQ, Dashboard)
-docker-compose up -d
+docker compose up -d
 ```
 
+默认会启动 MySQL、Redis、MinIO、RocketMQ NameServer、Broker 和 Dashboard。端口见 [docker-compose.yml](docker-compose.yml)。
 
-
-### 后端配置修改
-
-真实配置文件包含本地路径和 API Key，不会提交到 Git。首次启动时复制示例配置：
+### 3. 配置后端
 
 ```bash
 cp server/src/main/resources/application.example.properties \
    server/src/main/resources/application.properties
+
+export DEEPSEEK_API_KEY=your_deepseek_key
+export SILICONFLOW_API_KEY=your_siliconflow_key
+export FFMPEG_DIR=/path/to/ffmpeg/bin
+export YTDLP_PATH=/path/to/yt-dlp
 ```
 
-然后优先通过环境变量填写本地配置：
+数据库连接、MinIO、Redis 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。
 
-#### 1. 配置数据库密码
-
-确保与 docker-compose 中的 MySQL 密码一致：
+### 4. 启动后端
 
 ```bash
-export DB_PASSWORD=root
-```
-
-
-
-#### 2. 配置AI模型密钥
-
-请填入你自己的 API Key（ASR 默认使用硅基流动，内容总结使用 DeepSeek）：
-
-```bash
-export DEEPSEEK_API_KEY=你的密钥
-export SILICONFLOW_API_KEY=你的密钥
-```
-
-
-
-#### 3. 请确保本地已安装 FFmpeg 和 yt-dlp，并填入路径：
-
-```bash
-# Windows 环境示例 (注意使用斜杠 /)
-set FFMPEG_DIR=D:/ffmpeg/bin
-set YTDLP_PATH=D:/yt-dlp/yt-dlp.exe
-
-# Mac/Linux 环境示例
-export FFMPEG_DIR=/usr/local/bin
-export YTDLP_PATH=/usr/local/bin/yt-dlp
-```
-
-
-
-### 启动项目
-
-🟢 启动后端
-
-```properties
-
 cd server
-
-# 启动服务
-mvn clean spring-boot:run
-# 当看到控制台输出 Started DOVideoApplication in x.xxx seconds 即表示后端启动成功。
+./mvnw spring-boot:run
 ```
 
-🔵 启动前端
+后端默认监听 `http://localhost:9090`。首次启动时 Flyway 会创建所需表；对于已有但尚未由 Flyway 管理的数据库，会从基线版本 `0` 接管。
 
-```properties
+### 5. 启动前端
 
+```bash
 cd client
-# 1. 安装依赖
 npm install
-
-# 2. 启动开发模式
 npm run dev
 ```
 
+前端默认访问 `http://localhost:5173`。
 
+## 验证
 
-访问前端界面内显示地址（默认为接口[http://localhost:5173](http://localhost:5173)
-可成功访问该项目
+```bash
+cd server
+./mvnw test
+
+cd ../client
+npm run build
+```
+
+测试覆盖事务消息提交/回查、消费重试与失败终态，以及“仅执行一次 ASR、基于已保存 Transcript 生成总结”的主流程。
+
+## Roadmap
+
+- Spring Security、密码哈希、资源所有权校验与统一错误响应。
+- 私有 MinIO Bucket 与短时效预签名访问 URL。
+- MinIO Multipart 直传、断点续传和真实上传进度。
+- URL 白名单、SSRF 防护、下载大小/时长限制和外部进程治理。
+- 带时间戳的字幕 Segment、章节导航和播放器联动。
+- 基于字幕引用的视频问答，以及 OCR、关键帧和多模态理解。
+- 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

@@ -186,6 +186,32 @@
           <button class="close-btn" @click="closeSidebar">×</button>
         </div>
         <div class="sidebar-body">
+          <div v-if="sidebar.type === 'ai' && sidebar.job" class="job-progress-panel">
+            <div class="job-progress-head">
+              <span class="job-status-label">{{ jobStatusLabel(sidebar.job.status) }}</span>
+              <span class="job-progress-value">{{ sidebar.job.progress }}%</span>
+            </div>
+            <div class="job-progress-track">
+              <div class="job-progress-fill" :style="{ width: `${sidebar.job.progress}%` }"></div>
+            </div>
+            <div class="job-steps">
+              <div
+                  v-for="(stage, index) in analysisStages"
+                  :key="stage.status"
+                  class="job-step"
+                  :class="jobStepClass(index, sidebar.job)"
+              >
+                <span class="job-step-dot"></span>
+                <span>{{ stage.label }}</span>
+              </div>
+            </div>
+            <p v-if="sidebar.job.status === 'RETRYING'" class="job-retry-note">
+              第 {{ sidebar.job.retryCount }} 次重试等待中
+            </p>
+            <p v-if="sidebar.job.status === 'FAILED'" class="job-error-note">
+              {{ sidebar.job.errorMessage || '分析任务失败' }}
+            </p>
+          </div>
           <div v-if="sidebar.loading" class="loading-state"><div class="quantum-loader small"></div><p>数据流处理中...</p></div>
           <div v-else>
             <div v-if="sidebar.type === 'ai'" class="markdown-content" v-html="renderedMarkdown"></div>
@@ -232,7 +258,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { marked } from 'marked'
 
 // --- 变量定义 ---
@@ -242,7 +268,7 @@ const message = ref('')
 const uploading = ref(false)
 const list = ref([])
 const isDragOver = ref(false)
-const sidebar = ref({ visible: false, type: 'ai', title: '', content: '', loading: false })
+const sidebar = ref({ visible: false, type: 'ai', title: '', content: '', loading: false, job: null })
 const currentUser = ref(null)
 const showAuthModal = ref(false)
 const authMode = ref('login')
@@ -251,6 +277,32 @@ const authMessage = ref('')
 const authError = ref(false)
 const authForm = ref({ username: '', password: '', nickname: '' })
 const pollingTimers = ref({})
+const analysisStages = [
+  { status: 'QUEUED', label: '排队' },
+  { status: 'EXTRACTING_AUDIO', label: '提取音频' },
+  { status: 'TRANSCRIBING', label: '语音转写' },
+  { status: 'SUMMARIZING', label: '生成总结' },
+  { status: 'SUCCEEDED', label: '完成' }
+]
+
+const jobStatusLabel = (status) => ({
+  QUEUED: '任务已进入队列',
+  EXTRACTING_AUDIO: '正在提取音频',
+  TRANSCRIBING: '正在识别语音',
+  SUMMARIZING: '正在生成智能总结',
+  RETRYING: '任务异常，准备重试',
+  SUCCEEDED: '分析完成',
+  FAILED: '分析失败'
+}[status] || status)
+
+const jobStepClass = (index, job) => {
+  if (job.status === 'SUCCEEDED') return 'completed'
+  const currentIndex = analysisStages.findIndex(stage => stage.status === job.status)
+  const effectiveIndex = currentIndex >= 0 ? currentIndex : Math.max(0, Math.ceil((job.progress || 0) / 25) - 1)
+  if (index < effectiveIndex) return 'completed'
+  if (index === effectiveIndex) return job.status === 'FAILED' ? 'failed' : 'active'
+  return ''
+}
 
 // Markdown 解析
 const renderedMarkdown = computed(() => {
@@ -384,8 +436,7 @@ const fetchList = async () => {
 
       const res = await fetch(url)
       const data = await res.json()
-      // 倒序排列，新的在前面
-      list.value = data.reverse()
+      list.value = data
     } else {
       list.value = []
     }
@@ -449,7 +500,7 @@ const transcribe = async (id) => {
     sidebar.value.loading = false
     return
   }
-  if (pollingTimers.value[id] && pollingTimers.value[id].type === 'text') {
+  if (pollingTimers.value[`transcript-${id}`]) {
     openSidebar('text', '全量文字提取')
     sidebar.value.loading = true
     sidebar.value.content = "📝 文字提取正在后台进行中..."
@@ -460,132 +511,123 @@ const transcribe = async (id) => {
   sidebar.value.content = "📝 提取任务已提交，正在识别语音流..."
   try {
     await fetch(`http://localhost:9090/debug/transcribe?id=${id}`)
-    startPolling(id, 'text')
+    startTranscriptPolling(id)
   } catch (e) {
     sidebar.value.content = "Error: " + e
     sidebar.value.loading = false
   }
 }
 
-// === 【核心修改】AI 分析函数，增加限流/锁错误的处理 ===
 const aiAnalyze = async (id) => {
   const item = list.value.find(i => i.id === id)
 
-  // 1. 如果已经有结果，直接显示
-  if (item && item.aiSummary && !item.aiSummary.includes("任务已") && !item.aiSummary.includes("正在")) {
+  if (item && item.aiSummary) {
     openSidebar('ai', 'AI 智能总结')
     sidebar.value.content = item.aiSummary
     sidebar.value.loading = false
     return
   }
 
-  // 2. 如果正在轮询，直接打开侧边栏
-  if (pollingTimers.value[id] && pollingTimers.value[id].type === 'ai') {
-    openSidebar('ai', 'AI 智能总结')
-    sidebar.value.loading = true
-    sidebar.value.content = "🚀 系统正在后台拼命计算中...\n\n(任务正在进行，无需重复提交)"
-    return
-  }
-
-  // 3. 准备提交请求，打开侧边栏loading
   openSidebar('ai', 'AI 智能总结')
   sidebar.value.loading = true
-  sidebar.value.content = "🚀 正在向分布式集群请求计算资源..."
+  sidebar.value.content = ''
 
   try {
-    // 请求后端
-    const res = await fetch(`http://localhost:9090/debug/ai?id=${id}`)
-    const text = await res.text()
-
-    // 4. 【关键逻辑】检查后端返回的文本
-    // 如果包含 "⚠️" (限流/锁) 或者 "❌" (报错)，说明任务被拒绝了
-    if (text.includes("⚠️") || text.includes("❌")) {
-      // 弹窗提示错误
-      showMsg(text, true)
-      // 关闭侧边栏，因为任务其实没开始
-      sidebar.value.visible = false
-      sidebar.value.loading = false
-      return
-    }
-
-    // 5. 如果成功 (包含 "✅" 或 "🚀")，开始轮询
-    startPolling(id, 'ai')
-    // 在侧边栏显示后端返回的提示 (比如 "✅ 任务已投递至 RocketMQ")
-    sidebar.value.content = text + "\n\n⏳ 等待消费者接单处理..."
-
+    const res = await fetch(`http://localhost:9090/analysis/media/${id}`, { method: 'POST' })
+    if (!res.ok) throw new Error(await res.text() || '任务提交失败')
+    const job = await res.json()
+    sidebar.value.job = job
+    rememberActiveJob(job.id, id)
+    startAnalysisPolling(job.id, id)
   } catch (e) {
-    sidebar.value.content = "Error: " + e
+    sidebar.value.content = "任务提交失败：" + e.message
     sidebar.value.loading = false
+    showMsg('❌ ' + e.message, true)
   }
 }
 
-const startPolling = (id, type) => {
-  // 清理旧定时器
-  if (pollingTimers.value[id]) clearInterval(pollingTimers.value[id].timer)
-  console.log(`[轮询] 开始监听任务 ID: ${id}, 类型: ${type}`)
-
+const startTranscriptPolling = (id) => {
+  const timerKey = `transcript-${id}`
+  clearPollingTimer(timerKey)
   const timer = setInterval(async () => {
-    // 1. 强制刷新列表 (带时间戳防止缓存)
     await fetchList()
     const item = list.value.find(i => i.id === id)
     if (!item) return
-
-    let isFinished = false
-    let result = ''
-
-    if (type === 'ai') {
-      const text = item.aiSummary || ''
-
-      // 【核心修改】纯文本判断逻辑，绝对不使用 Emoji
-      // 条件1: 成功 (包含 Markdown 的标题特征 "##")
-      const isSuccess = text.includes("##");
-      // 条件2: 失败 (包含错误关键词)
-      const isError = text.includes("失败") || text.includes("Error") || text.includes("超时") || text.includes("500");
-
-      // 只要是成功或失败，都视为“结束”，停止轮询
-      if (isSuccess || isError) {
-        isFinished = true
-        result = text
-      }
-
-    } else if (type === 'text') {
-      const text = item.transcriptText || ''
-      // 文字提取同理：如果有内容且长度足够，或者报错，就停止
-      if (text && (text.length > 10 || text.includes("失败"))) {
-        isFinished = true
-        result = text
-      }
-    }
-
-    // 2. 结算
-    if (isFinished) {
-      // 如果侧边栏正开着，更新内容
-      if (sidebar.value.visible && sidebar.value.title.includes(type === 'ai' ? 'AI' : '文字')) {
-        sidebar.value.content = result
+    const text = item.transcriptText || ''
+    if (text.length > 10) {
+      if (sidebar.value.visible && sidebar.value.type === 'text') {
+        sidebar.value.content = text
         sidebar.value.loading = false
       }
+      showMsg('✅ 文字提取完成')
+      clearPollingTimer(timerKey)
+    }
+  }, 3000)
 
-      // 只有成功才提示完成，报错则提示警告
-      if (result.includes("失败") || result.includes("Error")) {
-        showMsg("⚠️ 任务结束，但存在错误", true)
-      } else {
-        showMsg("✅ 任务完成")
+  pollingTimers.value[timerKey] = timer
+}
+
+const startAnalysisPolling = (jobId, mediaId, reopen = false) => {
+  const timerKey = `analysis-${jobId}`
+  clearPollingTimer(timerKey)
+
+  if (reopen) {
+    openSidebar('ai', 'AI 智能总结')
+  }
+
+  const poll = async () => {
+    try {
+      const res = await fetch(`http://localhost:9090/analysis/jobs/${jobId}`)
+      if (!res.ok) throw new Error('无法读取任务状态')
+      const job = await res.json()
+
+      if (sidebar.value.visible && sidebar.value.type === 'ai') {
+        sidebar.value.job = job
+        sidebar.value.loading = !['SUCCEEDED', 'FAILED'].includes(job.status)
       }
 
-      clearInterval(timer)
-      delete pollingTimers.value[id]
+      if (job.status === 'SUCCEEDED') {
+        await fetchList()
+        const item = list.value.find(media => media.id === mediaId)
+        if (sidebar.value.visible && sidebar.value.type === 'ai') {
+          sidebar.value.content = item?.aiSummary || '分析已完成'
+          sidebar.value.loading = false
+        }
+        forgetActiveJob()
+        clearPollingTimer(timerKey)
+        showMsg('✅ AI 分析完成')
+      } else if (job.status === 'FAILED') {
+        if (sidebar.value.visible && sidebar.value.type === 'ai') {
+          sidebar.value.content = ''
+          sidebar.value.loading = false
+        }
+        forgetActiveJob()
+        clearPollingTimer(timerKey)
+        showMsg('❌ AI 分析失败', true)
+      }
+    } catch (error) {
+      console.error(error)
     }
-  }, 3000) // 3秒轮询一次
+  }
 
-  pollingTimers.value[id] = { timer, type }
+  poll()
+  const timer = setInterval(poll, 2000)
+  pollingTimers.value[timerKey] = timer
+}
 
-  // 5分钟强制兜底停止
-  setTimeout(() => {
-    if (pollingTimers.value[id]) {
-      clearInterval(pollingTimers.value[id].timer)
-      delete pollingTimers.value[id]
-    }
-  }, 300000)
+const clearPollingTimer = (key) => {
+  if (pollingTimers.value[key]) {
+    clearInterval(pollingTimers.value[key])
+    delete pollingTimers.value[key]
+  }
+}
+
+const rememberActiveJob = (jobId, mediaId) => {
+  localStorage.setItem('activeAnalysisJob', JSON.stringify({ jobId, mediaId }))
+}
+
+const forgetActiveJob = () => {
+  localStorage.removeItem('activeAnalysisJob')
 }
 
 const openSidebar = (type, title) => {
@@ -594,6 +636,7 @@ const openSidebar = (type, title) => {
   sidebar.value.title = title
   sidebar.value.loading = true
   sidebar.value.content = ''
+  sidebar.value.job = null
 }
 const closeSidebar = () => { sidebar.value.visible = false }
 
@@ -661,6 +704,19 @@ onMounted(() => {
     } catch(e) {}
   }
   fetchList()
+  const activeJob = localStorage.getItem('activeAnalysisJob')
+  if (activeJob) {
+    try {
+      const { jobId, mediaId } = JSON.parse(activeJob)
+      startAnalysisPolling(jobId, mediaId, true)
+    } catch (error) {
+      forgetActiveJob()
+    }
+  }
+})
+
+onUnmounted(() => {
+  Object.keys(pollingTimers.value).forEach(clearPollingTimer)
 })
 </script>
 
@@ -848,6 +904,22 @@ html, body, #app {
 .close-btn:hover { color: var(--accent-lime); }
 .sidebar-body { flex: 1; overflow-y: auto; padding: 30px; }
 .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: var(--text-sub); gap: 20px; }
+.job-progress-panel { margin-bottom: 24px; padding: 18px; border: 1px solid var(--border-tech); border-radius: 10px; background: rgba(5, 8, 5, 0.65); }
+.job-progress-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-family: monospace; }
+.job-status-label { color: var(--accent-lime); font-weight: 700; }
+.job-progress-value { color: var(--text-sub); }
+.job-progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: var(--border-tech); }
+.job-progress-fill { height: 100%; background: var(--accent-lime); box-shadow: 0 0 10px rgba(197, 249, 70, 0.5); transition: width 0.4s ease; }
+.job-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 16px; }
+.job-step { display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--text-sub); font-size: 0.68rem; text-align: center; }
+.job-step-dot { width: 9px; height: 9px; border: 1px solid var(--border-tech); border-radius: 50%; background: var(--bg-deep); }
+.job-step.completed, .job-step.active { color: var(--text-main); }
+.job-step.completed .job-step-dot { border-color: var(--accent-lime); background: var(--accent-lime); }
+.job-step.active .job-step-dot { border-color: var(--accent-lime); background: var(--accent-lime); animation: pulse-lime 1.2s infinite alternate; }
+.job-step.failed .job-step-dot { border-color: #ff4757; background: #ff4757; }
+.job-retry-note, .job-error-note { margin-top: 14px; font-size: 0.78rem; font-family: monospace; }
+.job-retry-note { color: #f6c85f; }
+.job-error-note { color: #ff6b78; }
 .markdown-content, .text-content { line-height: 1.8; color: var(--text-main); font-size: 0.95rem; }
 .text-content pre { white-space: pre-wrap; font-family: monospace; background: #000; padding: 15px; border-radius: 8px; border: 1px solid var(--border-tech); color: #ccc; }
 .markdown-content h1, .markdown-content h2, .markdown-content h3 { color: var(--accent-lime); margin-top: 1.5em; margin-bottom: 0.5em; font-family: 'Space Grotesk', sans-serif; }
