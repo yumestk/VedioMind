@@ -3,6 +3,8 @@ package com.example.server.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaListItemResponse;
+import com.example.server.dto.MediaTranscriptResponse;
+import com.example.server.dto.TranscriptSegmentResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
@@ -28,19 +30,22 @@ public class MediaService {
     private final YtDlpUtils ytDlpUtils;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final TranscriptService transcriptService;
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
             MinioUtils minioUtils,
             YtDlpUtils ytDlpUtils,
             StringRedisTemplate redisTemplate,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            TranscriptService transcriptService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.minioUtils = minioUtils;
         this.ytDlpUtils = ytDlpUtils;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.transcriptService = transcriptService;
     }
 
     public MediaListItemResponse upload(MultipartFile file, Long userId) {
@@ -138,6 +143,16 @@ public class MediaService {
     public MediaDetailResponse getDetail(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
         return MediaDetailResponse.from(media, minioUtils.createReadUrl(media.getObjectKey()));
+    }
+
+    public MediaTranscriptResponse getTranscript(Long mediaId, Long userId) {
+        getOwnedMedia(mediaId, userId);
+        return new MediaTranscriptResponse(
+                mediaId,
+                transcriptService.listByMediaId(mediaId).stream()
+                        .map(TranscriptSegmentResponse::from)
+                        .toList()
+        );
     }
 
     public void delete(Long mediaId, Long userId) {

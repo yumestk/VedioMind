@@ -26,12 +26,14 @@ class MediaServiceTest {
     private final MinioUtils minioUtils = mock(MinioUtils.class);
     private final YtDlpUtils ytDlpUtils = mock(YtDlpUtils.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
+    private final TranscriptService transcriptService = mock(TranscriptService.class);
     private final MediaService mediaService = new MediaService(
             mediaFileMapper,
             minioUtils,
             ytDlpUtils,
             redisTemplate,
-            new ObjectMapper()
+            new ObjectMapper(),
+            transcriptService
     );
 
     @Test

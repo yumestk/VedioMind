@@ -12,7 +12,6 @@ public record MediaDetailResponse(
         Long fileSize,
         String coverUrl,
         String playbackUrl,
-        String transcript,
         String summary,
         LocalDateTime uploadTime
 ) {
@@ -25,7 +24,6 @@ public record MediaDetailResponse(
                 media.getFileSize(),
                 media.getCoverUrl(),
                 playbackUrl,
-                media.getTranscriptText(),
                 media.getAiSummary(),
                 media.getUploadTime()
         );

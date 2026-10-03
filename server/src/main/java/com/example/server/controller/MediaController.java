@@ -2,6 +2,7 @@ package com.example.server.controller;
 
 import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaListItemResponse;
+import com.example.server.dto.MediaTranscriptResponse;
 import com.example.server.service.MediaService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -80,6 +81,18 @@ public class MediaController {
         try {
             mediaService.delete(mediaId, userId);
             return ResponseEntity.noContent().build();
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
+        }
+    }
+
+    @GetMapping("/{mediaId}/transcript")
+    public MediaTranscriptResponse getTranscript(
+            @PathVariable Long mediaId,
+            @RequestParam Long userId
+    ) {
+        try {
+            return mediaService.getTranscript(mediaId, userId);
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }

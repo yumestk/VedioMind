@@ -3,39 +3,52 @@ package com.example.server.service;
 import com.example.server.entity.AnalysisJob;
 import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
+import com.example.server.entity.TranscriptSegment;
 import com.example.server.mapper.MediaFileMapper;
-import com.example.server.strategy.AiAnalysisStrategy;
+import com.example.server.service.ai.AudioExtractor;
+import com.example.server.service.ai.ContentSummarizer;
+import com.example.server.service.ai.SpeechTranscriber;
+import com.example.server.service.ai.TranscriptionResult;
 import com.example.server.utils.MinioUtils;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Service
 public class AiService {
 
     private final MediaFileMapper mediaFileMapper;
-    private final AiAnalysisStrategy aiAnalysisStrategy;
+    private final AudioExtractor audioExtractor;
+    private final SpeechTranscriber speechTranscriber;
+    private final ContentSummarizer contentSummarizer;
     private final AnalysisJobService analysisJobService;
+    private final TranscriptService transcriptService;
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
     private final MinioUtils minioUtils;
 
     public AiService(
             MediaFileMapper mediaFileMapper,
-            @Qualifier("defaultAiStrategy") AiAnalysisStrategy aiAnalysisStrategy,
+            AudioExtractor audioExtractor,
+            SpeechTranscriber speechTranscriber,
+            ContentSummarizer contentSummarizer,
             AnalysisJobService analysisJobService,
+            TranscriptService transcriptService,
             StringRedisTemplate redisTemplate,
             RedissonClient redissonClient,
             MinioUtils minioUtils
     ) {
         this.mediaFileMapper = mediaFileMapper;
-        this.aiAnalysisStrategy = aiAnalysisStrategy;
+        this.audioExtractor = audioExtractor;
+        this.speechTranscriber = speechTranscriber;
+        this.contentSummarizer = contentSummarizer;
         this.analysisJobService = analysisJobService;
+        this.transcriptService = transcriptService;
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
         this.minioUtils = minioUtils;
@@ -58,24 +71,24 @@ public class AiService {
                 throw new IllegalArgumentException("Media does not exist: " + job.getMediaId());
             }
 
-            String transcript = mediaFile.getTranscriptText();
-            if (transcript == null || transcript.isBlank()) {
+            List<TranscriptSegment> segments = transcriptService.listByMediaId(mediaFile.getId());
+            if (segments.isEmpty()) {
                 analysisJobService.markStage(jobId, AnalysisJobStatus.EXTRACTING_AUDIO, 20);
-                audioFile = aiAnalysisStrategy.extractAudio(minioUtils.createReadUrl(mediaFile.getObjectKey()));
+                audioFile = audioExtractor.extract(minioUtils.createReadUrl(mediaFile.getObjectKey()));
 
                 analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 45);
-                transcript = aiAnalysisStrategy.transcribe(audioFile);
-                if (transcript == null || transcript.isBlank()) {
-                    throw new IllegalStateException("Speech recognition returned an empty transcript");
-                }
-                mediaFile.setTranscriptText(transcript);
-                mediaFileMapper.updateById(mediaFile);
+                TranscriptionResult transcription = speechTranscriber.transcribe(audioFile);
+                segments = transcriptService.replace(mediaFile.getId(), transcription.segments());
             }
 
+            String transcript = transcriptService.joinText(segments);
+            if (transcript.isBlank()) {
+                throw new IllegalStateException("Speech recognition returned an empty transcript");
+            }
             analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 75);
             String summary = mediaFile.getAiSummary();
             if (summary == null || summary.isBlank()) {
-                summary = aiAnalysisStrategy.generateSummary(transcript);
+                summary = contentSummarizer.summarize(transcript);
                 if (summary == null || summary.isBlank()) {
                     throw new IllegalStateException("The language model returned an empty summary");
                 }

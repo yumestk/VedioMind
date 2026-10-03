@@ -7,14 +7,14 @@
 ## 核心能力
 
 - 本地视频上传到 MinIO，或通过 yt-dlp 导入网络视频。
-- 视频内容工作台集成原生播放器、AI 总结、字幕搜索、复制和导出。
+- 视频内容工作台集成原生播放器、时间戳字幕联动、AI 总结、字幕搜索、复制和导出。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
-- FFmpeg 提取音频，SiliconFlow 完成 ASR，DeepSeek 基于 Transcript 生成总结。
+- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
-- Transcript 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
+- 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - 前端按媒体查询活动 Job，页面刷新后仍可恢复当前任务。
 - Flyway 管理数据库结构，新环境无需手工建表。
 
@@ -25,7 +25,7 @@
 - 浏览器通过 MinIO 预签名 URL 直接播放视频，支持 Range 请求与进度跳转。
 - 工作台按媒体恢复正在执行的分析任务，不依赖浏览器保存 `jobId`。
 - AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
-- 字幕支持搜索、高亮、复制，以及 TXT/Markdown 导出。
+- 字幕支持随播放高亮、点击跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
 
 ## 异步分析链路
@@ -84,7 +84,7 @@ QUEUED
 | 数据 | MySQL 8、Redis、Flyway |
 | 对象存储 | MinIO |
 | 媒体处理 | FFmpeg、yt-dlp |
-| AI | SiliconFlow ASR、DeepSeek |
+| AI | 阿里云 Paraformer ASR、DeepSeek |
 
 ## 主要接口
 
@@ -94,6 +94,7 @@ QUEUED
 | `POST` | `/media/upload-url` | 导入网络视频 |
 | `GET` | `/media` | 查询当前用户的轻量媒体列表 |
 | `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
+| `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
 | `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
 | `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
 | `GET` | `/analysis/media/{mediaId}/active-job` | 查询媒体当前活动任务 |
@@ -140,7 +141,7 @@ cp server/src/main/resources/application.example.properties \
    server/src/main/resources/application.properties
 
 export DEEPSEEK_API_KEY=your_deepseek_key
-export SILICONFLOW_API_KEY=your_siliconflow_key
+export ALIYUN_API_KEY=your_aliyun_key
 export FFMPEG_DIR=/path/to/ffmpeg/bin
 export YTDLP_PATH=/path/to/yt-dlp
 ```
@@ -176,13 +177,13 @@ cd ../client
 npm run build
 ```
 
-当前 13 个后端测试覆盖事务消息提交/回查、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址，以及“仅执行一次 ASR、基于已保存 Transcript 生成总结”的主流程。
+当前 17 个后端测试覆盖事务消息提交/回查、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析，以及“仅执行一次 ASR、基于已保存 Segment 生成总结”的主流程。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
 - MinIO Multipart 直传、断点续传和真实上传进度。
 - URL 白名单、SSRF 防护、下载大小/时长限制和外部进程治理。
-- 带时间戳的字幕 Segment、章节导航和播放器联动。
+- 基于时间戳 Segment 的自动章节与章节导航。
 - 基于字幕引用的视频问答，以及 OCR、关键帧和多模态理解。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

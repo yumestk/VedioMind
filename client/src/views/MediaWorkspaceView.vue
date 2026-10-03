@@ -31,7 +31,12 @@
 
       <div class="workspace-grid">
         <div class="player-column">
-          <VideoPlayer :src="media.playbackUrl" :poster="media.coverUrl" />
+          <VideoPlayer
+            ref="player"
+            :src="media.playbackUrl"
+            :poster="media.coverUrl"
+            @time-update="currentTimeMs = $event"
+          />
           <AnalysisPanel
             :job="job"
             :running="running"
@@ -49,7 +54,13 @@
           </div>
           <div class="content-scroll">
             <SummaryPanel v-if="activeTab === 'summary'" :summary="media.summary" />
-            <TranscriptPanel v-else :transcript="media.transcript" :filename="media.filename" />
+            <TranscriptPanel
+              v-else
+              :segments="transcriptSegments"
+              :current-time-ms="currentTimeMs"
+              :filename="media.filename"
+              @seek="seekTo"
+            />
           </div>
         </section>
       </div>
@@ -59,7 +70,7 @@
 
 <script setup>
 import { onMounted, ref, watch } from 'vue'
-import { getMediaDetail } from '../api/media'
+import { getMediaDetail, getMediaTranscript } from '../api/media'
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
@@ -76,6 +87,9 @@ const media = ref(null)
 const loading = ref(false)
 const loadError = ref('')
 const activeTab = ref('summary')
+const transcriptSegments = ref([])
+const currentTimeMs = ref(0)
+const player = ref(null)
 const numericMediaId = Number(props.mediaId)
 
 const loadDetail = async () => {
@@ -83,7 +97,12 @@ const loadDetail = async () => {
   loading.value = true
   loadError.value = ''
   try {
-    media.value = await getMediaDetail(numericMediaId, currentUser.value.id)
+    const [detail, transcript] = await Promise.all([
+      getMediaDetail(numericMediaId, currentUser.value.id),
+      getMediaTranscript(numericMediaId, currentUser.value.id)
+    ])
+    media.value = detail
+    transcriptSegments.value = transcript.segments
   } catch (error) {
     loadError.value = errorMessage(error, '媒体详情加载失败')
   } finally {
@@ -119,10 +138,17 @@ const startAnalysis = async () => {
 
 watch(currentUser, (user, previous) => {
   if (user && !previous) initialize()
-  if (!user) media.value = null
+  if (!user) {
+    media.value = null
+    transcriptSegments.value = []
+  }
 })
 
 onMounted(initialize)
+
+const seekTo = (milliseconds) => {
+  player.value?.seekTo(milliseconds)
+}
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '--'
 const formatSize = (bytes) => {

@@ -10,7 +10,9 @@
       controls
       preload="metadata"
       @error="playbackError = true"
-      @loadedmetadata="playbackError = false"
+      @loadedmetadata="handleLoadedMetadata"
+      @timeupdate="emitCurrentTime"
+      @seeked="emitCurrentTime"
     />
     <div v-else class="video-placeholder">
       <span class="placeholder-icon">▶</span>
@@ -26,6 +28,8 @@
 <script setup>
 import { ref } from 'vue'
 
+const emit = defineEmits(['time-update'])
+
 defineProps({
   src: { type: String, default: '' },
   poster: { type: String, default: '' }
@@ -34,10 +38,19 @@ defineProps({
 const video = ref(null)
 const playbackError = ref(false)
 
+const emitCurrentTime = () => {
+  emit('time-update', Math.round((video.value?.currentTime || 0) * 1000))
+}
+
+const handleLoadedMetadata = () => {
+  playbackError.value = false
+  emitCurrentTime()
+}
+
 const seekTo = (milliseconds) => {
   if (!video.value) return
   video.value.currentTime = milliseconds / 1000
-  video.value.play()
+  video.value.play().catch(() => {})
 }
 
 defineExpose({ seekTo })

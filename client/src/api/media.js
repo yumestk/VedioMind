@@ -10,6 +10,11 @@ export const getMediaDetail = async (mediaId, userId) => {
   return response.data
 }
 
+export const getMediaTranscript = async (mediaId, userId) => {
+  const response = await http.get(`/media/${mediaId}/transcript`, { params: { userId } })
+  return response.data
+}
+
 export const uploadMedia = async (file, userId, onProgress) => {
   const body = new FormData()
   body.append('file', file)

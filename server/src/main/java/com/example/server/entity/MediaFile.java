@@ -21,7 +21,6 @@ public class MediaFile {
     private String mimeType;
     private Long fileSize;
     private String aiSummary;
-    private String transcriptText;
     private String coverUrl;
     private LocalDateTime uploadTime;
 }
