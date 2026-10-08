@@ -51,14 +51,22 @@
           <div class="content-tabs" role="tablist">
             <button :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">AI 总结</button>
             <button :class="{ active: activeTab === 'transcript' }" @click="activeTab = 'transcript'">完整字幕</button>
+            <button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">视频问答</button>
           </div>
           <div class="content-scroll">
-            <SummaryPanel v-if="activeTab === 'summary'" :summary="media.summary" />
+            <SummaryPanel v-show="activeTab === 'summary'" :summary="media.summary" />
             <TranscriptPanel
-              v-else
+              v-show="activeTab === 'transcript'"
               :segments="transcriptSegments"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
+              @seek="seekTo"
+            />
+            <QuestionPanel
+              v-show="activeTab === 'question'"
+              :media-id="numericMediaId"
+              :user-id="currentUser.id"
+              :has-transcript="Boolean(transcriptSegments.length)"
               @seek="seekTo"
             />
           </div>
@@ -73,6 +81,7 @@ import { onMounted, ref, watch } from 'vue'
 import { getMediaDetail, getMediaTranscript } from '../api/media'
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
+import QuestionPanel from '../components/QuestionPanel.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'

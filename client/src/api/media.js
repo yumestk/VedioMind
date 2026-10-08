@@ -15,6 +15,15 @@ export const getMediaTranscript = async (mediaId, userId) => {
   return response.data
 }
 
+export const askVideoQuestion = async (mediaId, userId, question) => {
+  const response = await http.post(
+    `/media/${mediaId}/questions`,
+    { question },
+    { params: { userId }, timeout: 5 * 60_000 }
+  )
+  return response.data
+}
+
 export const uploadMedia = async (file, userId, onProgress) => {
   const body = new FormData()
   body.append('file', file)
