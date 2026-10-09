@@ -42,7 +42,7 @@
             :running="running"
             :submitting="submitting"
             :error="analysisError"
-            :has-result="Boolean(media.summary)"
+            :has-result="Boolean(media.summary) && Boolean(chapters.length)"
             @submit="startAnalysis"
           />
         </div>
@@ -50,11 +50,18 @@
         <section class="content-column">
           <div class="content-tabs" role="tablist">
             <button :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">AI 总结</button>
+            <button :class="{ active: activeTab === 'chapters' }" @click="activeTab = 'chapters'">章节导航</button>
             <button :class="{ active: activeTab === 'transcript' }" @click="activeTab = 'transcript'">完整字幕</button>
             <button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">视频问答</button>
           </div>
           <div class="content-scroll">
             <SummaryPanel v-show="activeTab === 'summary'" :summary="media.summary" />
+            <ChapterPanel
+              v-show="activeTab === 'chapters'"
+              :chapters="chapters"
+              :current-time-ms="currentTimeMs"
+              @seek="seekTo"
+            />
             <TranscriptPanel
               v-show="activeTab === 'transcript'"
               :segments="transcriptSegments"
@@ -78,9 +85,10 @@
 
 <script setup>
 import { onMounted, ref, watch } from 'vue'
-import { getMediaDetail, getMediaTranscript } from '../api/media'
+import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
+import ChapterPanel from '../components/ChapterPanel.vue'
 import QuestionPanel from '../components/QuestionPanel.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
@@ -97,6 +105,7 @@ const loading = ref(false)
 const loadError = ref('')
 const activeTab = ref('summary')
 const transcriptSegments = ref([])
+const chapters = ref([])
 const currentTimeMs = ref(0)
 const player = ref(null)
 const numericMediaId = Number(props.mediaId)
@@ -106,12 +115,14 @@ const loadDetail = async () => {
   loading.value = true
   loadError.value = ''
   try {
-    const [detail, transcript] = await Promise.all([
+    const [detail, transcript, chapterResult] = await Promise.all([
       getMediaDetail(numericMediaId, currentUser.value.id),
-      getMediaTranscript(numericMediaId, currentUser.value.id)
+      getMediaTranscript(numericMediaId, currentUser.value.id),
+      getMediaChapters(numericMediaId, currentUser.value.id)
     ])
     media.value = detail
     transcriptSegments.value = transcript.segments
+    chapters.value = chapterResult.chapters
   } catch (error) {
     loadError.value = errorMessage(error, '媒体详情加载失败')
   } finally {
@@ -150,6 +161,7 @@ watch(currentUser, (user, previous) => {
   if (!user) {
     media.value = null
     transcriptSegments.value = []
+    chapters.value = []
   }
 })
 

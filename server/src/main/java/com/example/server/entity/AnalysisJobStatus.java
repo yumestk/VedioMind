@@ -7,6 +7,7 @@ public enum AnalysisJobStatus {
     EXTRACTING_AUDIO,
     TRANSCRIBING,
     SUMMARIZING,
+    GENERATING_CHAPTERS,
     RETRYING,
     SUCCEEDED,
     FAILED;

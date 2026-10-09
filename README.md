@@ -1,20 +1,21 @@
 # VedioMind
 
-面向长视频的 AI 内容理解平台。用户可以上传本地视频或导入网络视频，系统在后台完成音频提取、语音转写和内容总结，并在前端展示可恢复的任务进度。
+面向长视频的 AI 内容理解平台。用户可以上传本地视频或导入网络视频，系统在后台完成音频提取、语音转写、内容总结和章节生成，并在前端展示可恢复的任务进度。
 
 > 当前重点是项目演示与异步架构闭环。完整鉴权和生产级 URL 导入安全仍在 Roadmap 中，不建议直接部署到公网。
 
 ## 核心能力
 
 - 本地视频上传到 MinIO，或通过 yt-dlp 导入网络视频。
-- 视频内容工作台集成原生播放器、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的视频问答。
+- 视频内容工作台集成原生播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的视频问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
-- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结。
+- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结和语义章节。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
+- 章节生成只返回 Transcript Segment ID，后端校验锚点并派生章节时间；已保存章节在任务重试时直接复用。
 - 前端按媒体查询活动 Job，页面刷新后仍可恢复当前任务。
 - Flyway 管理数据库结构，新环境无需手工建表。
 
@@ -25,6 +26,7 @@
 - 浏览器通过 MinIO 预签名 URL 直接播放视频，支持 Range 请求与进度跳转。
 - 工作台按媒体恢复正在执行的分析任务，不依赖浏览器保存 `jobId`。
 - AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
+- 章节导航随播放进度高亮，点击章节可跳转到对应位置。
 - 字幕支持随播放高亮、点击跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
 - 视频问答 V1 将当前视频的全部字幕作为上下文；模型只返回 Segment ID，后端校验后再回填原文和时间戳，点击引用可以跳转播放。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
@@ -46,17 +48,20 @@ flowchart TD
     H -->|否| J[提取音频]
     J --> K[ASR 并持久化 Transcript]
     K --> L[基于 Transcript 生成 Summary]
-    L --> M[标记 SUCCEEDED]
+    L --> Q[生成并校验语义章节]
+    Q --> M[标记 SUCCEEDED]
 
     J -->|异常| N[RocketMQ 重试]
     K -->|异常| N
     L -->|异常| N
+    Q -->|异常| N
     N -->|超过上限| O[FAILED / DLQ]
 
     P[前端轮询 Job API] --> C
     P --> J
     P --> K
     P --> L
+    P --> Q
     P --> M
 ```
 
@@ -67,6 +72,7 @@ QUEUED
   → EXTRACTING_AUDIO
   → TRANSCRIBING
   → SUMMARIZING
+  → GENERATING_CHAPTERS
   → SUCCEEDED
 
 任一处理阶段异常 → RETRYING → 下一次消费
@@ -96,6 +102,7 @@ QUEUED
 | `GET` | `/media` | 查询当前用户的轻量媒体列表 |
 | `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
 | `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
+| `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
 | `POST` | `/media/{mediaId}/questions` | 基于当前视频字幕进行单轮问答 |
 | `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
 | `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
@@ -187,13 +194,13 @@ cd ../client
 npm run build
 ```
 
-当前 21 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验，以及“仅执行一次 ASR、基于已保存 Segment 生成总结”的主流程。
+当前 24 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验、章节锚点校验，以及“复用已保存 Segment、Summary 和 Chapter”的分析主流程。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
 - MinIO Multipart 直传、断点续传和真实上传进度。
 - URL 白名单、SSRF 防护、下载大小/时长限制和外部进程治理。
-- 基于时间戳 Segment 的自动章节与章节导航。
+- 章节人工编辑、合并拆分和播放器进度条标记。
 - 多轮问答、长视频检索/RAG，以及 OCR、关键帧和多模态理解。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

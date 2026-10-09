@@ -2,9 +2,11 @@ package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.server.dto.MediaDetailResponse;
+import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
 import com.example.server.dto.TranscriptSegmentResponse;
+import com.example.server.dto.VideoChapterResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.utils.MinioUtils;
@@ -31,6 +33,7 @@ public class MediaService {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final TranscriptService transcriptService;
+    private final ChapterService chapterService;
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
@@ -38,7 +41,8 @@ public class MediaService {
             YtDlpUtils ytDlpUtils,
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
-            TranscriptService transcriptService
+            TranscriptService transcriptService,
+            ChapterService chapterService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.minioUtils = minioUtils;
@@ -46,6 +50,7 @@ public class MediaService {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.transcriptService = transcriptService;
+        this.chapterService = chapterService;
     }
 
     public MediaListItemResponse upload(MultipartFile file, Long userId) {
@@ -151,6 +156,16 @@ public class MediaService {
                 mediaId,
                 transcriptService.listByMediaId(mediaId).stream()
                         .map(TranscriptSegmentResponse::from)
+                        .toList()
+        );
+    }
+
+    public MediaChaptersResponse getChapters(Long mediaId, Long userId) {
+        getOwnedMedia(mediaId, userId);
+        return new MediaChaptersResponse(
+                mediaId,
+                chapterService.listByMediaId(mediaId).stream()
+                        .map(VideoChapterResponse::from)
                         .toList()
         );
     }

@@ -4,8 +4,10 @@ import com.example.server.entity.AnalysisJob;
 import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
 import com.example.server.entity.TranscriptSegment;
+import com.example.server.entity.VideoChapter;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.ai.AudioExtractor;
+import com.example.server.service.ai.ChapterGenerator;
 import com.example.server.service.ai.ContentSummarizer;
 import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptionResult;
@@ -26,8 +28,10 @@ public class AiService {
     private final AudioExtractor audioExtractor;
     private final SpeechTranscriber speechTranscriber;
     private final ContentSummarizer contentSummarizer;
+    private final ChapterGenerator chapterGenerator;
     private final AnalysisJobService analysisJobService;
     private final TranscriptService transcriptService;
+    private final ChapterService chapterService;
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
     private final MinioUtils minioUtils;
@@ -37,8 +41,10 @@ public class AiService {
             AudioExtractor audioExtractor,
             SpeechTranscriber speechTranscriber,
             ContentSummarizer contentSummarizer,
+            ChapterGenerator chapterGenerator,
             AnalysisJobService analysisJobService,
             TranscriptService transcriptService,
+            ChapterService chapterService,
             StringRedisTemplate redisTemplate,
             RedissonClient redissonClient,
             MinioUtils minioUtils
@@ -47,8 +53,10 @@ public class AiService {
         this.audioExtractor = audioExtractor;
         this.speechTranscriber = speechTranscriber;
         this.contentSummarizer = contentSummarizer;
+        this.chapterGenerator = chapterGenerator;
         this.analysisJobService = analysisJobService;
         this.transcriptService = transcriptService;
+        this.chapterService = chapterService;
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
         this.minioUtils = minioUtils;
@@ -85,7 +93,7 @@ public class AiService {
             if (transcript.isBlank()) {
                 throw new IllegalStateException("Speech recognition returned an empty transcript");
             }
-            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 75);
+            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 70);
             String summary = mediaFile.getAiSummary();
             if (summary == null || summary.isBlank()) {
                 summary = contentSummarizer.summarize(transcript);
@@ -94,6 +102,12 @@ public class AiService {
                 }
                 mediaFile.setAiSummary(summary);
                 mediaFileMapper.updateById(mediaFile);
+            }
+
+            List<VideoChapter> chapters = chapterService.listByMediaId(mediaFile.getId());
+            if (chapters.isEmpty()) {
+                analysisJobService.markStage(jobId, AnalysisJobStatus.GENERATING_CHAPTERS, 90);
+                chapterService.replace(mediaFile.getId(), chapterGenerator.generate(segments));
             }
 
             analysisJobService.markSucceeded(jobId);

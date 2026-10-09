@@ -15,6 +15,11 @@ export const getMediaTranscript = async (mediaId, userId) => {
   return response.data
 }
 
+export const getMediaChapters = async (mediaId, userId) => {
+  const response = await http.get(`/media/${mediaId}/chapters`, { params: { userId } })
+  return response.data
+}
+
 export const askVideoQuestion = async (mediaId, userId, question) => {
   const response = await http.post(
     `/media/${mediaId}/questions`,

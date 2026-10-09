@@ -1,6 +1,7 @@
 package com.example.server.controller;
 
 import com.example.server.dto.MediaDetailResponse;
+import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
 import com.example.server.dto.VideoQuestionRequest;
@@ -99,6 +100,18 @@ public class MediaController {
     ) {
         try {
             return mediaService.getTranscript(mediaId, userId);
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
+        }
+    }
+
+    @GetMapping("/{mediaId}/chapters")
+    public MediaChaptersResponse getChapters(
+            @PathVariable Long mediaId,
+            @RequestParam Long userId
+    ) {
+        try {
+            return mediaService.getChapters(mediaId, userId);
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }
