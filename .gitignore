@@ -57,3 +57,4 @@ server/src/main/resources/application-local.yaml
 # Local review / planning notes
 /PROJECT_REVIEW.md
 /ASYNC_ANALYSIS_REFACTOR.md
+/docs/adr/

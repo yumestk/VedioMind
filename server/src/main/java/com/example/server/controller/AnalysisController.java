@@ -4,8 +4,12 @@ import com.example.server.dto.AnalysisJobResponse;
 import com.example.server.entity.AnalysisJob;
 import com.example.server.service.AnalysisJobService;
 import com.example.server.service.AnalysisSubmissionService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.MessagingException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -15,6 +19,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestController
 @RequestMapping("/analysis")
+@Slf4j
 public class AnalysisController {
 
     private final AnalysisSubmissionService submissionService;
@@ -52,5 +57,17 @@ public class AnalysisController {
         return analysisJobService.findLatestActive(mediaId)
                 .map(job -> ResponseEntity.ok(AnalysisJobResponse.from(job)))
                 .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    @ExceptionHandler(MessagingException.class)
+    public ProblemDetail handleRocketMqUnavailable(MessagingException exception) {
+        log.warn("RocketMQ rejected the analysis job submission: {}", exception.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "RocketMQ 暂时不可用，请确认 NameServer 和 Broker 已启动后重试。"
+        );
+        problem.setTitle("分析服务暂时不可用");
+        problem.setProperty("code", "ROCKETMQ_UNAVAILABLE");
+        return problem;
     }
 }

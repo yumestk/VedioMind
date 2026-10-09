@@ -118,6 +118,8 @@ QUEUED
 }
 ```
 
+RocketMQ 无法接收任务时，接口返回 HTTP `503 Service Unavailable` 和错误码 `ROCKETMQ_UNAVAILABLE`；前端会提示确认 NameServer 与 Broker 已启动后重试。
+
 ## 本地运行
 
 ### 1. 环境要求
@@ -135,6 +137,12 @@ docker compose up -d
 ```
 
 默认会启动 MySQL、Redis、MinIO、RocketMQ NameServer、Broker 和 Dashboard。端口见 [docker-compose.yml](docker-compose.yml)。
+
+演示前可确认 RocketMQ 两个核心容器均为 `Up`：
+
+```bash
+docker compose ps rmqnamesrv rmqbroker
+```
 
 ### 3. 配置后端
 
@@ -179,7 +187,7 @@ cd ../client
 npm run build
 ```
 
-当前 20 个后端测试覆盖事务消息提交/回查、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验，以及“仅执行一次 ASR、基于已保存 Segment 生成总结”的主流程。
+当前 21 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验，以及“仅执行一次 ASR、基于已保存 Segment 生成总结”的主流程。
 
 ## Roadmap
 
