@@ -67,7 +67,7 @@
       <div v-else class="media-grid">
         <article v-for="media in mediaList" :key="media.id" class="media-card" @click="openMedia(media.id)">
           <div class="media-visual">
-            <img v-if="media.coverUrl" :src="media.coverUrl" alt="" />
+            <img v-if="media.coverUrl" :src="media.coverUrl" alt="" referrerpolicy="no-referrer" />
             <span class="media-type">{{ mediaLabel(media) }}</span>
             <span class="play-mark">{{ media.playbackAvailable ? '▶' : '↗' }}</span>
           </div>
@@ -251,6 +251,8 @@ const mediaLabel = (media) => media.sourcePlatform || media.mimeType || 'VIDEO'
 .media-type { position: absolute; top: 14px; left: 14px; max-width: calc(100% - 28px); overflow: hidden; color: var(--muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .play-mark { position: relative; display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; background: rgba(5, 6, 8, .72); color: var(--accent); }
 .media-card-body { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
+.media-card-body > div { min-width: 0; flex: 1; }
+.media-card-body .icon-button { flex: 0 0 auto; }
 .media-card h3 { overflow: hidden; margin: 0 0 7px; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .media-card p { margin: 0; color: var(--muted); font-size: 11px; }
 .danger-hover:hover { border-color: var(--danger); color: var(--danger); }

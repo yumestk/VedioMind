@@ -1,6 +1,6 @@
 <template>
   <section class="external-card">
-    <img v-if="coverUrl" :src="coverUrl" alt="视频封面" />
+    <img v-if="coverUrl" :src="coverUrl" alt="视频封面" referrerpolicy="no-referrer" />
     <div class="external-overlay"></div>
     <div class="external-content">
       <span class="platform-badge">{{ platform || 'EXTERNAL' }}</span>
