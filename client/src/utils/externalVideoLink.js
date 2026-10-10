@@ -15,6 +15,8 @@ const bilibiliTimestamp = (seconds) => {
   ].join('')
 }
 
+let externalVideoWindow = null
+
 export const buildExternalVideoLink = (platform, sourceUrl, milliseconds) => {
   let url
   try {
@@ -35,4 +37,17 @@ export const buildExternalVideoLink = (platform, sourceUrl, milliseconds) => {
       return null
   }
   return url.toString()
+}
+
+export const openExternalVideoLink = (url) => {
+  if (externalVideoWindow && !externalVideoWindow.closed) {
+    externalVideoWindow.location.href = url
+    externalVideoWindow.focus()
+    return true
+  }
+
+  externalVideoWindow = window.open(url, '_blank')
+  if (!externalVideoWindow) return false
+  externalVideoWindow.opener = null
+  return true
 }

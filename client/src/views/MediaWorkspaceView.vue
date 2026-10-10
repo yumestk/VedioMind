@@ -107,7 +107,7 @@ import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { buildExternalVideoLink } from '../utils/externalVideoLink'
+import { buildExternalVideoLink, openExternalVideoLink } from '../utils/externalVideoLink'
 
 const props = defineProps({ mediaId: { type: String, required: true } })
 const { currentUser, openAuth } = useSession()
@@ -195,12 +195,9 @@ const seekTo = (milliseconds) => {
     return
   }
 
-  const opened = window.open(externalUrl, '_blank')
-  if (!opened) {
+  if (!openExternalVideoLink(externalUrl)) {
     showToast('浏览器阻止了新窗口，请允许弹窗后重试', 'error')
-    return
   }
-  opened.opener = null
 }
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '--'
