@@ -7,7 +7,7 @@
 ## 核心能力
 
 - 本地视频上传到 MinIO，或通过 yt-dlp 导入网络视频。
-- 视频内容工作台集成原生播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的视频问答。
+- 视频内容工作台集成原生播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结和语义章节。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
@@ -28,7 +28,8 @@
 - AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
 - 章节导航随播放进度高亮，点击章节可跳转到对应位置。
 - 字幕支持随播放高亮、点击跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
-- 视频问答 V1 将当前视频的全部字幕作为上下文；模型只返回 Segment ID，后端校验后再回填原文和时间戳，点击引用可以跳转播放。
+- 视频问答按媒体持久化会话、消息与引用快照，支持会话切换和刷新恢复；每次追问携带最近 6 轮对话帮助理解指代，但事实依据始终只来自当前视频的完整字幕。
+- 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击可以跳转播放。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
 
 ## 异步分析链路
@@ -103,7 +104,10 @@ QUEUED
 | `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
 | `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
 | `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
-| `POST` | `/media/{mediaId}/questions` | 基于当前视频字幕进行单轮问答 |
+| `GET` | `/media/{mediaId}/conversations` | 查询媒体的问答会话 |
+| `POST` | `/media/{mediaId}/conversations` | 创建问答会话 |
+| `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
+| `POST` | `/conversations/{conversationId}/messages` | 基于字幕进行带上下文的追问 |
 | `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
 | `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
 | `GET` | `/analysis/media/{mediaId}/active-job` | 查询媒体当前活动任务 |
@@ -194,7 +198,7 @@ cd ../client
 npm run build
 ```
 
-当前 24 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验、章节锚点校验，以及“复用已保存 Segment、Summary 和 Chapter”的分析主流程。
+当前 26 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、媒体类型识别、预签名播放地址、阿里云时间戳响应解析、问答引用校验、多轮上下文编排与并发保护、章节锚点校验，以及“复用已保存 Segment、Summary 和 Chapter”的分析主流程。
 
 ## Roadmap
 
@@ -202,5 +206,5 @@ npm run build
 - MinIO Multipart 直传、断点续传和真实上传进度。
 - URL 白名单、SSRF 防护、下载大小/时长限制和外部进程治理。
 - 章节人工编辑、合并拆分和播放器进度条标记。
-- 多轮问答、长视频检索/RAG，以及 OCR、关键帧和多模态理解。
+- 长视频检索/RAG，以及 OCR、关键帧和多模态理解。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

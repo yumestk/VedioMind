@@ -3,6 +3,8 @@ package com.example.server.service.ai.impl;
 import com.example.server.service.ai.ContentSummarizer;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Component
 public class DeepSeekContentSummarizer implements ContentSummarizer {
 
@@ -48,6 +50,6 @@ public class DeepSeekContentSummarizer implements ContentSummarizer {
             throw new IllegalArgumentException("Transcript must not be empty");
         }
 
-        return chatClient.chat(SYSTEM_PROMPT, transcript);
+        return chatClient.chat(SYSTEM_PROMPT, List.of(new DeepSeekMessage("user", transcript)));
     }
 }

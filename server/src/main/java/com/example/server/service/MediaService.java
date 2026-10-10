@@ -150,6 +150,10 @@ public class MediaService {
         return MediaDetailResponse.from(media, minioUtils.createReadUrl(media.getObjectKey()));
     }
 
+    public void requireOwnership(Long mediaId, Long userId) {
+        getOwnedMedia(mediaId, userId);
+    }
+
     public MediaTranscriptResponse getTranscript(Long mediaId, Long userId) {
         getOwnedMedia(mediaId, userId);
         return new MediaTranscriptResponse(

@@ -57,7 +57,7 @@ public class DeepSeekChapterGenerator implements ChapterGenerator {
 
         JSONObject response = parseResponse(chatClient.chat(
                 SYSTEM_PROMPT,
-                "字幕 JSON 数据：\n" + transcriptContext
+                List.of(new DeepSeekMessage("user", "字幕 JSON 数据：\n" + transcriptContext))
         ));
         JSONArray chapters = response.getJSONArray("chapters");
         if (chapters == null || chapters.isEmpty() || chapters.size() > MAX_CHAPTERS) {

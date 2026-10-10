@@ -69,7 +69,7 @@
               :filename="media.filename"
               @seek="seekTo"
             />
-            <QuestionPanel
+            <ConversationPanel
               v-show="activeTab === 'question'"
               :media-id="numericMediaId"
               :user-id="currentUser.id"
@@ -89,7 +89,7 @@ import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/med
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import ChapterPanel from '../components/ChapterPanel.vue'
-import QuestionPanel from '../components/QuestionPanel.vue'
+import ConversationPanel from '../components/ConversationPanel.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'

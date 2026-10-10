@@ -20,9 +20,24 @@ export const getMediaChapters = async (mediaId, userId) => {
   return response.data
 }
 
-export const askVideoQuestion = async (mediaId, userId, question) => {
+export const listVideoConversations = async (mediaId, userId) => {
+  const response = await http.get(`/media/${mediaId}/conversations`, { params: { userId } })
+  return response.data
+}
+
+export const createVideoConversation = async (mediaId, userId) => {
+  const response = await http.post(`/media/${mediaId}/conversations`, null, { params: { userId } })
+  return response.data
+}
+
+export const getConversationMessages = async (conversationId, userId) => {
+  const response = await http.get(`/conversations/${conversationId}/messages`, { params: { userId } })
+  return response.data
+}
+
+export const sendConversationMessage = async (conversationId, userId, question) => {
   const response = await http.post(
-    `/media/${mediaId}/questions`,
+    `/conversations/${conversationId}/messages`,
     { question },
     { params: { userId }, timeout: 5 * 60_000 }
   )

@@ -10,6 +10,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -26,7 +27,7 @@ class DeepSeekChapterGeneratorTest {
 
     @Test
     void derivesChapterTimesFromValidatedSegmentAnchors() {
-        when(chatClient.chat(anyString(), anyString())).thenReturn("""
+        when(chatClient.chat(anyString(), anyList())).thenReturn("""
                 ```json
                 {"chapters":[
                   {"title":"背景介绍","startSegmentId":11},
@@ -41,9 +42,10 @@ class DeepSeekChapterGeneratorTest {
                 new VideoChapterDraft("背景介绍", 1_000, 7_000),
                 new VideoChapterDraft("实现细节", 7_000, 10_000)
         );
-        ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-        verify(chatClient).chat(anyString(), prompt.capture());
-        assertThat(prompt.getValue()).contains(
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DeepSeekMessage>> messages = ArgumentCaptor.forClass(List.class);
+        verify(chatClient).chat(anyString(), messages.capture());
+        assertThat(messages.getValue().getFirst().content()).contains(
                 "\"segmentId\":11",
                 "\"startMs\":1000",
                 "\"text\":\"开场介绍\""
@@ -52,7 +54,7 @@ class DeepSeekChapterGeneratorTest {
 
     @Test
     void rejectsChapterAnchorsThatAreNotInTheTranscript() {
-        when(chatClient.chat(anyString(), anyString())).thenReturn("""
+        when(chatClient.chat(anyString(), anyList())).thenReturn("""
                 {"chapters":[{"title":"虚构章节","startSegmentId":999}]}
                 """);
 
@@ -63,7 +65,7 @@ class DeepSeekChapterGeneratorTest {
 
     @Test
     void requiresTheFirstChapterToCoverTheStartOfTheTranscript() {
-        when(chatClient.chat(anyString(), anyString())).thenReturn("""
+        when(chatClient.chat(anyString(), anyList())).thenReturn("""
                 {"chapters":[{"title":"跳过开场","startSegmentId":12}]}
                 """);
 

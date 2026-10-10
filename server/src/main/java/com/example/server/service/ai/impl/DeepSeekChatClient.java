@@ -11,6 +11,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -33,9 +35,9 @@ public class DeepSeekChatClient {
         this.baseUrl = baseUrl;
     }
 
-    public String chat(String systemPrompt, String userPrompt) {
-        if (systemPrompt == null || systemPrompt.isBlank() || userPrompt == null || userPrompt.isBlank()) {
-            throw new IllegalArgumentException("DeepSeek prompts must not be empty");
+    public String chat(String systemPrompt, List<DeepSeekMessage> conversation) {
+        if (systemPrompt == null || systemPrompt.isBlank() || conversation == null || conversation.isEmpty()) {
+            throw new IllegalArgumentException("DeepSeek messages must not be empty");
         }
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("DEEPSEEK_API_KEY is not configured");
@@ -47,7 +49,15 @@ public class DeepSeekChatClient {
 
         JSONArray messages = new JSONArray();
         messages.add(JSONObject.of("role", "system", "content", systemPrompt));
-        messages.add(JSONObject.of("role", "user", "content", userPrompt));
+        for (DeepSeekMessage message : conversation) {
+            if (message == null
+                    || !Set.of("user", "assistant").contains(message.role())
+                    || message.content() == null
+                    || message.content().isBlank()) {
+                throw new IllegalArgumentException("DeepSeek message is invalid");
+            }
+            messages.add(JSONObject.of("role", message.role(), "content", message.content()));
+        }
         bodyJson.put("messages", messages);
 
         Request request = new Request.Builder()
