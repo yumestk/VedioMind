@@ -37,12 +37,14 @@ import { computed } from 'vue'
 
 const props = defineProps({
   chapters: { type: Array, default: () => [] },
-  currentTimeMs: { type: Number, default: 0 }
+  currentTimeMs: { type: Number, default: 0 },
+  seekable: { type: Boolean, default: true }
 })
 
 defineEmits(['seek'])
 
 const activeChapterId = computed(() => {
+  if (!props.seekable) return null
   let left = 0
   let right = props.chapters.length - 1
   let active = null

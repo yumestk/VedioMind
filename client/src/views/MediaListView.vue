@@ -4,7 +4,7 @@
       <div class="hero-copy">
         <p class="eyebrow">VIDEO INTELLIGENCE WORKSPACE</p>
         <h1>让长视频变成<br><span>可理解的内容资产</span></h1>
-        <p class="hero-description">上传本地视频或导入网络内容，在后台完成转写与总结，并进入统一的视频内容工作台。</p>
+        <p class="hero-description">上传本地视频，或通过平台字幕解析公开视频链接，在统一工作台完成总结、章节与问答。</p>
       </div>
 
       <section class="upload-panel" :class="{ busy: uploading, dragover }">
@@ -12,7 +12,7 @@
           <div class="spinner"></div>
           <strong>{{ uploadLabel }}</strong>
           <div v-if="uploadProgress > 0" class="upload-progress"><span :style="{ width: `${uploadProgress}%` }"></span></div>
-          <small>{{ uploadProgress ? `${uploadProgress}%` : '正在处理远程资源' }}</small>
+          <small>{{ uploadProgress ? `${uploadProgress}%` : (uploadLabel === '正在解析平台字幕' ? '正在读取平台信息与字幕' : '正在准备上传') }}</small>
         </div>
         <div
           v-else
@@ -33,11 +33,12 @@
           <div class="upload-option url-option">
             <span class="option-index">02</span>
             <div class="url-content">
-              <strong>网络视频</strong>
+              <strong>链接分析</strong>
               <div class="url-row">
                 <input v-model.trim="videoUrl" placeholder="粘贴 Bilibili / YouTube 链接" @keyup.enter="uploadUrl" />
-                <button class="primary-button compact" @click="uploadUrl">导入</button>
+                <button class="primary-button compact" @click="uploadUrl">解析链接</button>
               </div>
+              <p>读取平台字幕，不下载视频；V1 不提供站内播放。</p>
             </div>
           </div>
         </div>
@@ -66,13 +67,14 @@
       <div v-else class="media-grid">
         <article v-for="media in mediaList" :key="media.id" class="media-card" @click="openMedia(media.id)">
           <div class="media-visual">
-            <span class="media-type">{{ media.mimeType || 'VIDEO' }}</span>
-            <span class="play-mark">▶</span>
+            <img v-if="media.coverUrl" :src="media.coverUrl" alt="" />
+            <span class="media-type">{{ mediaLabel(media) }}</span>
+            <span class="play-mark">{{ media.playbackAvailable ? '▶' : '↗' }}</span>
           </div>
           <div class="media-card-body">
             <div>
               <h3 :title="media.filename">{{ media.filename }}</h3>
-              <p>{{ formatDate(media.uploadTime) }} · {{ formatSize(media.fileSize) }}</p>
+              <p>{{ formatDate(media.uploadTime) }} · {{ media.sourceType === 'EXTERNAL_URL' ? '仅内容分析' : formatSize(media.fileSize) }}</p>
             </div>
             <button class="icon-button danger-hover" aria-label="删除视频" @click.stop="removeMedia(media)">×</button>
           </div>
@@ -86,6 +88,7 @@
 import { ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { deleteMedia, importMediaUrl, listMedia, uploadMedia } from '../api/media'
+import { submitAnalysis } from '../api/analysis'
 import { errorMessage } from '../api/http'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
@@ -170,11 +173,16 @@ const uploadUrl = async () => {
 
   uploading.value = true
   uploadProgress.value = 0
-  uploadLabel.value = '正在下载并导入网络视频'
+  uploadLabel.value = '正在解析平台字幕'
   try {
     const media = await importMediaUrl(videoUrl.value, currentUser.value.id)
     videoUrl.value = ''
-    showToast('导入完成，正在打开内容工作台')
+    try {
+      await submitAnalysis(media.id)
+      showToast('字幕导入完成，AI 分析已开始')
+    } catch (error) {
+      showToast(errorMessage(error, '字幕已保存，但 AI 任务提交失败，可在工作台重试'), 'error')
+    }
     await router.push({ name: 'media-workspace', params: { mediaId: media.id } })
   } catch (error) {
     showToast(errorMessage(error, '网络视频导入失败'), 'error')
@@ -202,6 +210,7 @@ const formatSize = (bytes) => {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
+const mediaLabel = (media) => media.sourcePlatform || media.mimeType || 'VIDEO'
 </script>
 
 <style scoped>
@@ -238,8 +247,9 @@ const formatSize = (bytes) => {
 .media-card { overflow: hidden; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); cursor: pointer; transition: transform .2s, border-color .2s; }
 .media-card:hover { transform: translateY(-4px); border-color: var(--border-strong); }
 .media-visual { position: relative; display: grid; aspect-ratio: 16 / 8; place-items: center; background: radial-gradient(circle at 70% 20%, rgba(197, 249, 70, .12), transparent 38%), linear-gradient(135deg, #1c2026, #0e1014); }
+.media-visual img { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .58; object-fit: cover; }
 .media-type { position: absolute; top: 14px; left: 14px; max-width: calc(100% - 28px); overflow: hidden; color: var(--muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
-.play-mark { display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--accent); }
+.play-mark { position: relative; display: grid; width: 48px; height: 48px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; background: rgba(5, 6, 8, .72); color: var(--accent); }
 .media-card-body { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
 .media-card h3 { overflow: hidden; margin: 0 0 7px; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
 .media-card p { margin: 0; color: var(--muted); font-size: 11px; }

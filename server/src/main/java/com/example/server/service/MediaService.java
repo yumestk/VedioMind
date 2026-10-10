@@ -9,15 +9,14 @@ import com.example.server.dto.TranscriptSegmentResponse;
 import com.example.server.dto.VideoChapterResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.service.external.ExternalVideoImportService;
 import com.example.server.utils.MinioUtils;
-import com.example.server.utils.YtDlpUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -25,11 +24,11 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class MediaService {
 
-    static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v2:user:";
+    static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v3:user:";
 
     private final MediaFileMapper mediaFileMapper;
     private final MinioUtils minioUtils;
-    private final YtDlpUtils ytDlpUtils;
+    private final ExternalVideoImportService externalVideoImportService;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final TranscriptService transcriptService;
@@ -38,7 +37,7 @@ public class MediaService {
     public MediaService(
             MediaFileMapper mediaFileMapper,
             MinioUtils minioUtils,
-            YtDlpUtils ytDlpUtils,
+            ExternalVideoImportService externalVideoImportService,
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
             TranscriptService transcriptService,
@@ -46,7 +45,7 @@ public class MediaService {
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.minioUtils = minioUtils;
-        this.ytDlpUtils = ytDlpUtils;
+        this.externalVideoImportService = externalVideoImportService;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.transcriptService = transcriptService;
@@ -80,35 +79,9 @@ public class MediaService {
 
     public MediaListItemResponse importFromUrl(String url, Long userId) {
         requireUserId(userId);
-        if (url == null || url.isBlank()) {
-            throw new IllegalArgumentException("Video URL must not be empty");
-        }
-
-        File temporaryFile = null;
-        String objectKey = null;
-        try {
-            temporaryFile = ytDlpUtils.downloadVideo(url);
-            String contentType = minioUtils.resolveContentType("video/mp4", temporaryFile.getName());
-            objectKey = minioUtils.upload(temporaryFile, contentType);
-
-            MediaFile media = createMedia(
-                    userId,
-                    "WEB_" + temporaryFile.getName(),
-                    objectKey,
-                    contentType,
-                    temporaryFile.length()
-            );
-            mediaFileMapper.insert(media);
-            invalidateList(userId);
-            return MediaListItemResponse.from(media);
-        } catch (Exception exception) {
-            removeCompensatingObject(objectKey, exception);
-            throw new IllegalStateException("Failed to import media from URL", exception);
-        } finally {
-            if (temporaryFile != null && temporaryFile.exists()) {
-                temporaryFile.delete();
-            }
-        }
+        MediaFile media = externalVideoImportService.importVideo(url, userId);
+        invalidateList(userId);
+        return MediaListItemResponse.from(media);
     }
 
     public List<MediaListItemResponse> list(Long userId) {
@@ -147,7 +120,10 @@ public class MediaService {
 
     public MediaDetailResponse getDetail(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
-        return MediaDetailResponse.from(media, minioUtils.createReadUrl(media.getObjectKey()));
+        String playbackUrl = media.getObjectKey() == null || media.getObjectKey().isBlank()
+                ? null
+                : minioUtils.createReadUrl(media.getObjectKey());
+        return MediaDetailResponse.from(media, playbackUrl);
     }
 
     public void requireOwnership(Long mediaId, Long userId) {
@@ -176,7 +152,9 @@ public class MediaService {
 
     public void delete(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
-        minioUtils.remove(media.getObjectKey());
+        if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
+            minioUtils.remove(media.getObjectKey());
+        }
         mediaFileMapper.deleteById(mediaId);
         invalidateList(userId);
     }
@@ -192,6 +170,7 @@ public class MediaService {
         media.setUserId(userId);
         media.setFilename(filename == null || filename.isBlank() ? objectKey : filename);
         media.setStatus("COMPLETED");
+        media.setSourceType("LOCAL_UPLOAD");
         media.setObjectKey(objectKey);
         media.setMimeType(mimeType);
         media.setFileSize(fileSize);

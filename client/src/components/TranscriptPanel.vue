@@ -5,7 +5,7 @@
         <span>⌕</span>
         <input v-model.trim="query" placeholder="搜索字幕内容" />
       </label>
-      <button class="secondary-button compact" :class="{ active: followPlayback }" @click="toggleFollow">
+      <button v-if="seekable" class="secondary-button compact" :class="{ active: followPlayback }" @click="toggleFollow">
         {{ followPlayback ? '跟随中' : '跟随播放' }}
       </button>
       <button class="secondary-button compact" @click="copyTranscript">复制</button>
@@ -41,7 +41,8 @@ import { useToast } from '../composables/useToast'
 const props = defineProps({
   segments: { type: Array, default: () => [] },
   currentTimeMs: { type: Number, default: 0 },
-  filename: { type: String, default: 'transcript' }
+  filename: { type: String, default: 'transcript' },
+  seekable: { type: Boolean, default: true }
 })
 
 defineEmits(['seek'])
@@ -58,6 +59,7 @@ const visibleSegments = computed(() => {
 })
 
 const activeSegmentId = computed(() => {
+  if (!props.seekable) return null
   let left = 0
   let right = props.segments.length - 1
   let candidate = null

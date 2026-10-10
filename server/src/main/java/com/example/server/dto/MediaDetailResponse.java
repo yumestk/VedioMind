@@ -12,6 +12,13 @@ public record MediaDetailResponse(
         Long fileSize,
         String coverUrl,
         String playbackUrl,
+        boolean playbackAvailable,
+        String sourceType,
+        String sourcePlatform,
+        String sourceUrl,
+        Long durationMs,
+        String transcriptSource,
+        String transcriptLanguage,
         String summary,
         LocalDateTime uploadTime
 ) {
@@ -24,6 +31,13 @@ public record MediaDetailResponse(
                 media.getFileSize(),
                 media.getCoverUrl(),
                 playbackUrl,
+                media.getObjectKey() != null && !media.getObjectKey().isBlank(),
+                media.getSourceType(),
+                media.getSourcePlatform(),
+                media.getSourceUrl(),
+                media.getDurationMs(),
+                media.getTranscriptSource(),
+                media.getTranscriptLanguage(),
                 media.getAiSummary(),
                 media.getUploadTime()
         );

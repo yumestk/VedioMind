@@ -56,10 +56,10 @@ export const uploadMedia = async (file, userId, onProgress) => {
 }
 
 export const importMediaUrl = async (url, userId) => {
-  const body = new FormData()
-  body.append('url', url)
-  body.append('userId', userId)
-  const response = await http.post('/media/upload-url', body, { timeout: 20 * 60_000 })
+  const response = await http.post('/media/import-url', { url }, {
+    params: { userId },
+    timeout: 2 * 60_000
+  })
   return response.data
 }
 

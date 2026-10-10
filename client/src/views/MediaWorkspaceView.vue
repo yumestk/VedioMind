@@ -23,8 +23,8 @@
           <h1>{{ media.filename }}</h1>
         </div>
         <div class="media-meta">
-          <span>{{ formatSize(media.fileSize) }}</span>
-          <span>{{ media.mimeType || '类型未知' }}</span>
+          <span>{{ media.sourcePlatform || formatSize(media.fileSize) }}</span>
+          <span>{{ media.sourceType === 'EXTERNAL_URL' ? transcriptSourceLabel(media.transcriptSource) : (media.mimeType || '类型未知') }}</span>
           <span>{{ formatDate(media.uploadTime) }}</span>
         </div>
       </header>
@@ -32,11 +32,19 @@
       <div class="workspace-grid">
         <div class="player-column">
           <VideoPlayer
+            v-if="media.playbackAvailable"
             ref="player"
             :src="media.playbackUrl"
             :poster="media.coverUrl"
             @time-update="currentTimeMs = $event"
           />
+          <ExternalSourceCard
+            v-else-if="media.sourceType === 'EXTERNAL_URL'"
+            :cover-url="media.coverUrl"
+            :platform="media.sourcePlatform"
+            :source-url="media.sourceUrl"
+          />
+          <VideoPlayer v-else :poster="media.coverUrl" />
           <AnalysisPanel
             :job="job"
             :running="running"
@@ -60,6 +68,7 @@
               v-show="activeTab === 'chapters'"
               :chapters="chapters"
               :current-time-ms="currentTimeMs"
+              :seekable="media.playbackAvailable"
               @seek="seekTo"
             />
             <TranscriptPanel
@@ -67,6 +76,7 @@
               :segments="transcriptSegments"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
+              :seekable="media.playbackAvailable"
               @seek="seekTo"
             />
             <ConversationPanel
@@ -90,6 +100,7 @@ import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import ChapterPanel from '../components/ChapterPanel.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
+import ExternalSourceCard from '../components/ExternalSourceCard.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
@@ -168,6 +179,10 @@ watch(currentUser, (user, previous) => {
 onMounted(initialize)
 
 const seekTo = (milliseconds) => {
+  if (!media.value?.playbackAvailable) {
+    showToast('该来源未缓存视频，暂不能在站内跳转，请打开原视频查看', 'error')
+    return
+  }
   player.value?.seekTo(milliseconds)
 }
 
@@ -177,6 +192,12 @@ const formatSize = (bytes) => {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
+const transcriptSourceLabel = (source) => ({
+  BILIBILI_MANUAL: '人工字幕',
+  BILIBILI_AI: 'AI 字幕',
+  YOUTUBE_MANUAL: '人工字幕',
+  YOUTUBE_AUTO: '自动字幕'
+})[source] || '平台字幕'
 </script>
 
 <style scoped>

@@ -11,6 +11,9 @@ public record MediaListItemResponse(
         String mimeType,
         Long fileSize,
         String coverUrl,
+        String sourceType,
+        String sourcePlatform,
+        boolean playbackAvailable,
         LocalDateTime uploadTime
 ) {
     public static MediaListItemResponse from(MediaFile media) {
@@ -21,6 +24,9 @@ public record MediaListItemResponse(
                 media.getMimeType(),
                 media.getFileSize(),
                 media.getCoverUrl(),
+                media.getSourceType(),
+                media.getSourcePlatform(),
+                media.getObjectKey() != null && !media.getObjectKey().isBlank(),
                 media.getUploadTime()
         );
     }

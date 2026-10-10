@@ -4,8 +4,8 @@ import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.service.external.ExternalVideoImportService;
 import com.example.server.utils.MinioUtils;
-import com.example.server.utils.YtDlpUtils;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -24,14 +24,14 @@ class MediaServiceTest {
 
     private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
     private final MinioUtils minioUtils = mock(MinioUtils.class);
-    private final YtDlpUtils ytDlpUtils = mock(YtDlpUtils.class);
+    private final ExternalVideoImportService externalVideoImportService = mock(ExternalVideoImportService.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final TranscriptService transcriptService = mock(TranscriptService.class);
     private final ChapterService chapterService = mock(ChapterService.class);
     private final MediaService mediaService = new MediaService(
             mediaFileMapper,
             minioUtils,
-            ytDlpUtils,
+            externalVideoImportService,
             redisTemplate,
             new ObjectMapper(),
             transcriptService,
@@ -93,5 +93,21 @@ class MediaServiceTest {
 
         assertThat(response.playbackUrl()).contains("signature=temporary");
         assertThat(response.filename()).isEqualTo("lesson.mp4");
+    }
+
+    @Test
+    void externalMediaDoesNotAskMinioForAPlaybackUrl() {
+        MediaFile media = new MediaFile();
+        media.setId(42L);
+        media.setUserId(7L);
+        media.setFilename("external video");
+        media.setSourceType("EXTERNAL_URL");
+        when(mediaFileMapper.selectOne(any())).thenReturn(media);
+
+        MediaDetailResponse response = mediaService.getDetail(42L, 7L);
+
+        assertThat(response.playbackUrl()).isNull();
+        assertThat(response.playbackAvailable()).isFalse();
+        verify(minioUtils, never()).createReadUrl(any());
     }
 }

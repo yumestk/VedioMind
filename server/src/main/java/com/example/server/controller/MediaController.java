@@ -2,16 +2,21 @@ package com.example.server.controller;
 
 import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaChaptersResponse;
+import com.example.server.dto.ExternalVideoImportRequest;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
 import com.example.server.service.MediaService;
+import com.example.server.service.external.ExternalVideoException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -43,18 +48,25 @@ public class MediaController {
         }
     }
 
-    @PostMapping("/upload-url")
-    public ResponseEntity<MediaListItemResponse> uploadUrl(
-            @RequestParam String url,
+    @PostMapping("/import-url")
+    public ResponseEntity<MediaListItemResponse> importUrl(
+            @RequestBody ExternalVideoImportRequest request,
             @RequestParam Long userId
     ) {
         try {
+            String url = request == null ? null : request.url();
             return ResponseEntity.status(HttpStatus.CREATED).body(mediaService.importFromUrl(url, userId));
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage(), exception);
-        } catch (IllegalStateException exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, exception.getMessage(), exception);
         }
+    }
+
+    @ExceptionHandler(ExternalVideoException.class)
+    public ProblemDetail handleExternalVideoException(ExternalVideoException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(exception.getStatus(), exception.getMessage());
+        problem.setTitle("视频链接解析失败");
+        problem.setProperty("code", exception.getCode());
+        return problem;
     }
 
     @GetMapping
