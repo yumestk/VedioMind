@@ -7,6 +7,7 @@
       <div>
         <p>该视频未缓存到本站</p>
         <h3>内容分析来自平台字幕</h3>
+        <small>点击章节、字幕时间或问答引用，将在原平台打开对应位置。</small>
       </div>
       <a class="primary-button" :href="sourceUrl" target="_blank" rel="noreferrer">打开原视频 ↗</a>
     </div>
@@ -29,5 +30,6 @@ defineProps({
 .platform-badge { padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 99px; color: var(--accent); font: 10px var(--mono); }
 .external-content p { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
 .external-content h3 { margin: 0; font-size: clamp(22px, 3vw, 34px); }
+.external-content small { display: block; max-width: 460px; margin-top: 9px; color: var(--muted); line-height: 1.6; }
 .external-content .primary-button { text-decoration: none; }
 </style>

@@ -68,7 +68,7 @@
               v-show="activeTab === 'chapters'"
               :chapters="chapters"
               :current-time-ms="currentTimeMs"
-              :seekable="media.playbackAvailable"
+              :playback-sync-enabled="media.playbackAvailable"
               @seek="seekTo"
             />
             <TranscriptPanel
@@ -76,7 +76,7 @@
               :segments="transcriptSegments"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
-              :seekable="media.playbackAvailable"
+              :playback-sync-enabled="media.playbackAvailable"
               @seek="seekTo"
             />
             <ConversationPanel
@@ -107,6 +107,7 @@ import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
+import { buildExternalVideoLink } from '../utils/externalVideoLink'
 
 const props = defineProps({ mediaId: { type: String, required: true } })
 const { currentUser, openAuth } = useSession()
@@ -179,11 +180,27 @@ watch(currentUser, (user, previous) => {
 onMounted(initialize)
 
 const seekTo = (milliseconds) => {
-  if (!media.value?.playbackAvailable) {
-    showToast('该来源未缓存视频，暂不能在站内跳转，请打开原视频查看', 'error')
+  if (media.value?.playbackAvailable) {
+    player.value?.seekTo(milliseconds)
     return
   }
-  player.value?.seekTo(milliseconds)
+
+  const externalUrl = buildExternalVideoLink(
+    media.value?.sourcePlatform,
+    media.value?.sourceUrl,
+    milliseconds
+  )
+  if (!externalUrl) {
+    showToast('无法生成原视频时间链接，请使用“打开原视频”按钮', 'error')
+    return
+  }
+
+  const opened = window.open(externalUrl, '_blank')
+  if (!opened) {
+    showToast('浏览器阻止了新窗口，请允许弹窗后重试', 'error')
+    return
+  }
+  opened.opener = null
 }
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '--'
