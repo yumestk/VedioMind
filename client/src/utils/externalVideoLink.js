@@ -15,7 +15,7 @@ const bilibiliTimestamp = (seconds) => {
   ].join('')
 }
 
-let externalVideoWindow = null
+const EXTERNAL_VIDEO_WINDOW = 'vediomind-external-video'
 
 export const buildExternalVideoLink = (platform, sourceUrl, milliseconds) => {
   let url
@@ -40,14 +40,13 @@ export const buildExternalVideoLink = (platform, sourceUrl, milliseconds) => {
 }
 
 export const openExternalVideoLink = (url) => {
-  if (externalVideoWindow && !externalVideoWindow.closed) {
-    externalVideoWindow.location.href = url
-    externalVideoWindow.focus()
-    return true
-  }
-
-  externalVideoWindow = window.open(url, '_blank')
+  const externalVideoWindow = window.open(url, EXTERNAL_VIDEO_WINDOW)
   if (!externalVideoWindow) return false
-  externalVideoWindow.opener = null
+  try {
+    externalVideoWindow.opener = null
+  } catch {
+    // A reused cross-origin window already had its opener removed when created.
+  }
+  externalVideoWindow.focus()
   return true
 }

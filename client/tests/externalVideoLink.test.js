@@ -25,27 +25,42 @@ test('builds platform timestamp links and rejects unsupported input', () => {
 
 test('reuses the external video window for later timestamps', () => {
   let openCount = 0
+  let createdWindowCount = 0
   let focusCount = 0
+  let opener = {}
   const videoWindow = {
     closed: false,
     location: { href: '' },
-    focus: () => { focusCount += 1 },
-    opener: {}
+    focus: () => { focusCount += 1 }
   }
+  Object.defineProperty(videoWindow, 'opener', {
+    get: () => opener,
+    set: (value) => {
+      if (openCount > 1) throw new DOMException('cross-origin window', 'SecurityError')
+      opener = value
+    }
+  })
+  const namedWindows = new Map()
   globalThis.window = {
-    open: (url) => {
+    open: (url, name) => {
       openCount += 1
-      videoWindow.location.href = url
-      return videoWindow
+      if (!namedWindows.has(name)) {
+        namedWindows.set(name, videoWindow)
+        createdWindowCount += 1
+      }
+      const opened = namedWindows.get(name)
+      opened.location.href = url
+      return opened
     }
   }
 
   assert.equal(openExternalVideoLink('https://example.com/video?t=10s'), true)
   assert.equal(openExternalVideoLink('https://example.com/video?t=20s'), true)
-  assert.equal(openCount, 1)
-  assert.equal(focusCount, 1)
+  assert.equal(openCount, 2)
+  assert.equal(createdWindowCount, 1)
+  assert.equal(focusCount, 2)
   assert.equal(videoWindow.location.href, 'https://example.com/video?t=20s')
-  assert.equal(videoWindow.opener, null)
+  assert.equal(opener, null)
 
   delete globalThis.window
 })
