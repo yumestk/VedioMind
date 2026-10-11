@@ -9,10 +9,16 @@
 
       <section class="upload-panel" :class="{ busy: uploading, dragover }">
         <div v-if="uploading" class="uploading-state">
-          <div class="spinner"></div>
+          <div v-if="!uploadPaused" class="spinner"></div>
+          <span v-else class="pause-mark">Ⅱ</span>
           <strong>{{ uploadLabel }}</strong>
           <div v-if="uploadProgress > 0" class="upload-progress"><span :style="{ width: `${uploadProgress}%` }"></span></div>
-          <small>{{ uploadProgress ? `${uploadProgress}%` : (uploadLabel === '正在解析平台字幕' ? '正在读取平台信息与字幕' : '正在准备上传') }}</small>
+          <small>{{ uploadStatus }}</small>
+          <div v-if="activeUploadKind === 'local'" class="upload-actions">
+            <button v-if="!uploadPaused" class="secondary-button" @click="pauseUpload">暂停</button>
+            <button v-else class="primary-button compact" @click="resumeUpload">继续</button>
+            <button class="secondary-button danger-hover" @click="cancelUpload">取消</button>
+          </div>
         </div>
         <div
           v-else
@@ -26,14 +32,14 @@
             <span class="option-index">01</span>
             <div>
               <strong>本地视频</strong>
-              <p>{{ dragover ? '松开即可上传' : '点击选择或拖拽视频文件' }}</p>
+              <p>{{ dragover ? '松开即可上传' : 'Study Mode · 大文件分片上传，重新选择同一文件可续传' }}</p>
             </div>
             <span class="option-arrow">↗</span>
           </label>
           <div class="upload-option url-option">
             <span class="option-index">02</span>
             <div class="url-content">
-              <strong>链接分析</strong>
+              <strong>快速解析</strong>
               <div class="url-row">
                 <input v-model.trim="videoUrl" placeholder="粘贴 Bilibili / YouTube 链接" @keyup.enter="uploadUrl" />
                 <button class="primary-button compact" @click="uploadUrl">解析链接</button>
@@ -85,13 +91,14 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { deleteMedia, importMediaUrl, listMedia, uploadMedia } from '../api/media'
+import { deleteMedia, importMediaUrl, listMedia } from '../api/media'
 import { submitAnalysis } from '../api/analysis'
 import { errorMessage } from '../api/http'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
+import { MultipartUploader } from '../utils/multipartUpload'
 
 const router = useRouter()
 const { currentUser, openAuth } = useSession()
@@ -101,8 +108,22 @@ const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const uploadLabel = ref('正在上传视频')
+const uploadSpeed = ref(0)
+const uploadEta = ref(null)
+const uploadPaused = ref(false)
+const activeUploadKind = ref(null)
 const dragover = ref(false)
 const videoUrl = ref('')
+let multipartUploader = null
+
+const uploadStatus = computed(() => {
+  if (activeUploadKind.value === 'url') return '正在读取平台信息与字幕'
+  if (uploadPaused.value) return `已上传 ${uploadProgress.value}% · 可继续或取消`
+  if (!uploadProgress.value) return '正在创建安全上传会话'
+  const speed = uploadSpeed.value ? ` · ${formatSpeed(uploadSpeed.value)}` : ''
+  const eta = uploadEta.value != null ? ` · 约 ${formatDuration(uploadEta.value)}` : ''
+  return `${uploadProgress.value}%${speed}${eta}`
+})
 
 const loadMedia = async () => {
   if (!currentUser.value) {
@@ -148,16 +169,62 @@ const handleDrop = (event) => {
 const uploadFile = async (file) => {
   if (!requireUser()) return
   uploading.value = true
+  activeUploadKind.value = 'local'
+  uploadPaused.value = false
   uploadProgress.value = 0
+  uploadSpeed.value = 0
+  uploadEta.value = null
   uploadLabel.value = `正在上传 ${file.name}`
+  multipartUploader = new MultipartUploader(file, currentUser.value.id, progress => {
+    uploadProgress.value = progress.percent
+    uploadSpeed.value = progress.speed
+    uploadEta.value = progress.eta
+  })
+  await runMultipartUpload()
+}
+
+const runMultipartUpload = async () => {
   try {
-    const media = await uploadMedia(file, currentUser.value.id, value => { uploadProgress.value = value })
+    const media = await multipartUploader.start()
+    if (!media) return
     showToast('上传完成，正在打开内容工作台')
+    uploading.value = false
+    activeUploadKind.value = null
+    multipartUploader = null
     await router.push({ name: 'media-workspace', params: { mediaId: media.id } })
   } catch (error) {
     showToast(errorMessage(error, '上传失败'), 'error')
-  } finally {
     uploading.value = false
+    activeUploadKind.value = null
+    multipartUploader = null
+  }
+}
+
+const pauseUpload = () => {
+  multipartUploader?.pause()
+  uploadPaused.value = true
+  uploadLabel.value = '上传已暂停'
+}
+
+const resumeUpload = async () => {
+  if (!multipartUploader) return
+  uploadPaused.value = false
+  uploadLabel.value = '正在继续上传'
+  await runMultipartUpload()
+}
+
+const cancelUpload = async () => {
+  try {
+    await multipartUploader?.cancel()
+    showToast('上传已取消')
+  } catch (error) {
+    showToast(errorMessage(error, '取消上传失败'), 'error')
+  } finally {
+    multipartUploader = null
+    uploading.value = false
+    activeUploadKind.value = null
+    uploadPaused.value = false
+    uploadProgress.value = 0
   }
 }
 
@@ -172,6 +239,7 @@ const uploadUrl = async () => {
   }
 
   uploading.value = true
+  activeUploadKind.value = 'url'
   uploadProgress.value = 0
   uploadLabel.value = '正在解析平台字幕'
   try {
@@ -210,7 +278,9 @@ const formatSize = (bytes) => {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
-const mediaLabel = (media) => media.sourcePlatform || media.mimeType || 'VIDEO'
+const formatSpeed = bytes => `${formatSize(bytes)}/s`
+const formatDuration = seconds => seconds < 60 ? `${seconds} 秒` : `${Math.ceil(seconds / 60)} 分钟`
+const mediaLabel = (media) => media.sourcePlatform || (media.analysisMode === 'STUDY' ? 'STUDY' : media.mimeType) || 'VIDEO'
 </script>
 
 <style scoped>
@@ -236,6 +306,8 @@ const mediaLabel = (media) => media.sourcePlatform || media.mimeType || 'VIDEO'
 .uploading-state small { color: var(--muted); }
 .upload-progress { overflow: hidden; width: min(320px, 70vw); height: 6px; border-radius: 10px; background: #2b2f35; }
 .upload-progress span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+.upload-actions { display: flex; gap: 10px; }
+.pause-mark { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid var(--border); border-radius: 50%; color: var(--accent); font-weight: 800; }
 .library-section { padding-top: 40px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
 .section-heading h2 { margin: 5px 0 0; font-size: 34px; }

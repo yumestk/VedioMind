@@ -18,6 +18,7 @@ public class MediaFile {
     private String filename;
     private String status;
     private String sourceType;
+    private String analysisMode;
     private String sourcePlatform;
     private String sourceUrl;
     private String externalId;

@@ -13,7 +13,6 @@ import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptSegmentDraft;
 import com.example.server.service.ai.TranscriptionResult;
 import com.example.server.service.ai.VideoChapterDraft;
-import com.example.server.utils.MinioUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
@@ -42,7 +41,7 @@ class AiServiceTest {
     private final ChapterService chapterService = mock(ChapterService.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
-    private final MinioUtils minioUtils = mock(MinioUtils.class);
+    private final ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
     private final RLock lock = mock(RLock.class);
 
     private AiService aiService;
@@ -60,7 +59,7 @@ class AiServiceTest {
                 chapterService,
                 redisTemplate,
                 redissonClient,
-                minioUtils
+                objectStorageService
         );
         when(redissonClient.getLock("lock:analysis-job:job-1")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
@@ -88,7 +87,7 @@ class AiServiceTest {
 
         when(mediaFileMapper.selectById(42L)).thenReturn(media);
         when(transcriptService.listByMediaId(42L)).thenReturn(List.of());
-        when(minioUtils.createReadUrl("video.mp4")).thenReturn("https://media/video.mp4");
+        when(objectStorageService.createReadUrl("video.mp4")).thenReturn("https://media/video.mp4");
         when(audioExtractor.extract("https://media/video.mp4")).thenReturn(audioFile);
         when(speechTranscriber.transcribe(audioFile)).thenReturn(result);
         when(transcriptService.replace(42L, result.segments())).thenReturn(persisted);

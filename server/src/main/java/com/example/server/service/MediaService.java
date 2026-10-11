@@ -10,12 +10,10 @@ import com.example.server.dto.VideoChapterResponse;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.external.ExternalVideoImportService;
-import com.example.server.utils.MinioUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -27,7 +25,7 @@ public class MediaService {
     static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v3:user:";
 
     private final MediaFileMapper mediaFileMapper;
-    private final MinioUtils minioUtils;
+    private final ObjectStorageService objectStorageService;
     private final ExternalVideoImportService externalVideoImportService;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
@@ -36,7 +34,7 @@ public class MediaService {
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
-            MinioUtils minioUtils,
+            ObjectStorageService objectStorageService,
             ExternalVideoImportService externalVideoImportService,
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
@@ -44,37 +42,12 @@ public class MediaService {
             ChapterService chapterService
     ) {
         this.mediaFileMapper = mediaFileMapper;
-        this.minioUtils = minioUtils;
+        this.objectStorageService = objectStorageService;
         this.externalVideoImportService = externalVideoImportService;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.transcriptService = transcriptService;
         this.chapterService = chapterService;
-    }
-
-    public MediaListItemResponse upload(MultipartFile file, Long userId) {
-        requireUserId(userId);
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("Upload file must not be empty");
-        }
-
-        String objectKey = null;
-        try {
-            objectKey = minioUtils.upload(file);
-            MediaFile media = createMedia(
-                    userId,
-                    file.getOriginalFilename(),
-                    objectKey,
-                    minioUtils.resolveContentType(file.getContentType(), file.getOriginalFilename()),
-                    file.getSize()
-            );
-            mediaFileMapper.insert(media);
-            invalidateList(userId);
-            return MediaListItemResponse.from(media);
-        } catch (Exception exception) {
-            removeCompensatingObject(objectKey, exception);
-            throw new IllegalStateException("Failed to upload media", exception);
-        }
     }
 
     public MediaListItemResponse importFromUrl(String url, Long userId) {
@@ -122,7 +95,7 @@ public class MediaService {
         MediaFile media = getOwnedMedia(mediaId, userId);
         String playbackUrl = media.getObjectKey() == null || media.getObjectKey().isBlank()
                 ? null
-                : minioUtils.createReadUrl(media.getObjectKey());
+                : objectStorageService.createReadUrl(media.getObjectKey());
         return MediaDetailResponse.from(media, playbackUrl);
     }
 
@@ -153,29 +126,47 @@ public class MediaService {
     public void delete(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
         if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
-            minioUtils.remove(media.getObjectKey());
+            objectStorageService.remove(media.getObjectKey());
         }
         mediaFileMapper.deleteById(mediaId);
         invalidateList(userId);
     }
 
-    private MediaFile createMedia(
+    MediaListItemResponse registerLocalUpload(
             Long userId,
             String filename,
             String objectKey,
             String mimeType,
             long fileSize
     ) {
+        requireUserId(userId);
+        MediaFile existing = mediaFileMapper.selectOne(
+                new LambdaQueryWrapper<MediaFile>().eq(MediaFile::getObjectKey, objectKey)
+        );
+        if (existing != null) {
+            if (!userId.equals(existing.getUserId())) {
+                throw new IllegalStateException("Media object is owned by another user");
+            }
+            return MediaListItemResponse.from(existing);
+        }
+
         MediaFile media = new MediaFile();
         media.setUserId(userId);
         media.setFilename(filename == null || filename.isBlank() ? objectKey : filename);
         media.setStatus("COMPLETED");
         media.setSourceType("LOCAL_UPLOAD");
+        media.setAnalysisMode("STUDY");
         media.setObjectKey(objectKey);
         media.setMimeType(mimeType);
         media.setFileSize(fileSize);
         media.setUploadTime(LocalDateTime.now());
-        return media;
+        mediaFileMapper.insert(media);
+        invalidateList(userId);
+        return MediaListItemResponse.from(media);
+    }
+
+    MediaListItemResponse getListItem(Long mediaId, Long userId) {
+        return MediaListItemResponse.from(getOwnedMedia(mediaId, userId));
     }
 
     private MediaFile getOwnedMedia(Long mediaId, Long userId) {
@@ -209,14 +200,4 @@ public class MediaService {
         return MEDIA_LIST_CACHE_PREFIX + userId;
     }
 
-    private void removeCompensatingObject(String objectKey, Exception originalException) {
-        if (objectKey == null) {
-            return;
-        }
-        try {
-            minioUtils.remove(objectKey);
-        } catch (Exception compensationException) {
-            originalException.addSuppressed(compensationException);
-        }
-    }
 }

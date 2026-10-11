@@ -11,7 +11,6 @@ import com.example.server.service.ai.ChapterGenerator;
 import com.example.server.service.ai.ContentSummarizer;
 import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptionResult;
-import com.example.server.utils.MinioUtils;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -34,7 +33,7 @@ public class AiService {
     private final ChapterService chapterService;
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
-    private final MinioUtils minioUtils;
+    private final ObjectStorageService objectStorageService;
 
     public AiService(
             MediaFileMapper mediaFileMapper,
@@ -47,7 +46,7 @@ public class AiService {
             ChapterService chapterService,
             StringRedisTemplate redisTemplate,
             RedissonClient redissonClient,
-            MinioUtils minioUtils
+            ObjectStorageService objectStorageService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.audioExtractor = audioExtractor;
@@ -59,7 +58,7 @@ public class AiService {
         this.chapterService = chapterService;
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
-        this.minioUtils = minioUtils;
+        this.objectStorageService = objectStorageService;
     }
 
     public void processAnalysisJob(String jobId, int retryCount) {
@@ -82,7 +81,7 @@ public class AiService {
             List<TranscriptSegment> segments = transcriptService.listByMediaId(mediaFile.getId());
             if (segments.isEmpty()) {
                 analysisJobService.markStage(jobId, AnalysisJobStatus.EXTRACTING_AUDIO, 20);
-                audioFile = audioExtractor.extract(minioUtils.createReadUrl(mediaFile.getObjectKey()));
+                audioFile = audioExtractor.extract(objectStorageService.createReadUrl(mediaFile.getObjectKey()));
 
                 analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 45);
                 TranscriptionResult transcription = speechTranscriber.transcribe(audioFile);

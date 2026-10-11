@@ -12,6 +12,7 @@ public record MediaListItemResponse(
         Long fileSize,
         String coverUrl,
         String sourceType,
+        String analysisMode,
         String sourcePlatform,
         boolean localPlaybackAvailable,
         LocalDateTime uploadTime
@@ -25,6 +26,7 @@ public record MediaListItemResponse(
                 media.getFileSize(),
                 media.getCoverUrl(),
                 media.getSourceType(),
+                media.getAnalysisMode(),
                 media.getSourcePlatform(),
                 media.getObjectKey() != null && !media.getObjectKey().isBlank(),
                 media.getUploadTime()

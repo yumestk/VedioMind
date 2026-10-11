@@ -6,7 +6,7 @@
 
 ## 核心能力
 
-- 本地视频上传到 MinIO；Bilibili/YouTube URL 只读取平台字幕，不下载完整视频。
+- 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结和语义章节。
@@ -102,7 +102,11 @@ QUEUED
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `POST` | `/media/upload` | 上传本地视频 |
+| `POST` | `/media/uploads` | 创建本地视频 Multipart 上传会话 |
+| `GET` | `/media/uploads/{sessionId}` | 查询上传会话与已上传分片 |
+| `POST` | `/media/uploads/{sessionId}/parts/{partNumber}/url` | 获取分片预签名上传地址 |
+| `POST` | `/media/uploads/{sessionId}/complete` | 校验分片、完成合并并创建媒体 |
+| `DELETE` | `/media/uploads/{sessionId}` | 取消上传 |
 | `POST` | `/media/import-url` | 通过 Bilibili/YouTube 平台字幕导入内容 |
 | `GET` | `/media` | 查询当前用户的轻量媒体列表 |
 | `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
@@ -173,6 +177,8 @@ export YTDLP_PATH=/path/to/yt-dlp
 
 数据库连接、MinIO、Redis 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。
 
+本地上传默认上限为 10 GiB，可通过 `MEDIA_UPLOAD_MAX_FILE_SIZE_BYTES` 修改。预签名地址必须使用浏览器能够访问的 MinIO 地址；远程部署时设置 `MINIO_PUBLIC_ENDPOINT` 与 `MINIO_CORS_ALLOW_ORIGIN`。若本机的 `9000/9001` 已被占用，可在启动 Compose 前设置 `MINIO_API_PORT` 与 `MINIO_CONSOLE_PORT`，并同步调整 `MINIO_ENDPOINT`、`MINIO_PUBLIC_ENDPOINT`。
+
 ### 4. 启动后端
 
 ```bash
@@ -203,12 +209,12 @@ npm test
 npm run build
 ```
 
-当前 31 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、对象上传补偿、预签名播放地址、阿里云时间戳响应解析、Bilibili/YouTube 字幕解析、URL 白名单与重定向复检、问答引用校验、多轮上下文编排、章节锚点校验，以及“复用已保存 Segment、Summary 和 Chapter”的分析主流程。
+当前 34 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、Bilibili/YouTube 字幕解析、URL 白名单与重定向复检、问答引用校验、多轮上下文编排、章节锚点校验，以及“复用已保存 Segment、Summary 和 Chapter”的分析主流程。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
-- MinIO Multipart 直传、断点续传和真实上传进度。
+- Study Mode 的章节关键帧、OCR 证据、长视频检索/RAG 和有限 Agent 编排。
 - 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。
 - 章节人工编辑、合并拆分和播放器进度条标记。
 - 长视频检索/RAG，以及 OCR、关键帧和多模态理解。

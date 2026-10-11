@@ -26,6 +26,7 @@ public class ExternalVideoStore {
         media.setFilename(truncate(resolved.title(), 500));
         media.setStatus("COMPLETED");
         media.setSourceType("EXTERNAL_URL");
+        media.setAnalysisMode("QUICK_INSIGHT");
         media.setSourcePlatform(resolved.platform());
         media.setSourceUrl(truncate(resolved.sourceUrl(), 1000));
         media.setExternalId(truncate(resolved.externalId(), 100));

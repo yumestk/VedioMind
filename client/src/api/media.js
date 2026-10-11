@@ -1,3 +1,4 @@
+import axios from 'axios'
 import http from './http'
 
 export const listMedia = async (userId) => {
@@ -44,15 +45,51 @@ export const sendConversationMessage = async (conversationId, userId, question) 
   return response.data
 }
 
-export const uploadMedia = async (file, userId, onProgress) => {
-  const body = new FormData()
-  body.append('file', file)
-  body.append('userId', userId)
-  const response = await http.post('/media/upload', body, {
-    timeout: 30 * 60_000,
-    onUploadProgress: ({ loaded, total }) => onProgress?.(total ? Math.round((loaded / total) * 100) : 0)
-  })
+export const initiateMediaUpload = async (file, userId) => {
+  const response = await http.post('/media/uploads', {
+    filename: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    fileSize: file.size
+  }, { params: { userId } })
   return response.data
+}
+
+export const getMediaUpload = async (sessionId, userId) => {
+  const response = await http.get(`/media/uploads/${sessionId}`, { params: { userId } })
+  return response.data
+}
+
+export const getMediaUploadPartUrl = async (sessionId, partNumber, userId) => {
+  const response = await http.post(
+    `/media/uploads/${sessionId}/parts/${partNumber}/url`,
+    null,
+    { params: { userId } }
+  )
+  return response.data
+}
+
+export const putMediaUploadPart = async (url, part, signal, onProgress) => {
+  const response = await axios.put(url, part, {
+    signal,
+    headers: { 'Content-Type': 'application/octet-stream' },
+    onUploadProgress: ({ loaded }) => onProgress?.(loaded)
+  })
+  const etag = response.headers.etag
+  if (!etag) throw new Error('对象存储未返回 ETag，请检查 MinIO CORS 配置')
+  return etag
+}
+
+export const completeMediaUpload = async (sessionId, userId, parts) => {
+  const response = await http.post(
+    `/media/uploads/${sessionId}/complete`,
+    { parts },
+    { params: { userId }, timeout: 2 * 60_000 }
+  )
+  return response.data
+}
+
+export const abortMediaUpload = async (sessionId, userId) => {
+  await http.delete(`/media/uploads/${sessionId}`, { params: { userId } })
 }
 
 export const importMediaUrl = async (url, userId) => {
