@@ -107,7 +107,7 @@ class MediaServiceTest {
         MediaDetailResponse response = mediaService.getDetail(42L, 7L);
 
         assertThat(response.playbackUrl()).isNull();
-        assertThat(response.playbackAvailable()).isFalse();
+        assertThat(response.localPlaybackAvailable()).isFalse();
         verify(minioUtils, never()).createReadUrl(any());
     }
 }

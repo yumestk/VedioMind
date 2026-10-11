@@ -38,7 +38,7 @@
                 <input v-model.trim="videoUrl" placeholder="粘贴 Bilibili / YouTube 链接" @keyup.enter="uploadUrl" />
                 <button class="primary-button compact" @click="uploadUrl">解析链接</button>
               </div>
-              <p>读取平台字幕，不下载视频；V1 不提供站内播放。</p>
+              <p>读取平台字幕，不下载视频；工作台使用官方嵌入播放器。</p>
             </div>
           </div>
         </div>
@@ -69,12 +69,12 @@
           <div class="media-visual">
             <img v-if="media.coverUrl" :src="media.coverUrl" alt="" referrerpolicy="no-referrer" />
             <span class="media-type">{{ mediaLabel(media) }}</span>
-            <span class="play-mark">{{ media.playbackAvailable ? '▶' : '↗' }}</span>
+            <span class="play-mark">{{ media.localPlaybackAvailable || media.sourceType === 'EXTERNAL_URL' ? '▶' : '↗' }}</span>
           </div>
           <div class="media-card-body">
             <div>
               <h3 :title="media.filename">{{ media.filename }}</h3>
-              <p>{{ formatDate(media.uploadTime) }} · {{ media.sourceType === 'EXTERNAL_URL' ? '仅内容分析' : formatSize(media.fileSize) }}</p>
+              <p>{{ formatDate(media.uploadTime) }} · {{ media.sourceType === 'EXTERNAL_URL' ? '平台字幕 · 内嵌播放' : formatSize(media.fileSize) }}</p>
             </div>
             <button class="icon-button danger-hover" aria-label="删除视频" @click.stop="removeMedia(media)">×</button>
           </div>

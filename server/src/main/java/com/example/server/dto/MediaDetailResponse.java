@@ -12,7 +12,7 @@ public record MediaDetailResponse(
         Long fileSize,
         String coverUrl,
         String playbackUrl,
-        boolean playbackAvailable,
+        boolean localPlaybackAvailable,
         String sourceType,
         String sourcePlatform,
         String sourceUrl,

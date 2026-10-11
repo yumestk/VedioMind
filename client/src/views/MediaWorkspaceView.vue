@@ -32,17 +32,18 @@
       <div class="workspace-grid">
         <div class="player-column">
           <VideoPlayer
-            v-if="media.playbackAvailable"
+            v-if="media.localPlaybackAvailable"
             ref="player"
             :src="media.playbackUrl"
             :poster="media.coverUrl"
             @time-update="currentTimeMs = $event"
           />
-          <ExternalSourceCard
+          <ExternalVideoPlayer
             v-else-if="media.sourceType === 'EXTERNAL_URL'"
             :cover-url="media.coverUrl"
             :platform="media.sourcePlatform"
             :source-url="media.sourceUrl"
+            :start-ms="externalStartMs"
           />
           <VideoPlayer v-else :poster="media.coverUrl" />
           <AnalysisPanel
@@ -68,7 +69,7 @@
               v-show="activeTab === 'chapters'"
               :chapters="chapters"
               :current-time-ms="currentTimeMs"
-              :playback-sync-enabled="media.playbackAvailable"
+              :playback-sync-enabled="media.localPlaybackAvailable"
               @seek="seekTo"
             />
             <TranscriptPanel
@@ -76,7 +77,7 @@
               :segments="transcriptSegments"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
-              :playback-sync-enabled="media.playbackAvailable"
+              :playback-sync-enabled="media.localPlaybackAvailable"
               @seek="seekTo"
             />
             <ConversationPanel
@@ -100,14 +101,14 @@ import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import ChapterPanel from '../components/ChapterPanel.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
-import ExternalSourceCard from '../components/ExternalSourceCard.vue'
+import ExternalVideoPlayer from '../components/ExternalVideoPlayer.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
 import TranscriptPanel from '../components/TranscriptPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { buildExternalVideoLink, openExternalVideoLink } from '../utils/externalVideoLink'
+import { buildExternalEmbedUrl } from '../utils/externalVideoEmbed'
 
 const props = defineProps({ mediaId: { type: String, required: true } })
 const { currentUser, openAuth } = useSession()
@@ -119,6 +120,7 @@ const activeTab = ref('summary')
 const transcriptSegments = ref([])
 const chapters = ref([])
 const currentTimeMs = ref(0)
+const externalStartMs = ref(null)
 const player = ref(null)
 const numericMediaId = Number(props.mediaId)
 
@@ -180,24 +182,21 @@ watch(currentUser, (user, previous) => {
 onMounted(initialize)
 
 const seekTo = (milliseconds) => {
-  if (media.value?.playbackAvailable) {
+  if (media.value?.localPlaybackAvailable) {
     player.value?.seekTo(milliseconds)
     return
   }
 
-  const externalUrl = buildExternalVideoLink(
+  const embedUrl = buildExternalEmbedUrl(
     media.value?.sourcePlatform,
     media.value?.sourceUrl,
     milliseconds
   )
-  if (!externalUrl) {
-    showToast('无法生成原视频时间链接，请使用“打开原视频”按钮', 'error')
+  if (!embedUrl) {
+    showToast('无法加载平台播放器，请使用“打开原视频”按钮', 'error')
     return
   }
-
-  if (!openExternalVideoLink(externalUrl)) {
-    showToast('浏览器阻止了新窗口，请允许弹窗后重试', 'error')
-  }
+  externalStartMs.value = milliseconds
 }
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '--'

@@ -13,7 +13,7 @@ public record MediaListItemResponse(
         String coverUrl,
         String sourceType,
         String sourcePlatform,
-        boolean playbackAvailable,
+        boolean localPlaybackAvailable,
         LocalDateTime uploadTime
 ) {
     public static MediaListItemResponse from(MediaFile media) {
