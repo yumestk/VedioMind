@@ -7,6 +7,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class VideoKeyframeExtractorTest {
 
     @Test
+    void rateLimitsSceneFramesWithoutRemovingThirtySecondFallback() {
+        assertThat(VideoKeyframeExtractor.FILTER)
+                .contains("gt(scene,0.35)*gte(t-prev_selected_t,3)")
+                .contains("gte(t-prev_selected_t,30)");
+    }
+
+    @Test
     void parsesSelectedFrameTimestampsFromFfmpegShowinfo() {
         String output = """
                 [Parsed_showinfo_2 @ 0x1] n:   0 pts:      0 pts_time:0 duration:1

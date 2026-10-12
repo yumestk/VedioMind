@@ -60,7 +60,9 @@ class VisualEvidenceServiceTest {
                         List.of(new VideoKeyframeExtractor.ExtractedFrame(imagePath, 12_000))
                 )
         );
-        when(ocrService.recognize(imagePath)).thenReturn("课程标题");
+        when(ocrService.recognize(imagePath)).thenReturn(
+                new TesseractOcrService.OcrResult("课程标题", 96.5, true)
+        );
 
         try {
             service.processAsync(42L, "https://media/video.mp4").join();
@@ -77,8 +79,53 @@ class VisualEvidenceServiceTest {
         );
         assertThat(frame.getValue().getOcrText()).isEqualTo("课程标题");
         assertThat(frame.getValue().getOcrStatus()).isEqualTo("SUCCEEDED");
+        assertThat(frame.getValue().getOcrConfidence()).isEqualTo(96.5);
         assertThat(evidence.get().getStatus()).isEqualTo("READY");
         assertThat(evidence.get().getFrameCount()).isEqualTo(1);
         assertThat(extractionDirectory).doesNotExist();
+    }
+
+    @Test
+    void persistsDetectedButUnreliableTextWithoutExposingIt() throws Exception {
+        MediaVisualEvidenceMapper evidenceMapper = mock(MediaVisualEvidenceMapper.class);
+        VideoKeyframeMapper keyframeMapper = mock(VideoKeyframeMapper.class);
+        VideoKeyframeExtractor extractor = mock(VideoKeyframeExtractor.class);
+        TesseractOcrService ocrService = mock(TesseractOcrService.class);
+        ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
+        VisualEvidenceService service = new VisualEvidenceService(
+                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService
+        );
+        AtomicReference<MediaVisualEvidence> evidence = new AtomicReference<>();
+        when(evidenceMapper.selectById(anyLong())).thenAnswer(invocation -> evidence.get());
+        doAnswer(invocation -> {
+            evidence.set(invocation.getArgument(0));
+            return 1;
+        }).when(evidenceMapper).insert(any(MediaVisualEvidence.class));
+        when(keyframeMapper.selectList(any())).thenReturn(List.of());
+
+        Path extractionDirectory = Files.createDirectory(directory.resolve("unreliable"));
+        Path imagePath = extractionDirectory.resolve("frame-000001.jpg");
+        ImageIO.write(new BufferedImage(16, 16, BufferedImage.TYPE_INT_RGB), "jpg", imagePath.toFile());
+        when(extractor.extract("https://media/noisy.mp4")).thenReturn(
+                new VideoKeyframeExtractor.Extraction(
+                        extractionDirectory,
+                        List.of(new VideoKeyframeExtractor.ExtractedFrame(imagePath, 1_000))
+                )
+        );
+        when(ocrService.recognize(imagePath)).thenReturn(
+                new TesseractOcrService.OcrResult("", 28.2, true)
+        );
+
+        try {
+            service.processAsync(43L, "https://media/noisy.mp4").join();
+        } finally {
+            service.shutdown();
+        }
+
+        ArgumentCaptor<VideoKeyframe> frame = ArgumentCaptor.forClass(VideoKeyframe.class);
+        verify(keyframeMapper).insert(frame.capture());
+        assertThat(frame.getValue().getOcrStatus()).isEqualTo("LOW_CONFIDENCE");
+        assertThat(frame.getValue().getOcrConfidence()).isEqualTo(28.2);
+        assertThat(frame.getValue().getOcrText()).isNull();
     }
 }

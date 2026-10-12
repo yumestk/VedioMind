@@ -32,6 +32,7 @@ public class VisualEvidenceService {
     private static final Logger log = LoggerFactory.getLogger(VisualEvidenceService.class);
     private static final String READY = "READY";
     private static final String OCR_SUCCEEDED = "SUCCEEDED";
+    private static final String OCR_LOW_CONFIDENCE = "LOW_CONFIDENCE";
     private static final String OCR_EMPTY = "EMPTY";
     private static final String OCR_FAILED = "FAILED";
 
@@ -80,6 +81,7 @@ public class VisualEvidenceService {
                                 frame.getTimestampMs(),
                                 objectStorageService.createReadUrl(frame.getObjectKey()),
                                 frame.getOcrStatus(),
+                                frame.getOcrConfidence(),
                                 frame.getOcrText()
                         ))
                         .toList()
@@ -139,10 +141,15 @@ public class VisualEvidenceService {
 
                 String ocrStatus;
                 String ocrText = null;
+                Double ocrConfidence = null;
                 try {
-                    ocrText = ocrService.recognize(extracted.path());
-                    ocrStatus = ocrText.isBlank() ? OCR_EMPTY : OCR_SUCCEEDED;
-                    if (!ocrText.isBlank()) {
+                    TesseractOcrService.OcrResult result = ocrService.recognize(extracted.path());
+                    ocrConfidence = result.confidence();
+                    ocrText = result.text().isBlank() ? null : result.text();
+                    ocrStatus = ocrText != null
+                            ? OCR_SUCCEEDED
+                            : result.detectedText() ? OCR_LOW_CONFIDENCE : OCR_EMPTY;
+                    if (ocrText != null) {
                         ocrTextCount++;
                     }
                 } catch (RuntimeException exception) {
@@ -153,7 +160,8 @@ public class VisualEvidenceService {
 
                 String objectKey = objectKey(mediaId, extracted.timestampMs());
                 objectStorageService.upload(extracted.path(), objectKey, "image/jpeg");
-                saveFrame(existing, mediaId, index, extracted.timestampMs(), objectKey, ocrStatus, ocrText);
+                saveFrame(existing, mediaId, index, extracted.timestampMs(), objectKey,
+                        ocrStatus, ocrConfidence, ocrText);
             }
 
             for (VideoKeyframe stale : existingByTimestamp.values()) {
@@ -199,6 +207,7 @@ public class VisualEvidenceService {
     private boolean isReusable(VideoKeyframe frame) {
         return frame != null
                 && !OCR_FAILED.equals(frame.getOcrStatus())
+                && frame.getOcrConfidence() != null
                 && objectStorageService.objectSize(frame.getObjectKey()) != null;
     }
 
@@ -209,6 +218,7 @@ public class VisualEvidenceService {
             long timestampMs,
             String objectKey,
             String ocrStatus,
+            Double ocrConfidence,
             String ocrText
     ) {
         VideoKeyframe target = frame == null ? new VideoKeyframe() : frame;
@@ -217,6 +227,7 @@ public class VisualEvidenceService {
         target.setTimestampMs(timestampMs);
         target.setObjectKey(objectKey);
         target.setOcrStatus(ocrStatus);
+        target.setOcrConfidence(ocrConfidence);
         target.setOcrText(ocrText);
         if (target.getId() == null) {
             target.setCreatedAt(LocalDateTime.now());

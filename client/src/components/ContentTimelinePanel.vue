@@ -71,8 +71,8 @@
                   loading="lazy"
                 />
                 <span class="keyframe-time">{{ formatTime(frame.timestampMs) }}</span>
-                <span v-if="frame.ocrText" class="keyframe-ocr">{{ frame.ocrText }}</span>
-                <span v-else class="keyframe-empty">{{ frame.ocrStatus === 'FAILED' ? 'OCR 未识别' : '画面无文字' }}</span>
+                <span v-if="frame.ocrStatus === 'SUCCEEDED' && frame.ocrText" class="keyframe-ocr">{{ frame.ocrText }}</span>
+                <span v-else class="keyframe-empty">{{ ocrPlaceholder(frame.ocrStatus) }}</span>
               </button>
             </div>
           </div>
@@ -228,6 +228,12 @@ const download = (extension) => {
 const formatRange = (section) => section
   ? `${formatTime(section.startMs)}–${formatTime(section.endMs)}`
   : '未分组'
+
+const ocrPlaceholder = (status) => {
+  if (status === 'LOW_CONFIDENCE') return '文字识别置信度不足'
+  if (status === 'FAILED') return 'OCR 未识别'
+  return '画面无文字'
+}
 
 const formatTime = (milliseconds) => {
   const totalSeconds = Math.floor(milliseconds / 1000)

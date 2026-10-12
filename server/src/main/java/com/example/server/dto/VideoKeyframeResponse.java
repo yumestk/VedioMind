@@ -6,6 +6,7 @@ public record VideoKeyframeResponse(
         Long timestampMs,
         String imageUrl,
         String ocrStatus,
+        Double ocrConfidence,
         String ocrText
 ) {
 }

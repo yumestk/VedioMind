@@ -16,7 +16,8 @@ import java.util.regex.Pattern;
 public class VideoKeyframeExtractor {
 
     private static final Pattern PTS_TIME = Pattern.compile("pts_time:\\s*([-+]?\\d+(?:\\.\\d+)?)");
-    private static final String FILTER = "select='eq(n,0)+gt(scene,0.35)+gte(t-prev_selected_t,30)',"
+    static final String FILTER = "select='eq(n,0)+gt(scene,0.35)*gte(t-prev_selected_t,3)"
+            + "+gte(t-prev_selected_t,30)',"
             + "scale='min(1280,iw)':-2,showinfo";
 
     private final String ffmpegDirectory;
