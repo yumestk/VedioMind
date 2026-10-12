@@ -7,7 +7,7 @@
 ## 核心能力
 
 - 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
-- Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；低置信度文字不会作为有效证据展示，图片、时间戳和 OCR 置信度分别持久化到 MinIO 与 MySQL。
+- Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结和语义章节。
@@ -15,6 +15,7 @@
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
+- 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
 - 章节生成只返回 Transcript Segment ID，后端校验锚点并派生章节时间；已保存章节在任务重试时直接复用。
@@ -31,7 +32,7 @@
 - AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
 - 章节导航随本地视频播放进度高亮；点击章节可跳转本地播放器或更新平台嵌入播放器的起始位置。
 - 字幕支持本地播放高亮、点击时间跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
-- 本地 Study 视频的关键帧和可信 OCR 按时间归入章节，点击视觉证据可直接跳转播放器；低置信度画面保留图片并标明识别不足，URL 视频因不下载原文件而不生成视觉证据。
+- 关键帧和 OCR 作为内部证据供后续检索、问答与 Agent 使用，不直接向普通用户展示原始 OCR 卡片；URL 视频因不下载原文件，其 VideoContext 明确标记视觉模态不适用。
 - 视频问答按媒体持久化会话、消息与引用快照，支持会话切换和刷新恢复；每次追问携带最近 6 轮对话帮助理解指代，但事实依据始终只来自当前视频的完整字幕。
 - 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击后按来源跳转本地播放器或平台嵌入播放器。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
@@ -52,13 +53,15 @@ flowchart TD
     H -->|是| I[幂等确认]
     H -->|否| V{本地 Study 视频?}
     V -->|是，并行| W[场景提帧 / dHash / OCR]
-    W --> X[关键帧写入 MinIO 与 MySQL]
+    W --> X[版本化关键帧写入 MinIO 与 MySQL]
     V --> R{已有 Transcript?}
     R -->|否| J[提取音频]
     J --> K[ASR 并持久化 Transcript]
     K --> Y[等待视觉证据完成]
     R -->|是| Y
     X --> Y
+    W -->|异常| Z[记录视觉告警与可恢复 Checkpoint]
+    Z --> Y
     Y --> L[基于 Transcript 生成 Summary]
     L --> Q[生成并校验语义章节]
     Q --> M[标记 SUCCEEDED]
@@ -67,8 +70,6 @@ flowchart TD
     K -->|异常| N
     L -->|异常| N
     Q -->|异常| N
-    W -->|异常| N
-    X -->|异常| N
     N -->|超过上限| O[FAILED / DLQ]
 
     P[前端轮询 Job API] --> C
@@ -123,7 +124,6 @@ QUEUED
 | `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
 | `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
 | `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
-| `GET` | `/media/{mediaId}/visual-evidence` | 查询本地 Study 视频的关键帧与 OCR 证据 |
 | `GET` | `/media/{mediaId}/conversations` | 查询媒体的问答会话 |
 | `POST` | `/media/{mediaId}/conversations` | 创建问答会话 |
 | `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
@@ -143,6 +143,7 @@ QUEUED
   "progress": 0,
   "retryCount": 0,
   "errorMessage": null,
+  "warningMessage": null,
   "createdAt": "2026-09-28T14:30:00",
   "startedAt": null,
   "finishedAt": null
@@ -223,7 +224,7 @@ npm test
 npm run build
 ```
 
-当前 44 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控与视觉证据持久化、Bilibili/YouTube 字幕解析、问答引用校验、多轮上下文编排、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 49 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、Bilibili/YouTube 字幕解析、问答引用校验、多轮上下文编排、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 
@@ -231,5 +232,5 @@ npm run build
 - Study Mode 的长视频检索/RAG、图片模型理解和有限 Agent 编排。
 - 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。
 - 章节人工编辑、合并拆分和播放器进度条标记。
-- 让问答和总结按需消费字幕、OCR 与关键帧，形成可检索的多模态 VideoContext。
+- 让问答和总结通过混合检索按需消费已建立的多模态 VideoContext。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

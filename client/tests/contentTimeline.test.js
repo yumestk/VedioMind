@@ -74,30 +74,3 @@ test('keeps empty chapters available for navigation', () => {
   assert.equal(timeline.length, 1)
   assert.deepEqual(timeline[0].paragraphs, [])
 })
-
-test('places visual evidence in chapters without changing sentence evidence', () => {
-  const chapters = [
-    { id: 10, title: '第一章', startMs: 0, endMs: 60_000 },
-    { id: 11, title: '第二章', startMs: 60_000, endMs: 120_000 }
-  ]
-  const keyframes = [
-    { id: 20, timestampMs: 15_000, imageUrl: 'frame-1.jpg' },
-    { id: 21, timestampMs: 75_000, imageUrl: 'frame-2.jpg' }
-  ]
-
-  const timeline = buildContentTimeline(chapters, [segment(1, 0, 10_000)], keyframes)
-
-  assert.deepEqual(timeline[0].keyframes.map(frame => frame.id), [20])
-  assert.deepEqual(timeline[1].keyframes.map(frame => frame.id), [21])
-  assert.deepEqual(timeline[0].paragraphs[0].segmentIds, [1])
-})
-
-test('builds fallback sections from visual evidence when transcript is unavailable', () => {
-  const timeline = buildContentTimeline([], [], [
-    { id: 20, timestampMs: 10_000 },
-    { id: 21, timestampMs: 310_000 }
-  ])
-
-  assert.deepEqual(timeline.map(section => section.startMs), [0, 300_000])
-  assert.deepEqual(timeline.map(section => section.keyframes.length), [1, 1])
-})

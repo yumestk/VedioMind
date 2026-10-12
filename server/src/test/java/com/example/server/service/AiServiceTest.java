@@ -95,7 +95,7 @@ class AiServiceTest {
         when(objectStorageService.createReadUrl("video.mp4")).thenReturn("https://media/video.mp4");
         when(audioExtractor.extract("https://media/video.mp4")).thenReturn(audioFile);
         when(speechTranscriber.transcribe(audioFile)).thenReturn(result);
-        when(transcriptService.replace(42L, result.segments())).thenReturn(persisted);
+        when(transcriptService.replace(42L, result.segments(), "ALIYUN_ASR")).thenReturn(persisted);
         when(transcriptService.joinText(persisted)).thenReturn("first sentence\nsecond sentence");
         when(contentSummarizer.summarize("first sentence\nsecond sentence")).thenReturn("the summary");
         List<VideoChapterDraft> chapterDrafts = List.of(
@@ -108,13 +108,13 @@ class AiServiceTest {
         verify(audioExtractor).extract("https://media/video.mp4");
         verify(visualEvidenceService).processAsync(42L, "https://media/video.mp4");
         verify(speechTranscriber).transcribe(audioFile);
-        verify(transcriptService).replace(42L, result.segments());
+        verify(transcriptService).replace(42L, result.segments(), "ALIYUN_ASR");
         verify(contentSummarizer).summarize("first sentence\nsecond sentence");
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.TRANSCRIBING, 40);
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 75);
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.GENERATING_CHAPTERS, 90);
         verify(chapterService).replace(42L, chapterDrafts);
-        verify(analysisJobService).markSucceeded("job-1");
+        verify(analysisJobService).markSucceeded("job-1", null);
         verify(redisTemplate).delete("media:list:v3:user:7");
     }
 
@@ -135,10 +135,10 @@ class AiServiceTest {
 
         verify(audioExtractor, never()).extract(any());
         verify(speechTranscriber, never()).transcribe(any());
-        verify(transcriptService, never()).replace(any(), any());
+        verify(transcriptService, never()).replace(any(), any(), any());
         verify(contentSummarizer, never()).summarize(any());
         verify(chapterGenerator, never()).generate(any());
-        verify(analysisJobService).markSucceeded("job-1");
+        verify(analysisJobService).markSucceeded("job-1", null);
     }
 
     @Test
@@ -161,7 +161,29 @@ class AiServiceTest {
 
         verify(visualEvidenceService, never()).processAsync(any(), any());
         verify(objectStorageService, never()).createReadUrl(any());
-        verify(analysisJobService).markSucceeded("job-1");
+        verify(analysisJobService).markSucceeded("job-1", null);
+    }
+
+    @Test
+    void visualEvidenceFailureDoesNotBlockTranscriptResults() {
+        MediaFile media = media();
+        media.setAiSummary("saved summary");
+        List<TranscriptSegment> persisted = List.of(
+                segment(1L, 0, 0, 1_500, "saved transcript")
+        );
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
+        when(transcriptService.listByMediaId(42L)).thenReturn(persisted);
+        when(transcriptService.joinText(persisted)).thenReturn("saved transcript");
+        when(chapterService.listByMediaId(42L)).thenReturn(List.of(new VideoChapter()));
+        when(visualEvidenceService.processAsync(any(), any()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("OCR unavailable")));
+
+        aiService.processAnalysisJob("job-1", 0);
+
+        verify(analysisJobService).markSucceeded(
+                "job-1",
+                "画面证据处理未完成，字幕总结、章节与问答仍可使用。"
+        );
     }
 
     private MediaFile media() {

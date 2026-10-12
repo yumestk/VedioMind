@@ -1,8 +1,6 @@
 package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.example.server.dto.MediaVisualEvidenceResponse;
-import com.example.server.dto.VideoKeyframeResponse;
 import com.example.server.entity.MediaVisualEvidence;
 import com.example.server.entity.VideoKeyframe;
 import com.example.server.mapper.MediaVisualEvidenceMapper;
@@ -11,6 +9,8 @@ import com.example.server.service.ai.impl.FrameDifferenceHash;
 import com.example.server.service.ai.impl.TesseractOcrService;
 import com.example.server.service.ai.impl.VideoKeyframeExtractor;
 import jakarta.annotation.PreDestroy;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -23,14 +23,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class VisualEvidenceService {
 
     private static final Logger log = LoggerFactory.getLogger(VisualEvidenceService.class);
     private static final String READY = "READY";
+    private static final String PARTIAL = "PARTIAL";
+    public static final int PROCESSOR_VERSION = 2;
     private static final String OCR_SUCCEEDED = "SUCCEEDED";
     private static final String OCR_LOW_CONFIDENCE = "LOW_CONFIDENCE";
     private static final String OCR_EMPTY = "EMPTY";
@@ -41,8 +46,13 @@ public class VisualEvidenceService {
     private final VideoKeyframeExtractor keyframeExtractor;
     private final TesseractOcrService ocrService;
     private final ObjectStorageService objectStorageService;
-    private final ExecutorService executor = Executors.newFixedThreadPool(
+    private final RedissonClient redissonClient;
+    private final ExecutorService executor = new ThreadPoolExecutor(
             2,
+            2,
+            0,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(8),
             Thread.ofPlatform().name("visual-evidence-", 0).factory()
     );
 
@@ -51,57 +61,59 @@ public class VisualEvidenceService {
             VideoKeyframeMapper keyframeMapper,
             VideoKeyframeExtractor keyframeExtractor,
             TesseractOcrService ocrService,
-            ObjectStorageService objectStorageService
+            ObjectStorageService objectStorageService,
+            RedissonClient redissonClient
     ) {
         this.evidenceMapper = evidenceMapper;
         this.keyframeMapper = keyframeMapper;
         this.keyframeExtractor = keyframeExtractor;
         this.ocrService = ocrService;
         this.objectStorageService = objectStorageService;
+        this.redissonClient = redissonClient;
     }
 
-    public CompletableFuture<Void> processAsync(Long mediaId, String videoUrl) {
+    public Future<Void> processAsync(Long mediaId, String videoUrl) {
         if (isReady(mediaId)) {
             return CompletableFuture.completedFuture(null);
         }
-        return CompletableFuture.runAsync(() -> process(mediaId, videoUrl), executor);
-    }
-
-    public MediaVisualEvidenceResponse get(Long mediaId) {
-        MediaVisualEvidence evidence = evidenceMapper.selectById(mediaId);
-        if (evidence == null) {
-            return new MediaVisualEvidenceResponse(mediaId, "NOT_STARTED", 0, null, List.of());
-        }
-
-        List<VideoKeyframeResponse> frames = READY.equals(evidence.getStatus())
-                ? listFrames(mediaId).stream()
-                        .map(frame -> new VideoKeyframeResponse(
-                                frame.getId(),
-                                frame.getFrameIndex(),
-                                frame.getTimestampMs(),
-                                objectStorageService.createReadUrl(frame.getObjectKey()),
-                                frame.getOcrStatus(),
-                                frame.getOcrConfidence(),
-                                frame.getOcrText()
-                        ))
-                        .toList()
-                : List.of();
-        return new MediaVisualEvidenceResponse(
-                mediaId,
-                evidence.getStatus(),
-                evidence.getFrameCount(),
-                evidence.getErrorMessage(),
-                frames
-        );
+        return executor.submit(() -> {
+            processWithLock(mediaId, videoUrl);
+            return null;
+        });
     }
 
     public void removeObjects(Long mediaId) {
-        listFrames(mediaId).forEach(frame -> objectStorageService.remove(frame.getObjectKey()));
+        RLock lock = redissonClient.getLock("lock:visual-evidence:" + mediaId);
+        lock.lock();
+        try {
+            listFrames(mediaId).forEach(frame -> objectStorageService.remove(frame.getObjectKey()));
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
     @PreDestroy
     void shutdown() {
         executor.shutdownNow();
+    }
+
+    private void processWithLock(Long mediaId, String videoUrl) {
+        RLock lock = redissonClient.getLock("lock:visual-evidence:" + mediaId);
+        boolean locked = false;
+        try {
+            lock.lockInterruptibly();
+            locked = true;
+            process(mediaId, videoUrl);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Visual evidence processing was interrupted", exception);
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
     }
 
     private void process(Long mediaId, String videoUrl) {
@@ -111,6 +123,7 @@ public class VisualEvidenceService {
         markProcessing(mediaId);
         VideoKeyframeExtractor.Extraction extraction = null;
         long startedAt = System.nanoTime();
+        QualityCounts counts = new QualityCounts();
         try {
             ocrService.ensureReady();
             extraction = keyframeExtractor.extract(videoUrl);
@@ -125,7 +138,6 @@ public class VisualEvidenceService {
             }
 
             Set<Long> selectedTimestamps = new HashSet<>();
-            int ocrTextCount = 0;
             for (int index = 0; index < retained.size(); index++) {
                 VideoKeyframeExtractor.ExtractedFrame extracted = retained.get(index);
                 selectedTimestamps.add(extracted.timestampMs());
@@ -133,9 +145,7 @@ public class VisualEvidenceService {
                 if (isReusable(existing)) {
                     existing.setFrameIndex(index);
                     keyframeMapper.updateById(existing);
-                    if (OCR_SUCCEEDED.equals(existing.getOcrStatus())) {
-                        ocrTextCount++;
-                    }
+                    counts.add(existing.getOcrStatus());
                     continue;
                 }
 
@@ -149,9 +159,6 @@ public class VisualEvidenceService {
                     ocrStatus = ocrText != null
                             ? OCR_SUCCEEDED
                             : result.detectedText() ? OCR_LOW_CONFIDENCE : OCR_EMPTY;
-                    if (ocrText != null) {
-                        ocrTextCount++;
-                    }
                 } catch (RuntimeException exception) {
                     ocrStatus = OCR_FAILED;
                     log.warn("OCR failed for media {} at {} ms: {}",
@@ -162,6 +169,7 @@ public class VisualEvidenceService {
                 objectStorageService.upload(extracted.path(), objectKey, "image/jpeg");
                 saveFrame(existing, mediaId, index, extracted.timestampMs(), objectKey,
                         ocrStatus, ocrConfidence, ocrText);
+                counts.add(ocrStatus);
             }
 
             for (VideoKeyframe stale : existingByTimestamp.values()) {
@@ -171,12 +179,12 @@ public class VisualEvidenceService {
                 }
             }
 
-            markReady(mediaId, retained.size());
+            markComplete(mediaId, retained.size(), counts);
             log.info("Visual evidence ready for media {}: {} candidates, {} retained, {} with OCR, {} ms",
                     mediaId,
                     extraction.frames().size(),
                     retained.size(),
-                    ocrTextCount,
+                    counts.usable,
                     (System.nanoTime() - startedAt) / 1_000_000);
         } catch (RuntimeException exception) {
             markFailed(mediaId, conciseMessage(exception));
@@ -207,6 +215,7 @@ public class VisualEvidenceService {
     private boolean isReusable(VideoKeyframe frame) {
         return frame != null
                 && !OCR_FAILED.equals(frame.getOcrStatus())
+                && Integer.valueOf(PROCESSOR_VERSION).equals(frame.getProcessorVersion())
                 && frame.getOcrConfidence() != null
                 && objectStorageService.objectSize(frame.getObjectKey()) != null;
     }
@@ -227,6 +236,7 @@ public class VisualEvidenceService {
         target.setTimestampMs(timestampMs);
         target.setObjectKey(objectKey);
         target.setOcrStatus(ocrStatus);
+        target.setProcessorVersion(PROCESSOR_VERSION);
         target.setOcrConfidence(ocrConfidence);
         target.setOcrText(ocrText);
         if (target.getId() == null) {
@@ -247,7 +257,9 @@ public class VisualEvidenceService {
 
     private boolean isReady(Long mediaId) {
         MediaVisualEvidence evidence = evidenceMapper.selectById(mediaId);
-        return evidence != null && READY.equals(evidence.getStatus());
+        return evidence != null
+                && READY.equals(evidence.getStatus())
+                && Integer.valueOf(PROCESSOR_VERSION).equals(evidence.getProcessorVersion());
     }
 
     private void markProcessing(Long mediaId) {
@@ -257,13 +269,25 @@ public class VisualEvidenceService {
             evidence = new MediaVisualEvidence();
             evidence.setMediaId(mediaId);
             evidence.setStatus("PROCESSING");
+            evidence.setProcessorVersion(PROCESSOR_VERSION);
+            evidence.setRevision(0);
             evidence.setFrameCount(0);
+            evidence.setUsableOcrCount(0);
+            evidence.setLowConfidenceCount(0);
+            evidence.setEmptyOcrCount(0);
+            evidence.setFailedOcrCount(0);
             evidence.setStartedAt(now);
             evidence.setUpdatedAt(now);
             evidenceMapper.insert(evidence);
             return;
         }
         evidence.setStatus("PROCESSING");
+        evidence.setProcessorVersion(PROCESSOR_VERSION);
+        evidence.setFrameCount(0);
+        evidence.setUsableOcrCount(0);
+        evidence.setLowConfidenceCount(0);
+        evidence.setEmptyOcrCount(0);
+        evidence.setFailedOcrCount(0);
         evidence.setErrorMessage(null);
         evidence.setStartedAt(now);
         evidence.setFinishedAt(null);
@@ -271,11 +295,17 @@ public class VisualEvidenceService {
         evidenceMapper.updateById(evidence);
     }
 
-    private void markReady(Long mediaId, int frameCount) {
+    private void markComplete(Long mediaId, int frameCount, QualityCounts counts) {
         MediaVisualEvidence evidence = evidenceMapper.selectById(mediaId);
         LocalDateTime now = LocalDateTime.now();
-        evidence.setStatus(READY);
+        evidence.setStatus(counts.failed > 0 ? PARTIAL : READY);
+        evidence.setProcessorVersion(PROCESSOR_VERSION);
+        evidence.setRevision(evidence.getRevision() == null ? 1 : evidence.getRevision() + 1);
         evidence.setFrameCount(frameCount);
+        evidence.setUsableOcrCount(counts.usable);
+        evidence.setLowConfidenceCount(counts.lowConfidence);
+        evidence.setEmptyOcrCount(counts.empty);
+        evidence.setFailedOcrCount(counts.failed);
         evidence.setErrorMessage(null);
         evidence.setFinishedAt(now);
         evidence.setUpdatedAt(now);
@@ -305,5 +335,22 @@ public class VisualEvidenceService {
             message = throwable.getClass().getSimpleName();
         }
         return message.length() <= 2000 ? message : message.substring(0, 2000);
+    }
+
+    private static final class QualityCounts {
+        private int usable;
+        private int lowConfidence;
+        private int empty;
+        private int failed;
+
+        private void add(String status) {
+            switch (status) {
+                case OCR_SUCCEEDED -> usable++;
+                case OCR_LOW_CONFIDENCE -> lowConfidence++;
+                case OCR_EMPTY -> empty++;
+                case OCR_FAILED -> failed++;
+                default -> throw new IllegalArgumentException("Unknown OCR status: " + status);
+            }
+        }
     }
 }

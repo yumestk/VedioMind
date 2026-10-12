@@ -81,6 +81,7 @@ public class AnalysisJobService {
                 .set(AnalysisJob::getProgress, 10)
                 .set(AnalysisJob::getRetryCount, retryCount)
                 .set(AnalysisJob::getErrorMessage, null)
+                .set(AnalysisJob::getWarningMessage, null)
                 .set(AnalysisJob::getStartedAt, now)
                 .set(AnalysisJob::getUpdatedAt, now);
         return analysisJobMapper.update(null, update) == 1;
@@ -111,7 +112,7 @@ public class AnalysisJobService {
         analysisJobMapper.update(null, update);
     }
 
-    public void markSucceeded(String jobId) {
+    public void markSucceeded(String jobId, String warningMessage) {
         LocalDateTime now = LocalDateTime.now();
         LambdaUpdateWrapper<AnalysisJob> update = new LambdaUpdateWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getId, jobId)
@@ -119,6 +120,7 @@ public class AnalysisJobService {
                 .set(AnalysisJob::getStatus, AnalysisJobStatus.SUCCEEDED.name())
                 .set(AnalysisJob::getProgress, 100)
                 .set(AnalysisJob::getErrorMessage, null)
+                .set(AnalysisJob::getWarningMessage, warningMessage)
                 .set(AnalysisJob::getFinishedAt, now)
                 .set(AnalysisJob::getUpdatedAt, now);
         analysisJobMapper.update(null, update);

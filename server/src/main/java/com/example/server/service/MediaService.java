@@ -5,7 +5,6 @@ import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
-import com.example.server.dto.MediaVisualEvidenceResponse;
 import com.example.server.dto.TranscriptSegmentResponse;
 import com.example.server.dto.VideoChapterResponse;
 import com.example.server.entity.MediaFile;
@@ -125,11 +124,6 @@ public class MediaService {
                         .map(VideoChapterResponse::from)
                         .toList()
         );
-    }
-
-    public MediaVisualEvidenceResponse getVisualEvidence(Long mediaId, Long userId) {
-        getOwnedMedia(mediaId, userId);
-        return visualEvidenceService.get(mediaId);
     }
 
     public void delete(Long mediaId, Long userId) {

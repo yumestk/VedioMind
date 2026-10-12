@@ -36,7 +36,7 @@ public class ExternalVideoStore {
         media.setCoverUrl(truncate(resolved.coverUrl(), 1000));
         media.setUploadTime(LocalDateTime.now());
         mediaFileMapper.insert(media);
-        transcriptService.replace(media.getId(), resolved.segments());
+        transcriptService.replace(media.getId(), resolved.segments(), resolved.transcriptSource());
         return media;
     }
 

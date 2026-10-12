@@ -1,7 +1,10 @@
 package com.example.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.example.server.entity.MediaFile;
 import com.example.server.entity.TranscriptSegment;
+import com.example.server.mapper.MediaFileMapper;
 import com.example.server.mapper.TranscriptSegmentMapper;
 import com.example.server.service.ai.TranscriptSegmentDraft;
 import org.springframework.stereotype.Service;
@@ -14,9 +17,14 @@ import java.util.stream.Collectors;
 public class TranscriptService {
 
     private final TranscriptSegmentMapper transcriptSegmentMapper;
+    private final MediaFileMapper mediaFileMapper;
 
-    public TranscriptService(TranscriptSegmentMapper transcriptSegmentMapper) {
+    public TranscriptService(
+            TranscriptSegmentMapper transcriptSegmentMapper,
+            MediaFileMapper mediaFileMapper
+    ) {
         this.transcriptSegmentMapper = transcriptSegmentMapper;
+        this.mediaFileMapper = mediaFileMapper;
     }
 
     public List<TranscriptSegment> listByMediaId(Long mediaId) {
@@ -28,9 +36,16 @@ public class TranscriptService {
     }
 
     @Transactional
-    public List<TranscriptSegment> replace(Long mediaId, List<TranscriptSegmentDraft> drafts) {
+    public List<TranscriptSegment> replace(
+            Long mediaId,
+            List<TranscriptSegmentDraft> drafts,
+            String transcriptSource
+    ) {
         if (drafts == null || drafts.isEmpty()) {
             throw new IllegalArgumentException("Transcript segments must not be empty");
+        }
+        if (transcriptSource == null || transcriptSource.isBlank()) {
+            throw new IllegalArgumentException("Transcript source must not be empty");
         }
 
         transcriptSegmentMapper.delete(
@@ -48,6 +63,13 @@ public class TranscriptService {
             segment.setText(draft.text());
             transcriptSegmentMapper.insert(segment);
         }
+        mediaFileMapper.update(
+                null,
+                new UpdateWrapper<MediaFile>()
+                        .eq("id", mediaId)
+                        .set("transcript_source", transcriptSource)
+                        .setSql("transcript_revision = transcript_revision + 1")
+        );
         return listByMediaId(mediaId);
     }
 

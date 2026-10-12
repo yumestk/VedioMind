@@ -45,7 +45,7 @@ const groupParagraphs = (segments) => {
   return paragraphs
 }
 
-const chapterSections = (chapters, segments, keyframes) => {
+const chapterSections = (chapters, segments) => {
   const sections = chapters.map((chapter, index) => ({
     id: `chapter-${chapter.id}`,
     index,
@@ -53,8 +53,7 @@ const chapterSections = (chapters, segments, keyframes) => {
     startMs: chapter.startMs,
     endMs: chapter.endMs,
     synthetic: false,
-    segments: [],
-    keyframes: []
+    segments: []
   }))
 
   let sectionIndex = 0
@@ -67,20 +66,10 @@ const chapterSections = (chapters, segments, keyframes) => {
     }
     sections[sectionIndex].segments.push(segment)
   }
-  sectionIndex = 0
-  for (const keyframe of keyframes) {
-    while (
-      sectionIndex < sections.length - 1
-      && keyframe.timestampMs >= sections[sectionIndex + 1].startMs
-    ) {
-      sectionIndex++
-    }
-    sections[sectionIndex].keyframes.push(keyframe)
-  }
   return sections
 }
 
-const fallbackSections = (segments, keyframes) => {
+const fallbackSections = (segments) => {
   const sectionsByStart = new Map()
   const sectionFor = (timestampMs) => {
     const bucketStart = Math.floor(timestampMs / FALLBACK_SECTION_MS) * FALLBACK_SECTION_MS
@@ -92,30 +81,27 @@ const fallbackSections = (segments, keyframes) => {
         startMs: bucketStart,
         endMs: bucketStart + FALLBACK_SECTION_MS,
         synthetic: true,
-        segments: [],
-        keyframes: []
+        segments: []
       })
     }
     return sectionsByStart.get(bucketStart)
   }
 
   for (const segment of segments) sectionFor(segment.startMs).segments.push(segment)
-  for (const keyframe of keyframes) sectionFor(keyframe.timestampMs).keyframes.push(keyframe)
 
   return [...sectionsByStart.values()]
     .sort((left, right) => left.startMs - right.startMs)
     .map((section, index) => ({ ...section, index }))
 }
 
-export const buildContentTimeline = (chapters = [], transcriptSegments = [], videoKeyframes = []) => {
+export const buildContentTimeline = (chapters = [], transcriptSegments = []) => {
   const segments = [...transcriptSegments].sort((left, right) => left.startMs - right.startMs)
   const sortedChapters = [...chapters].sort((left, right) => left.startMs - right.startMs)
-  const keyframes = [...videoKeyframes].sort((left, right) => left.timestampMs - right.timestampMs)
-  if (!segments.length && !sortedChapters.length && !keyframes.length) return []
+  if (!segments.length && !sortedChapters.length) return []
 
   const sections = sortedChapters.length
-    ? chapterSections(sortedChapters, segments, keyframes)
-    : fallbackSections(segments, keyframes)
+    ? chapterSections(sortedChapters, segments)
+    : fallbackSections(segments)
 
   return sections.map(({ segments: sectionSegments, ...section }) => ({
     ...section,

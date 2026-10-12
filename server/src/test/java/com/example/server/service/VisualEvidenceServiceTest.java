@@ -9,6 +9,8 @@ import com.example.server.service.ai.impl.VideoKeyframeExtractor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 
 import javax.imageio.ImageIO;
 import java.awt.Color;
@@ -38,8 +40,9 @@ class VisualEvidenceServiceTest {
         VideoKeyframeExtractor extractor = mock(VideoKeyframeExtractor.class);
         TesseractOcrService ocrService = mock(TesseractOcrService.class);
         ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
+        RedissonClient redissonClient = redisson();
         VisualEvidenceService service = new VisualEvidenceService(
-                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService
+                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService, redissonClient
         );
         AtomicReference<MediaVisualEvidence> evidence = new AtomicReference<>();
         when(evidenceMapper.selectById(anyLong())).thenAnswer(invocation -> evidence.get());
@@ -65,7 +68,7 @@ class VisualEvidenceServiceTest {
         );
 
         try {
-            service.processAsync(42L, "https://media/video.mp4").join();
+            service.processAsync(42L, "https://media/video.mp4").get();
         } finally {
             service.shutdown();
         }
@@ -80,8 +83,10 @@ class VisualEvidenceServiceTest {
         assertThat(frame.getValue().getOcrText()).isEqualTo("课程标题");
         assertThat(frame.getValue().getOcrStatus()).isEqualTo("SUCCEEDED");
         assertThat(frame.getValue().getOcrConfidence()).isEqualTo(96.5);
+        assertThat(frame.getValue().getProcessorVersion()).isEqualTo(2);
         assertThat(evidence.get().getStatus()).isEqualTo("READY");
         assertThat(evidence.get().getFrameCount()).isEqualTo(1);
+        assertThat(evidence.get().getUsableOcrCount()).isEqualTo(1);
         assertThat(extractionDirectory).doesNotExist();
     }
 
@@ -92,8 +97,9 @@ class VisualEvidenceServiceTest {
         VideoKeyframeExtractor extractor = mock(VideoKeyframeExtractor.class);
         TesseractOcrService ocrService = mock(TesseractOcrService.class);
         ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
+        RedissonClient redissonClient = redisson();
         VisualEvidenceService service = new VisualEvidenceService(
-                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService
+                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService, redissonClient
         );
         AtomicReference<MediaVisualEvidence> evidence = new AtomicReference<>();
         when(evidenceMapper.selectById(anyLong())).thenAnswer(invocation -> evidence.get());
@@ -117,7 +123,7 @@ class VisualEvidenceServiceTest {
         );
 
         try {
-            service.processAsync(43L, "https://media/noisy.mp4").join();
+            service.processAsync(43L, "https://media/noisy.mp4").get();
         } finally {
             service.shutdown();
         }
@@ -127,5 +133,53 @@ class VisualEvidenceServiceTest {
         assertThat(frame.getValue().getOcrStatus()).isEqualTo("LOW_CONFIDENCE");
         assertThat(frame.getValue().getOcrConfidence()).isEqualTo(28.2);
         assertThat(frame.getValue().getOcrText()).isNull();
+        assertThat(evidence.get().getLowConfidenceCount()).isEqualTo(1);
+    }
+
+    @Test
+    void completesAsPartialWhenOneFrameOcrFails() throws Exception {
+        MediaVisualEvidenceMapper evidenceMapper = mock(MediaVisualEvidenceMapper.class);
+        VideoKeyframeMapper keyframeMapper = mock(VideoKeyframeMapper.class);
+        VideoKeyframeExtractor extractor = mock(VideoKeyframeExtractor.class);
+        TesseractOcrService ocrService = mock(TesseractOcrService.class);
+        ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
+        VisualEvidenceService service = new VisualEvidenceService(
+                evidenceMapper, keyframeMapper, extractor, ocrService, objectStorageService, redisson()
+        );
+        AtomicReference<MediaVisualEvidence> evidence = new AtomicReference<>();
+        when(evidenceMapper.selectById(anyLong())).thenAnswer(invocation -> evidence.get());
+        doAnswer(invocation -> {
+            evidence.set(invocation.getArgument(0));
+            return 1;
+        }).when(evidenceMapper).insert(any(MediaVisualEvidence.class));
+        when(keyframeMapper.selectList(any())).thenReturn(List.of());
+
+        Path extractionDirectory = Files.createDirectory(directory.resolve("failed-ocr"));
+        Path imagePath = extractionDirectory.resolve("frame-000001.jpg");
+        ImageIO.write(new BufferedImage(16, 16, BufferedImage.TYPE_INT_RGB), "jpg", imagePath.toFile());
+        when(extractor.extract("https://media/partial.mp4")).thenReturn(
+                new VideoKeyframeExtractor.Extraction(
+                        extractionDirectory,
+                        List.of(new VideoKeyframeExtractor.ExtractedFrame(imagePath, 2_000))
+                )
+        );
+        when(ocrService.recognize(imagePath)).thenThrow(new IllegalStateException("OCR failed"));
+
+        try {
+            service.processAsync(44L, "https://media/partial.mp4").get();
+        } finally {
+            service.shutdown();
+        }
+
+        assertThat(evidence.get().getStatus()).isEqualTo("PARTIAL");
+        assertThat(evidence.get().getFailedOcrCount()).isEqualTo(1);
+    }
+
+    private RedissonClient redisson() {
+        RedissonClient client = mock(RedissonClient.class);
+        RLock lock = mock(RLock.class);
+        when(client.getLock(any())).thenReturn(lock);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        return client;
     }
 }

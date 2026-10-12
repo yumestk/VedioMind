@@ -11,6 +11,7 @@ public record AnalysisJobResponse(
         Integer progress,
         Integer retryCount,
         String errorMessage,
+        String warningMessage,
         LocalDateTime createdAt,
         LocalDateTime startedAt,
         LocalDateTime finishedAt
@@ -23,6 +24,7 @@ public record AnalysisJobResponse(
                 job.getProgress(),
                 job.getRetryCount(),
                 job.getErrorMessage(),
+                job.getWarningMessage(),
                 job.getCreatedAt(),
                 job.getStartedAt(),
                 job.getFinishedAt()

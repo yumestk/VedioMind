@@ -1,5 +1,6 @@
 package com.example.server.service;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.example.server.entity.AnalysisJob;
 import com.example.server.entity.AnalysisJobStatus;
 import com.example.server.entity.MediaFile;
@@ -13,17 +14,27 @@ import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptionResult;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class AiService {
+
+    private static final Logger log = LoggerFactory.getLogger(AiService.class);
+    private static final long VISUAL_EVIDENCE_TIMEOUT_MINUTES = 55;
+    private static final String VISUAL_EVIDENCE_WARNING =
+            "画面证据处理未完成，字幕总结、章节与问答仍可使用。";
 
     private final MediaFileMapper mediaFileMapper;
     private final AudioExtractor audioExtractor;
@@ -70,6 +81,8 @@ public class AiService {
         RLock lock = redissonClient.getLock("lock:analysis-job:" + jobId);
         boolean locked = false;
         File audioFile = null;
+        Future<Void> visualEvidence = CompletableFuture.completedFuture(null);
+        boolean visualEvidenceSettled = true;
 
         try {
             locked = lock.tryLock(0, TimeUnit.SECONDS);
@@ -84,10 +97,16 @@ public class AiService {
             }
 
             String videoUrl = null;
-            CompletableFuture<Void> visualEvidence = CompletableFuture.completedFuture(null);
             if (isLocalStudyMedia(mediaFile)) {
                 videoUrl = objectStorageService.createReadUrl(mediaFile.getObjectKey());
-                visualEvidence = visualEvidenceService.processAsync(mediaFile.getId(), videoUrl);
+                try {
+                    visualEvidence = visualEvidenceService.processAsync(mediaFile.getId(), videoUrl);
+                } catch (RuntimeException exception) {
+                    log.warn("Unable to queue visual evidence for media {}: {}",
+                            mediaFile.getId(), exception.getMessage());
+                    visualEvidence = CompletableFuture.failedFuture(exception);
+                }
+                visualEvidenceSettled = false;
             }
 
             List<TranscriptSegment> segments = transcriptService.listByMediaId(mediaFile.getId());
@@ -100,13 +119,16 @@ public class AiService {
 
                 analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 40);
                 TranscriptionResult transcription = speechTranscriber.transcribe(audioFile);
-                segments = transcriptService.replace(mediaFile.getId(), transcription.segments());
+                segments = transcriptService.replace(
+                        mediaFile.getId(), transcription.segments(), "ALIYUN_ASR"
+                );
             }
 
             if (!visualEvidence.isDone()) {
                 analysisJobService.markStage(jobId, AnalysisJobStatus.PROCESSING_VISUAL_EVIDENCE, 60);
             }
-            awaitVisualEvidence(visualEvidence);
+            String visualWarning = awaitVisualEvidence(visualEvidence, mediaFile.getId());
+            visualEvidenceSettled = true;
 
             String transcript = transcriptService.joinText(segments);
             if (transcript.isBlank()) {
@@ -119,8 +141,12 @@ public class AiService {
                 if (summary == null || summary.isBlank()) {
                     throw new IllegalStateException("The language model returned an empty summary");
                 }
-                mediaFile.setAiSummary(summary);
-                mediaFileMapper.updateById(mediaFile);
+                mediaFileMapper.update(
+                        null,
+                        new UpdateWrapper<MediaFile>()
+                                .eq("id", mediaFile.getId())
+                                .set("ai_summary", summary)
+                );
             }
 
             List<VideoChapter> chapters = chapterService.listByMediaId(mediaFile.getId());
@@ -129,12 +155,25 @@ public class AiService {
                 chapterService.replace(mediaFile.getId(), chapterGenerator.generate(segments));
             }
 
-            analysisJobService.markSucceeded(jobId);
+            analysisJobService.markSucceeded(jobId, visualWarning);
             invalidateMediaList(mediaFile.getUserId());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Analysis job was interrupted", exception);
+        } catch (RuntimeException exception) {
+            if (!visualEvidenceSettled) {
+                try {
+                    awaitVisualEvidence(visualEvidence, null);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    exception.addSuppressed(interrupted);
+                }
+            }
+            throw exception;
         } finally {
+            if (!visualEvidence.isDone()) {
+                visualEvidence.cancel(true);
+            }
             if (audioFile != null && audioFile.exists()) {
                 audioFile.delete();
             }
@@ -144,16 +183,24 @@ public class AiService {
         }
     }
 
-    private void awaitVisualEvidence(CompletableFuture<Void> visualEvidence)
+    private String awaitVisualEvidence(Future<Void> visualEvidence, Long mediaId)
             throws InterruptedException {
         try {
-            visualEvidence.get();
-        } catch (ExecutionException exception) {
-            Throwable cause = exception.getCause();
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            throw new IllegalStateException("Visual evidence processing failed", cause);
+            visualEvidence.get(VISUAL_EVIDENCE_TIMEOUT_MINUTES, TimeUnit.MINUTES);
+            return null;
+        } catch (ExecutionException | CancellationException exception) {
+            Throwable cause = exception instanceof ExecutionException && exception.getCause() != null
+                    ? exception.getCause()
+                    : exception;
+            log.warn("Visual evidence processing failed{}: {}",
+                    mediaId == null ? "" : " for media " + mediaId,
+                    cause.getMessage());
+            return VISUAL_EVIDENCE_WARNING;
+        } catch (TimeoutException exception) {
+            visualEvidence.cancel(true);
+            log.warn("Visual evidence processing timed out{}",
+                    mediaId == null ? "" : " for media " + mediaId);
+            return VISUAL_EVIDENCE_WARNING;
         }
     }
 

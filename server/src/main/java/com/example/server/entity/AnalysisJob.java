@@ -17,6 +17,7 @@ public class AnalysisJob {
     private Integer progress;
     private Integer retryCount;
     private String errorMessage;
+    private String warningMessage;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime startedAt;

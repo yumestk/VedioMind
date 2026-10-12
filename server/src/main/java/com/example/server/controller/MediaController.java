@@ -5,7 +5,6 @@ import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.ExternalVideoImportRequest;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
-import com.example.server.dto.MediaVisualEvidenceResponse;
 import com.example.server.service.MediaService;
 import com.example.server.service.external.ExternalVideoException;
 import org.springframework.http.HttpStatus;
@@ -104,18 +103,6 @@ public class MediaController {
     ) {
         try {
             return mediaService.getChapters(mediaId, userId);
-        } catch (IllegalArgumentException exception) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
-        }
-    }
-
-    @GetMapping("/{mediaId}/visual-evidence")
-    public MediaVisualEvidenceResponse getVisualEvidence(
-            @PathVariable Long mediaId,
-            @RequestParam Long userId
-    ) {
-        try {
-            return mediaService.getVisualEvidence(mediaId, userId);
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }

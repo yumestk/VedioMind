@@ -28,6 +28,7 @@ public class MediaFile {
     private Long durationMs;
     private String transcriptSource;
     private String transcriptLanguage;
+    private Integer transcriptRevision;
     private String aiSummary;
     private String coverUrl;
     private LocalDateTime uploadTime;

@@ -16,11 +16,12 @@
         </div>
       </div>
       <p v-if="job.status === 'RETRYING'" class="status-note">正在等待第 {{ job.retryCount }} 次重试</p>
+      <p v-if="job.warningMessage" class="status-note">{{ job.warningMessage }}</p>
     </template>
 
     <p v-if="error" class="analysis-error">{{ error }}</p>
-    <button class="primary-button" :disabled="running || submitting || hasResult" @click="$emit('submit')">
-      {{ running ? '分析进行中' : submitting ? '正在提交…' : hasResult ? '分析已完成' : '开始 AI 分析' }}
+    <button class="primary-button" :disabled="running || submitting" @click="$emit('submit')">
+      {{ running ? '分析进行中' : submitting ? '正在提交…' : hasResult ? '重新分析' : '开始 AI 分析' }}
     </button>
   </section>
 </template>

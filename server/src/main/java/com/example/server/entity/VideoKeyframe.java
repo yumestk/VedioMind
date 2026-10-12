@@ -18,6 +18,7 @@ public class VideoKeyframe {
     private Long timestampMs;
     private String objectKey;
     private String ocrStatus;
+    private Integer processorVersion;
     private Double ocrConfidence;
     private String ocrText;
     private LocalDateTime createdAt;

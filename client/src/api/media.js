@@ -21,11 +21,6 @@ export const getMediaChapters = async (mediaId, userId) => {
   return response.data
 }
 
-export const getMediaVisualEvidence = async (mediaId, userId) => {
-  const { data } = await http.get(`/media/${mediaId}/visual-evidence`, { params: { userId } })
-  return data
-}
-
 export const listVideoConversations = async (mediaId, userId) => {
   const response = await http.get(`/media/${mediaId}/conversations`, { params: { userId } })
   return response.data
