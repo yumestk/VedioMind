@@ -1,0 +1,120 @@
+const PARAGRAPH_TARGET_MS = 60_000
+const PARAGRAPH_MAX_CHARACTERS = 400
+const SILENCE_BREAK_MS = 15_000
+const FALLBACK_SECTION_MS = 5 * 60_000
+
+const paragraphFrom = (segments) => ({
+  id: `paragraph-${segments[0].id}-${segments.at(-1).id}`,
+  startMs: segments[0].startMs,
+  endMs: segments.at(-1).endMs,
+  text: segments.map(segment => segment.text).join(' '),
+  segmentIds: segments.map(segment => segment.id),
+  segments: [...segments]
+})
+
+const groupParagraphs = (segments) => {
+  const paragraphs = []
+  let current = []
+  let characterCount = 0
+
+  const flush = () => {
+    if (!current.length) return
+    paragraphs.push(paragraphFrom(current))
+    current = []
+    characterCount = 0
+  }
+
+  for (const segment of segments) {
+    const previous = current.at(-1)
+    const gapMs = previous ? segment.startMs - previous.endMs : 0
+    const nextCharacterCount = characterCount + (current.length ? 1 : 0) + segment.text.length
+
+    if (current.length && (gapMs >= SILENCE_BREAK_MS || nextCharacterCount > PARAGRAPH_MAX_CHARACTERS)) {
+      flush()
+    }
+
+    current.push(segment)
+    characterCount += (current.length > 1 ? 1 : 0) + segment.text.length
+
+    if (segment.endMs - current[0].startMs >= PARAGRAPH_TARGET_MS) {
+      flush()
+    }
+  }
+
+  flush()
+  return paragraphs
+}
+
+const chapterSections = (chapters, segments) => {
+  const sections = chapters.map((chapter, index) => ({
+    id: `chapter-${chapter.id}`,
+    index,
+    title: chapter.title,
+    startMs: chapter.startMs,
+    endMs: chapter.endMs,
+    synthetic: false,
+    segments: []
+  }))
+
+  let sectionIndex = 0
+  for (const segment of segments) {
+    while (
+      sectionIndex < sections.length - 1
+      && segment.startMs >= sections[sectionIndex + 1].startMs
+    ) {
+      sectionIndex++
+    }
+    sections[sectionIndex].segments.push(segment)
+  }
+  return sections
+}
+
+const fallbackSections = (segments) => {
+  const sections = []
+  let current = null
+
+  for (const segment of segments) {
+    const bucketStart = Math.floor(segment.startMs / FALLBACK_SECTION_MS) * FALLBACK_SECTION_MS
+    if (!current || current.startMs !== bucketStart) {
+      current = {
+        id: `time-${bucketStart}`,
+        index: sections.length,
+        title: '',
+        startMs: bucketStart,
+        endMs: bucketStart + FALLBACK_SECTION_MS,
+        synthetic: true,
+        segments: []
+      }
+      sections.push(current)
+    }
+    current.segments.push(segment)
+  }
+  return sections
+}
+
+export const buildContentTimeline = (chapters = [], transcriptSegments = []) => {
+  const segments = [...transcriptSegments].sort((left, right) => left.startMs - right.startMs)
+  const sortedChapters = [...chapters].sort((left, right) => left.startMs - right.startMs)
+  if (!segments.length && !sortedChapters.length) return []
+
+  const sections = sortedChapters.length
+    ? chapterSections(sortedChapters, segments)
+    : fallbackSections(segments)
+
+  return sections.map(({ segments: sectionSegments, ...section }) => ({
+    ...section,
+    paragraphs: groupParagraphs(sectionSegments)
+  }))
+}
+
+export const timelineSegmentSections = (timeline) => {
+  const sectionBySegmentId = new Map()
+  for (const section of timeline) {
+    for (const paragraph of section.paragraphs) {
+      for (const segmentId of paragraph.segmentIds) {
+        sectionBySegmentId.set(segmentId, section)
+      }
+    }
+  }
+  return sectionBySegmentId
+}

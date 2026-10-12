@@ -59,21 +59,14 @@
         <section class="content-column">
           <div class="content-tabs" role="tablist">
             <button :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">AI 总结</button>
-            <button :class="{ active: activeTab === 'chapters' }" @click="activeTab = 'chapters'">章节导航</button>
-            <button :class="{ active: activeTab === 'transcript' }" @click="activeTab = 'transcript'">完整字幕</button>
+            <button :class="{ active: activeTab === 'timeline' }" @click="activeTab = 'timeline'">内容时间轴</button>
             <button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">视频问答</button>
           </div>
           <div class="content-scroll">
             <SummaryPanel v-show="activeTab === 'summary'" :summary="media.summary" />
-            <ChapterPanel
-              v-show="activeTab === 'chapters'"
+            <ContentTimelinePanel
+              v-show="activeTab === 'timeline'"
               :chapters="chapters"
-              :current-time-ms="currentTimeMs"
-              :playback-sync-enabled="media.localPlaybackAvailable"
-              @seek="seekTo"
-            />
-            <TranscriptPanel
-              v-show="activeTab === 'transcript'"
               :segments="transcriptSegments"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
@@ -99,11 +92,10 @@ import { onMounted, ref, watch } from 'vue'
 import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
-import ChapterPanel from '../components/ChapterPanel.vue'
+import ContentTimelinePanel from '../components/ContentTimelinePanel.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import ExternalVideoPlayer from '../components/ExternalVideoPlayer.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
-import TranscriptPanel from '../components/TranscriptPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
@@ -182,6 +174,7 @@ watch(currentUser, (user, previous) => {
 onMounted(initialize)
 
 const seekTo = (milliseconds) => {
+  currentTimeMs.value = milliseconds
   if (media.value?.localPlaybackAvailable) {
     player.value?.seekTo(milliseconds)
     return
