@@ -4,8 +4,10 @@ import java.util.Set;
 
 public enum AnalysisJobStatus {
     QUEUED,
+    PREPARING,
     EXTRACTING_AUDIO,
     TRANSCRIBING,
+    PROCESSING_VISUAL_EVIDENCE,
     SUMMARIZING,
     GENERATING_CHAPTERS,
     RETRYING,

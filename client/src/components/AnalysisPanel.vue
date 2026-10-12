@@ -40,17 +40,21 @@ defineEmits(['submit'])
 
 const stages = [
   { status: 'QUEUED', progress: 0, label: '排队' },
-  { status: 'EXTRACTING_AUDIO', progress: 10, label: '音频' },
-  { status: 'TRANSCRIBING', progress: 45, label: '转写' },
-  { status: 'SUMMARIZING', progress: 70, label: '总结' },
+  { status: 'PREPARING', progress: 10, label: '准备' },
+  { status: 'EXTRACTING_AUDIO', progress: 20, label: '音频' },
+  { status: 'TRANSCRIBING', progress: 40, label: '转写' },
+  { status: 'PROCESSING_VISUAL_EVIDENCE', progress: 60, label: '画面' },
+  { status: 'SUMMARIZING', progress: 75, label: '总结' },
   { status: 'GENERATING_CHAPTERS', progress: 90, label: '章节' },
   { status: 'SUCCEEDED', progress: 100, label: '完成' }
 ]
 
 const labels = {
   QUEUED: '任务已进入队列',
+  PREPARING: '正在准备分析',
   EXTRACTING_AUDIO: '正在提取音频',
   TRANSCRIBING: '正在识别语音',
+  PROCESSING_VISUAL_EVIDENCE: '正在提取关键帧并识别画面文字',
   SUMMARIZING: '正在生成总结',
   GENERATING_CHAPTERS: '正在生成章节',
   RETRYING: '任务异常，准备重试',
@@ -80,7 +84,7 @@ const stageClass = (index) => {
 .progress-value { color: var(--accent); font-family: var(--mono); }
 .progress-track { overflow: hidden; height: 6px; border-radius: 99px; background: #272b31; }
 .progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease; }
-.stage-list { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.stage-list { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
 .stage { display: grid; justify-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
 .stage span { width: 8px; height: 8px; border: 1px solid var(--border-strong); border-radius: 50%; }
 .stage.active, .stage.completed { color: var(--text); }

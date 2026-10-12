@@ -18,6 +18,8 @@ import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -34,6 +36,7 @@ public class AiService {
     private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
     private final ObjectStorageService objectStorageService;
+    private final VisualEvidenceService visualEvidenceService;
 
     public AiService(
             MediaFileMapper mediaFileMapper,
@@ -46,7 +49,8 @@ public class AiService {
             ChapterService chapterService,
             StringRedisTemplate redisTemplate,
             RedissonClient redissonClient,
-            ObjectStorageService objectStorageService
+            ObjectStorageService objectStorageService,
+            VisualEvidenceService visualEvidenceService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.audioExtractor = audioExtractor;
@@ -59,6 +63,7 @@ public class AiService {
         this.redisTemplate = redisTemplate;
         this.redissonClient = redissonClient;
         this.objectStorageService = objectStorageService;
+        this.visualEvidenceService = visualEvidenceService;
     }
 
     public void processAnalysisJob(String jobId, int retryCount) {
@@ -78,21 +83,36 @@ public class AiService {
                 throw new IllegalArgumentException("Media does not exist: " + job.getMediaId());
             }
 
+            String videoUrl = null;
+            CompletableFuture<Void> visualEvidence = CompletableFuture.completedFuture(null);
+            if (isLocalStudyMedia(mediaFile)) {
+                videoUrl = objectStorageService.createReadUrl(mediaFile.getObjectKey());
+                visualEvidence = visualEvidenceService.processAsync(mediaFile.getId(), videoUrl);
+            }
+
             List<TranscriptSegment> segments = transcriptService.listByMediaId(mediaFile.getId());
             if (segments.isEmpty()) {
                 analysisJobService.markStage(jobId, AnalysisJobStatus.EXTRACTING_AUDIO, 20);
-                audioFile = audioExtractor.extract(objectStorageService.createReadUrl(mediaFile.getObjectKey()));
+                if (videoUrl == null) {
+                    videoUrl = objectStorageService.createReadUrl(mediaFile.getObjectKey());
+                }
+                audioFile = audioExtractor.extract(videoUrl);
 
-                analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 45);
+                analysisJobService.markStage(jobId, AnalysisJobStatus.TRANSCRIBING, 40);
                 TranscriptionResult transcription = speechTranscriber.transcribe(audioFile);
                 segments = transcriptService.replace(mediaFile.getId(), transcription.segments());
             }
+
+            if (!visualEvidence.isDone()) {
+                analysisJobService.markStage(jobId, AnalysisJobStatus.PROCESSING_VISUAL_EVIDENCE, 60);
+            }
+            awaitVisualEvidence(visualEvidence);
 
             String transcript = transcriptService.joinText(segments);
             if (transcript.isBlank()) {
                 throw new IllegalStateException("Speech recognition returned an empty transcript");
             }
-            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 70);
+            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 75);
             String summary = mediaFile.getAiSummary();
             if (summary == null || summary.isBlank()) {
                 summary = contentSummarizer.summarize(transcript);
@@ -122,6 +142,24 @@ public class AiService {
                 lock.unlock();
             }
         }
+    }
+
+    private void awaitVisualEvidence(CompletableFuture<Void> visualEvidence)
+            throws InterruptedException {
+        try {
+            visualEvidence.get();
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException("Visual evidence processing failed", cause);
+        }
+    }
+
+    private boolean isLocalStudyMedia(MediaFile mediaFile) {
+        return "LOCAL_UPLOAD".equals(mediaFile.getSourceType())
+                && "STUDY".equals(mediaFile.getAnalysisMode());
     }
 
     private void invalidateMediaList(Long userId) {

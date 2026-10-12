@@ -55,19 +55,41 @@
           <button class="section-time" @click="navigateSection(section)">{{ formatTime(section.startMs) }}</button>
         </div>
 
-        <div v-if="expandedSectionId === section.id" class="paragraph-list">
-          <button
-            v-for="paragraph in section.paragraphs"
-            :key="paragraph.id"
-            :ref="element => setParagraphElement(paragraph.id, element)"
-            class="paragraph-row"
-            :class="{ active: paragraph.id === activeParagraph?.id }"
-            @click="$emit('seek', paragraph.startMs)"
-          >
-            <span class="paragraph-time">{{ formatTime(paragraph.startMs) }}</span>
-            <span class="paragraph-text">{{ paragraph.text }}</span>
-          </button>
-          <p v-if="!section.paragraphs.length" class="no-results">这个章节暂时没有字幕。</p>
+        <div v-if="expandedSectionId === section.id" class="section-content">
+          <div v-if="section.keyframes.length" class="visual-evidence">
+            <p class="evidence-label">视觉证据 · {{ section.keyframes.length }}</p>
+            <div class="keyframe-list">
+              <button
+                v-for="frame in section.keyframes"
+                :key="frame.id"
+                class="keyframe-card"
+                @click="$emit('seek', frame.timestampMs)"
+              >
+                <img
+                  :src="frame.imageUrl"
+                  :alt="frame.ocrText || `${formatTime(frame.timestampMs)} 的关键帧`"
+                  loading="lazy"
+                />
+                <span class="keyframe-time">{{ formatTime(frame.timestampMs) }}</span>
+                <span v-if="frame.ocrText" class="keyframe-ocr">{{ frame.ocrText }}</span>
+                <span v-else class="keyframe-empty">{{ frame.ocrStatus === 'FAILED' ? 'OCR 未识别' : '画面无文字' }}</span>
+              </button>
+            </div>
+          </div>
+          <div class="paragraph-list">
+            <button
+              v-for="paragraph in section.paragraphs"
+              :key="paragraph.id"
+              :ref="element => setParagraphElement(paragraph.id, element)"
+              class="paragraph-row"
+              :class="{ active: paragraph.id === activeParagraph?.id }"
+              @click="$emit('seek', paragraph.startMs)"
+            >
+              <span class="paragraph-time">{{ formatTime(paragraph.startMs) }}</span>
+              <span class="paragraph-text">{{ paragraph.text }}</span>
+            </button>
+            <p v-if="!section.paragraphs.length" class="no-results">这个章节暂时没有字幕。</p>
+          </div>
         </div>
       </article>
     </div>
@@ -88,6 +110,7 @@ import { buildContentTimeline, timelineSegmentSections } from '../utils/contentT
 const props = defineProps({
   chapters: { type: Array, default: () => [] },
   segments: { type: Array, default: () => [] },
+  keyframes: { type: Array, default: () => [] },
   currentTimeMs: { type: Number, default: 0 },
   filename: { type: String, default: 'transcript' },
   playbackSyncEnabled: { type: Boolean, default: true }
@@ -100,7 +123,7 @@ const followPlayback = ref(true)
 const expandedSectionId = ref(null)
 const paragraphElements = new Map()
 
-const timeline = computed(() => buildContentTimeline(props.chapters, props.segments))
+const timeline = computed(() => buildContentTimeline(props.chapters, props.segments, props.keyframes))
 const sectionBySegmentId = computed(() => timelineSegmentSections(timeline.value))
 
 const activeSection = computed(() => {
@@ -242,7 +265,17 @@ const formatTime = (milliseconds) => {
 .section-title { overflow-wrap: anywhere; font-size: 14px; font-weight: 700; line-height: 1.45; }
 .section-caret { color: var(--muted); font-size: 18px; text-align: center; }
 .section-time { padding: 0 14px; border-left: 1px solid var(--border); }
-.paragraph-list { display: grid; padding: 0 10px 10px; border-top: 1px solid var(--border); }
+.section-content { border-top: 1px solid var(--border); }
+.visual-evidence { display: grid; gap: 10px; padding: 12px 10px 4px; }
+.evidence-label { margin: 0; color: var(--muted); font: 10px var(--mono); text-transform: uppercase; }
+.keyframe-list { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(180px, 220px); gap: 10px; overflow-x: auto; padding-bottom: 8px; }
+.keyframe-card { position: relative; display: grid; align-content: start; gap: 7px; overflow: hidden; padding: 0 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); text-align: left; }
+.keyframe-card:hover { border-color: var(--accent); }
+.keyframe-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: #090a0c; }
+.keyframe-time { position: absolute; top: 8px; left: 8px; padding: 4px 6px; border-radius: 5px; background: rgba(0, 0, 0, .72); color: var(--accent); font: 10px var(--mono); }
+.keyframe-ocr, .keyframe-empty { display: -webkit-box; overflow: hidden; padding: 0 10px; font-size: 12px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.keyframe-empty { color: var(--muted); }
+.paragraph-list { display: grid; padding: 0 10px 10px; }
 .paragraph-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 12px; width: 100%; padding: 14px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: #cdd0d5; text-align: left; }
 .paragraph-row:last-of-type { border-bottom: 0; }
 .paragraph-row:hover { background: var(--surface); }

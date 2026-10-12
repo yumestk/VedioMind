@@ -77,7 +77,7 @@ public class AnalysisJobService {
         LambdaUpdateWrapper<AnalysisJob> update = new LambdaUpdateWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getId, jobId)
                 .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
-                .set(AnalysisJob::getStatus, AnalysisJobStatus.EXTRACTING_AUDIO.name())
+                .set(AnalysisJob::getStatus, AnalysisJobStatus.PREPARING.name())
                 .set(AnalysisJob::getProgress, 10)
                 .set(AnalysisJob::getRetryCount, retryCount)
                 .set(AnalysisJob::getErrorMessage, null)

@@ -22,6 +22,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import java.io.File;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -42,6 +43,7 @@ class AiServiceTest {
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
+    private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
     private final RLock lock = mock(RLock.class);
 
     private AiService aiService;
@@ -59,7 +61,8 @@ class AiServiceTest {
                 chapterService,
                 redisTemplate,
                 redissonClient,
-                objectStorageService
+                objectStorageService,
+                visualEvidenceService
         );
         when(redissonClient.getLock("lock:analysis-job:job-1")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
@@ -70,6 +73,8 @@ class AiServiceTest {
         job.setId("job-1");
         job.setMediaId(42L);
         when(analysisJobService.getRequired("job-1")).thenReturn(job);
+        when(visualEvidenceService.processAsync(any(), any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
     }
 
     @Test
@@ -101,11 +106,12 @@ class AiServiceTest {
         aiService.processAnalysisJob("job-1", 0);
 
         verify(audioExtractor).extract("https://media/video.mp4");
+        verify(visualEvidenceService).processAsync(42L, "https://media/video.mp4");
         verify(speechTranscriber).transcribe(audioFile);
         verify(transcriptService).replace(42L, result.segments());
         verify(contentSummarizer).summarize("first sentence\nsecond sentence");
-        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.TRANSCRIBING, 45);
-        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 70);
+        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.TRANSCRIBING, 40);
+        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 75);
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.GENERATING_CHAPTERS, 90);
         verify(chapterService).replace(42L, chapterDrafts);
         verify(analysisJobService).markSucceeded("job-1");
@@ -135,11 +141,36 @@ class AiServiceTest {
         verify(analysisJobService).markSucceeded("job-1");
     }
 
+    @Test
+    void externalMediaKeepsTheTranscriptOnlyAnalysisPath() {
+        MediaFile media = media();
+        media.setSourceType("EXTERNAL_URL");
+        media.setAnalysisMode("QUICK_INSIGHT");
+        media.setObjectKey(null);
+        media.setAiSummary("saved summary");
+        List<TranscriptSegment> persisted = List.of(
+                segment(1L, 0, 0, 1_500, "platform transcript")
+        );
+
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
+        when(transcriptService.listByMediaId(42L)).thenReturn(persisted);
+        when(transcriptService.joinText(persisted)).thenReturn("platform transcript");
+        when(chapterService.listByMediaId(42L)).thenReturn(List.of(new VideoChapter()));
+
+        aiService.processAnalysisJob("job-1", 0);
+
+        verify(visualEvidenceService, never()).processAsync(any(), any());
+        verify(objectStorageService, never()).createReadUrl(any());
+        verify(analysisJobService).markSucceeded("job-1");
+    }
+
     private MediaFile media() {
         MediaFile media = new MediaFile();
         media.setId(42L);
         media.setUserId(7L);
         media.setObjectKey("video.mp4");
+        media.setSourceType("LOCAL_UPLOAD");
+        media.setAnalysisMode("STUDY");
         return media;
     }
 

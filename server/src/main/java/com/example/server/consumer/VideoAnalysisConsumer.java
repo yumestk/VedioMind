@@ -17,7 +17,7 @@ import java.nio.charset.StandardCharsets;
         consumerGroup = "video-analysis-consumer-group",
         consumeThreadNumber = 2,
         consumeThreadMax = 4,
-        consumeTimeout = 30,
+        consumeTimeout = 120,
         maxReconsumeTimes = VideoAnalysisConsumer.MAX_RECONSUME_TIMES
 )
 public class VideoAnalysisConsumer implements RocketMQListener<MessageExt> {

@@ -51,7 +51,7 @@
             :running="running"
             :submitting="submitting"
             :error="analysisError"
-            :has-result="Boolean(media.summary) && Boolean(chapters.length)"
+            :has-result="Boolean(media.summary) && Boolean(chapters.length) && (media.sourceType !== 'LOCAL_UPLOAD' || visualEvidence.status === 'READY')"
             @submit="startAnalysis"
           />
         </div>
@@ -68,6 +68,7 @@
               v-show="activeTab === 'timeline'"
               :chapters="chapters"
               :segments="transcriptSegments"
+              :keyframes="visualEvidence.frames"
               :current-time-ms="currentTimeMs"
               :filename="media.filename"
               :playback-sync-enabled="media.localPlaybackAvailable"
@@ -89,7 +90,7 @@
 
 <script setup>
 import { onMounted, ref, watch } from 'vue'
-import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
+import { getMediaChapters, getMediaDetail, getMediaTranscript, getMediaVisualEvidence } from '../api/media'
 import { errorMessage } from '../api/http'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import ContentTimelinePanel from '../components/ContentTimelinePanel.vue'
@@ -111,6 +112,7 @@ const loadError = ref('')
 const activeTab = ref('summary')
 const transcriptSegments = ref([])
 const chapters = ref([])
+const visualEvidence = ref({ status: 'NOT_STARTED', frames: [] })
 const currentTimeMs = ref(0)
 const externalStartMs = ref(null)
 const player = ref(null)
@@ -121,14 +123,16 @@ const loadDetail = async () => {
   loading.value = true
   loadError.value = ''
   try {
-    const [detail, transcript, chapterResult] = await Promise.all([
+    const [detail, transcript, chapterResult, evidenceResult] = await Promise.all([
       getMediaDetail(numericMediaId, currentUser.value.id),
       getMediaTranscript(numericMediaId, currentUser.value.id),
-      getMediaChapters(numericMediaId, currentUser.value.id)
+      getMediaChapters(numericMediaId, currentUser.value.id),
+      getMediaVisualEvidence(numericMediaId, currentUser.value.id)
     ])
     media.value = detail
     transcriptSegments.value = transcript.segments
     chapters.value = chapterResult.chapters
+    visualEvidence.value = evidenceResult
   } catch (error) {
     loadError.value = errorMessage(error, '媒体详情加载失败')
   } finally {
@@ -168,6 +172,7 @@ watch(currentUser, (user, previous) => {
     media.value = null
     transcriptSegments.value = []
     chapters.value = []
+    visualEvidence.value = { status: 'NOT_STARTED', frames: [] }
   }
 })
 

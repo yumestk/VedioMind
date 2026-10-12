@@ -5,6 +5,7 @@ import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.MediaListItemResponse;
 import com.example.server.dto.MediaTranscriptResponse;
+import com.example.server.dto.MediaVisualEvidenceResponse;
 import com.example.server.dto.TranscriptSegmentResponse;
 import com.example.server.dto.VideoChapterResponse;
 import com.example.server.entity.MediaFile;
@@ -31,6 +32,7 @@ public class MediaService {
     private final ObjectMapper objectMapper;
     private final TranscriptService transcriptService;
     private final ChapterService chapterService;
+    private final VisualEvidenceService visualEvidenceService;
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
@@ -39,7 +41,8 @@ public class MediaService {
             StringRedisTemplate redisTemplate,
             ObjectMapper objectMapper,
             TranscriptService transcriptService,
-            ChapterService chapterService
+            ChapterService chapterService,
+            VisualEvidenceService visualEvidenceService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.objectStorageService = objectStorageService;
@@ -48,6 +51,7 @@ public class MediaService {
         this.objectMapper = objectMapper;
         this.transcriptService = transcriptService;
         this.chapterService = chapterService;
+        this.visualEvidenceService = visualEvidenceService;
     }
 
     public MediaListItemResponse importFromUrl(String url, Long userId) {
@@ -123,11 +127,17 @@ public class MediaService {
         );
     }
 
+    public MediaVisualEvidenceResponse getVisualEvidence(Long mediaId, Long userId) {
+        getOwnedMedia(mediaId, userId);
+        return visualEvidenceService.get(mediaId);
+    }
+
     public void delete(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
         if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
             objectStorageService.remove(media.getObjectKey());
         }
+        visualEvidenceService.removeObjects(mediaId);
         mediaFileMapper.deleteById(mediaId);
         invalidateList(userId);
     }

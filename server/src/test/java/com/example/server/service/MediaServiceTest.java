@@ -25,6 +25,7 @@ class MediaServiceTest {
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
     private final TranscriptService transcriptService = mock(TranscriptService.class);
     private final ChapterService chapterService = mock(ChapterService.class);
+    private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
     private final MediaService mediaService = new MediaService(
             mediaFileMapper,
             objectStorageService,
@@ -32,7 +33,8 @@ class MediaServiceTest {
             redisTemplate,
             new ObjectMapper(),
             transcriptService,
-            chapterService
+            chapterService,
+            visualEvidenceService
     );
 
     @Test
@@ -84,5 +86,20 @@ class MediaServiceTest {
         assertThat(response.playbackUrl()).isNull();
         assertThat(response.localPlaybackAvailable()).isFalse();
         verify(objectStorageService, never()).createReadUrl(any());
+    }
+
+    @Test
+    void deleteRemovesTheVideoAndItsVisualEvidenceObjects() {
+        MediaFile media = new MediaFile();
+        media.setId(42L);
+        media.setUserId(7L);
+        media.setObjectKey("objects/lesson.mp4");
+        when(mediaFileMapper.selectOne(any())).thenReturn(media);
+
+        mediaService.delete(42L, 7L);
+
+        verify(objectStorageService).remove("objects/lesson.mp4");
+        verify(visualEvidenceService).removeObjects(42L);
+        verify(mediaFileMapper).deleteById(42L);
     }
 }

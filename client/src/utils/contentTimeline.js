@@ -45,7 +45,7 @@ const groupParagraphs = (segments) => {
   return paragraphs
 }
 
-const chapterSections = (chapters, segments) => {
+const chapterSections = (chapters, segments, keyframes) => {
   const sections = chapters.map((chapter, index) => ({
     id: `chapter-${chapter.id}`,
     index,
@@ -53,7 +53,8 @@ const chapterSections = (chapters, segments) => {
     startMs: chapter.startMs,
     endMs: chapter.endMs,
     synthetic: false,
-    segments: []
+    segments: [],
+    keyframes: []
   }))
 
   let sectionIndex = 0
@@ -66,40 +67,55 @@ const chapterSections = (chapters, segments) => {
     }
     sections[sectionIndex].segments.push(segment)
   }
-  return sections
-}
-
-const fallbackSections = (segments) => {
-  const sections = []
-  let current = null
-
-  for (const segment of segments) {
-    const bucketStart = Math.floor(segment.startMs / FALLBACK_SECTION_MS) * FALLBACK_SECTION_MS
-    if (!current || current.startMs !== bucketStart) {
-      current = {
-        id: `time-${bucketStart}`,
-        index: sections.length,
-        title: '',
-        startMs: bucketStart,
-        endMs: bucketStart + FALLBACK_SECTION_MS,
-        synthetic: true,
-        segments: []
-      }
-      sections.push(current)
+  sectionIndex = 0
+  for (const keyframe of keyframes) {
+    while (
+      sectionIndex < sections.length - 1
+      && keyframe.timestampMs >= sections[sectionIndex + 1].startMs
+    ) {
+      sectionIndex++
     }
-    current.segments.push(segment)
+    sections[sectionIndex].keyframes.push(keyframe)
   }
   return sections
 }
 
-export const buildContentTimeline = (chapters = [], transcriptSegments = []) => {
+const fallbackSections = (segments, keyframes) => {
+  const sectionsByStart = new Map()
+  const sectionFor = (timestampMs) => {
+    const bucketStart = Math.floor(timestampMs / FALLBACK_SECTION_MS) * FALLBACK_SECTION_MS
+    if (!sectionsByStart.has(bucketStart)) {
+      sectionsByStart.set(bucketStart, {
+        id: `time-${bucketStart}`,
+        index: 0,
+        title: '',
+        startMs: bucketStart,
+        endMs: bucketStart + FALLBACK_SECTION_MS,
+        synthetic: true,
+        segments: [],
+        keyframes: []
+      })
+    }
+    return sectionsByStart.get(bucketStart)
+  }
+
+  for (const segment of segments) sectionFor(segment.startMs).segments.push(segment)
+  for (const keyframe of keyframes) sectionFor(keyframe.timestampMs).keyframes.push(keyframe)
+
+  return [...sectionsByStart.values()]
+    .sort((left, right) => left.startMs - right.startMs)
+    .map((section, index) => ({ ...section, index }))
+}
+
+export const buildContentTimeline = (chapters = [], transcriptSegments = [], videoKeyframes = []) => {
   const segments = [...transcriptSegments].sort((left, right) => left.startMs - right.startMs)
   const sortedChapters = [...chapters].sort((left, right) => left.startMs - right.startMs)
-  if (!segments.length && !sortedChapters.length) return []
+  const keyframes = [...videoKeyframes].sort((left, right) => left.timestampMs - right.timestampMs)
+  if (!segments.length && !sortedChapters.length && !keyframes.length) return []
 
   const sections = sortedChapters.length
-    ? chapterSections(sortedChapters, segments)
-    : fallbackSections(segments)
+    ? chapterSections(sortedChapters, segments, keyframes)
+    : fallbackSections(segments, keyframes)
 
   return sections.map(({ segments: sectionSegments, ...section }) => ({
     ...section,
