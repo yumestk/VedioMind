@@ -9,6 +9,7 @@ import com.example.server.dto.VideoQuestionResponse;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
+import com.example.server.service.ai.AiRateLimitService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.redisson.api.RLock;
@@ -38,19 +39,22 @@ public class VideoConversationService {
     private final VideoQuestionService questionService;
     private final VideoKnowledgeRetriever knowledgeRetriever;
     private final RedissonClient redissonClient;
+    private final AiRateLimitService rateLimitService;
 
     public VideoConversationService(
             VideoConversationStore store,
             MediaService mediaService,
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
-            RedissonClient redissonClient
+            RedissonClient redissonClient,
+            AiRateLimitService rateLimitService
     ) {
         this.store = store;
         this.mediaService = mediaService;
         this.questionService = questionService;
         this.knowledgeRetriever = knowledgeRetriever;
         this.redissonClient = redissonClient;
+        this.rateLimitService = rateLimitService;
     }
 
     public List<VideoConversationResponse> list(Long mediaId, Long userId) {
@@ -86,6 +90,7 @@ public class VideoConversationService {
                 throw new ConversationNotReadyException("Analyze the video before asking questions");
             }
 
+            rateLimitService.requireRequest(userId);
             List<DeepSeekMessage> history = trimHistory(
                     store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES)
             );

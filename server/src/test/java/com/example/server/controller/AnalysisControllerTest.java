@@ -2,6 +2,7 @@ package com.example.server.controller;
 
 import com.example.server.service.AnalysisJobService;
 import com.example.server.service.AnalysisSubmissionService;
+import com.example.server.service.ai.AiRateLimitService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.messaging.MessagingException;
@@ -21,6 +22,7 @@ class AnalysisControllerTest {
     private final AnalysisJobService jobService = mock(AnalysisJobService.class);
     private final MockMvc mockMvc = MockMvcBuilders
             .standaloneSetup(new AnalysisController(submissionService, jobService))
+            .setControllerAdvice(new AiRateLimitExceptionHandler())
             .build();
 
     @Test
@@ -34,5 +36,18 @@ class AnalysisControllerTest {
                 .andExpect(jsonPath("$.title").value("分析服务暂时不可用"))
                 .andExpect(jsonPath("$.detail").value("RocketMQ 暂时不可用，请确认 NameServer 和 Broker 已启动后重试。"))
                 .andExpect(jsonPath("$.code").value("ROCKETMQ_UNAVAILABLE"));
+    }
+
+    @Test
+    void returnsTooManyRequestsWithRetryAfterWhenAiQuotaIsExhausted() throws Exception {
+        when(submissionService.submit(13L)).thenThrow(
+                new AiRateLimitService.AiRateLimitExceededException("请稍后重试", 60)
+        );
+
+        mockMvc.perform(post("/analysis/media/13"))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("AI_RATE_LIMITED"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .header().string("Retry-After", "60"));
     }
 }

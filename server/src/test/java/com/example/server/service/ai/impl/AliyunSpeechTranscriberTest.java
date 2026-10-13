@@ -1,14 +1,18 @@
 package com.example.server.service.ai.impl;
 
 import com.example.server.service.ai.TranscriptionResult;
+import com.example.server.service.ai.AiRetryExecutor;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 class AliyunSpeechTranscriberTest {
 
-    private final AliyunSpeechTranscriber transcriber = new AliyunSpeechTranscriber("test-key");
+    private final AliyunSpeechTranscriber transcriber = new AliyunSpeechTranscriber(
+            "test-key", mock(AiRetryExecutor.class)
+    );
 
     @Test
     void parsesAndSortsCompletedTimestampedSentences() {

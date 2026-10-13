@@ -5,6 +5,10 @@ import com.alibaba.dashscope.embeddings.TextEmbeddingOutput;
 import com.alibaba.dashscope.embeddings.TextEmbeddingParam;
 import com.alibaba.dashscope.embeddings.TextEmbeddingResult;
 import com.alibaba.dashscope.embeddings.TextEmbeddingResultItem;
+import com.alibaba.dashscope.exception.ApiException;
+import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.ai.AiRateLimitService;
+import com.example.server.service.ai.AiRetryExecutor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -21,9 +25,14 @@ public class AliyunTextEmbeddingClient {
 
     private final String apiKey;
     private final TextEmbedding textEmbedding = new TextEmbedding();
+    private final AiRetryExecutor retryExecutor;
 
-    public AliyunTextEmbeddingClient(@Value("${ai.aliyun.api-key}") String apiKey) {
+    public AliyunTextEmbeddingClient(
+            @Value("${ai.aliyun.api-key}") String apiKey,
+            AiRetryExecutor retryExecutor
+    ) {
         this.apiKey = apiKey;
+        this.retryExecutor = retryExecutor;
     }
 
     public EmbeddingBatch embedDocuments(List<String> texts) {
@@ -46,6 +55,11 @@ public class AliyunTextEmbeddingClient {
             throw new IllegalStateException("ALIYUN_API_KEY is not configured");
         }
 
+        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING,
+                () -> execute(texts, textType));
+    }
+
+    private EmbeddingBatch execute(List<String> texts, TextEmbeddingParam.TextType textType) {
         try {
             TextEmbeddingParam parameter = TextEmbeddingParam.builder()
                     .apiKey(apiKey)
@@ -73,8 +87,21 @@ public class AliyunTextEmbeddingClient {
             int totalTokens = result.getUsage() == null || result.getUsage().getTotalTokens() == null
                     ? 0 : result.getUsage().getTotalTokens();
             return new EmbeddingBatch(vectors, totalTokens);
+        } catch (ApiException exception) {
+            int statusCode = exception.getStatus() == null ? -1 : exception.getStatus().getStatusCode();
+            throw AiProviderException.forStatus(
+                    "Aliyun text embedding failed: " + conciseMessage(exception),
+                    exception,
+                    statusCode,
+                    0
+            );
         } catch (Exception exception) {
-            throw new IllegalStateException("Aliyun text embedding failed: " + conciseMessage(exception), exception);
+            throw new AiProviderException(
+                    "Aliyun text embedding failed: " + conciseMessage(exception),
+                    exception,
+                    false,
+                    0
+            );
         }
     }
 

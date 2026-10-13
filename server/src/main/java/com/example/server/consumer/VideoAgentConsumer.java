@@ -3,6 +3,7 @@ package com.example.server.consumer;
 import com.example.server.dto.VideoAgentRunMessage;
 import com.example.server.service.VideoAgentRunService;
 import com.example.server.service.VideoAgentWorkflowService;
+import com.example.server.service.ai.AiProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -46,6 +47,11 @@ public class VideoAgentConsumer implements RocketMQListener<MessageExt> {
             workflowService.process(command.runId(), retryCount);
         } catch (RuntimeException exception) {
             String error = concise(exception);
+            if (exception instanceof AiProviderException providerException
+                    && !providerException.isRetryable()) {
+                runService.markFailed(command.runId(), retryCount, error);
+                return;
+            }
             if (retryCount >= MAX_RECONSUME_TIMES) {
                 runService.markFailed(command.runId(), retryCount, error);
             } else {

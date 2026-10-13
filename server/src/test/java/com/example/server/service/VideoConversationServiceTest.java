@@ -9,6 +9,7 @@ import com.example.server.dto.VideoQuestionResponse;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
+import com.example.server.service.ai.AiRateLimitService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RLock;
@@ -35,12 +36,14 @@ class VideoConversationServiceTest {
     private final VideoKnowledgeRetriever knowledgeRetriever = mock(VideoKnowledgeRetriever.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
+    private final AiRateLimitService rateLimitService = mock(AiRateLimitService.class);
     private final VideoConversationService service = new VideoConversationService(
             store,
             mediaService,
             questionService,
             knowledgeRetriever,
-            redissonClient
+            redissonClient,
+            rateLimitService
     );
 
     @Test
@@ -77,6 +80,7 @@ class VideoConversationServiceTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DeepSeekMessage>> context = ArgumentCaptor.forClass(List.class);
         verify(questionService).answer(eq("继续说说"), eq(segments), context.capture());
+        verify(rateLimitService).requireRequest(3L);
         assertThat(context.getValue()).containsExactly(
                 new DeepSeekMessage("user", "上一问"),
                 new DeepSeekMessage("assistant", "上一答")

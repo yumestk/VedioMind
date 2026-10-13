@@ -2,10 +2,14 @@ package com.example.server.service.ai.impl;
 
 import com.alibaba.dashscope.audio.asr.recognition.Recognition;
 import com.alibaba.dashscope.audio.asr.recognition.RecognitionParam;
+import com.alibaba.dashscope.exception.ApiException;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.example.server.service.ai.SpeechTranscriber;
+import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.ai.AiRateLimitService;
+import com.example.server.service.ai.AiRetryExecutor;
 import com.example.server.service.ai.TranscriptSegmentDraft;
 import com.example.server.service.ai.TranscriptionResult;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,9 +27,14 @@ public class AliyunSpeechTranscriber implements SpeechTranscriber {
     static final int SAMPLE_RATE = 16_000;
 
     private final String apiKey;
+    private final AiRetryExecutor retryExecutor;
 
-    public AliyunSpeechTranscriber(@Value("${ai.aliyun.api-key}") String apiKey) {
+    public AliyunSpeechTranscriber(
+            @Value("${ai.aliyun.api-key}") String apiKey,
+            AiRetryExecutor retryExecutor
+    ) {
         this.apiKey = apiKey;
+        this.retryExecutor = retryExecutor;
     }
 
     @Override
@@ -37,6 +46,11 @@ public class AliyunSpeechTranscriber implements SpeechTranscriber {
             throw new IllegalStateException("ALIYUN_API_KEY is not configured");
         }
 
+        return retryExecutor.execute(AiRateLimitService.ALIYUN_ASR,
+                () -> execute(audioFile));
+    }
+
+    private TranscriptionResult execute(File audioFile) {
         try {
             RecognitionParam parameter = RecognitionParam.builder()
                     .apiKey(apiKey)
@@ -46,13 +60,27 @@ public class AliyunSpeechTranscriber implements SpeechTranscriber {
                     .build();
             String responseJson = new Recognition().call(parameter, audioFile);
             return parseResponse(responseJson);
+        } catch (ApiException exception) {
+            int statusCode = exception.getStatus() == null ? -1 : exception.getStatus().getStatusCode();
+            throw AiProviderException.forStatus(
+                    "Aliyun speech recognition failed: " + conciseMessage(exception),
+                    exception,
+                    statusCode,
+                    0
+            );
         } catch (RuntimeException exception) {
-            String detail = exception.getMessage();
-            String message = detail == null || detail.isBlank()
-                    ? "Aliyun speech recognition failed"
-                    : "Aliyun speech recognition failed: " + detail;
-            throw new IllegalStateException(message, exception);
+            throw new AiProviderException(
+                    "Aliyun speech recognition failed: " + conciseMessage(exception),
+                    exception,
+                    false,
+                    0
+            );
         }
+    }
+
+    private String conciseMessage(Throwable throwable) {
+        String message = throwable.getMessage();
+        return message == null || message.isBlank() ? throwable.getClass().getSimpleName() : message;
     }
 
     TranscriptionResult parseResponse(String responseJson) {

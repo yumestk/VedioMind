@@ -3,6 +3,7 @@ package com.example.server.consumer;
 import com.example.server.dto.AnalysisJobMessage;
 import com.example.server.service.AiService;
 import com.example.server.service.AnalysisJobService;
+import com.example.server.service.ai.AiProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -47,6 +48,11 @@ public class VideoAnalysisConsumer implements RocketMQListener<MessageExt> {
             aiService.processAnalysisJob(command.jobId(), retryCount);
         } catch (RuntimeException exception) {
             String errorMessage = conciseMessage(exception);
+            if (exception instanceof AiProviderException providerException
+                    && !providerException.isRetryable()) {
+                analysisJobService.markFailed(command.jobId(), retryCount, errorMessage);
+                return;
+            }
             if (retryCount >= MAX_RECONSUME_TIMES) {
                 analysisJobService.markFailed(command.jobId(), retryCount, errorMessage);
             } else {

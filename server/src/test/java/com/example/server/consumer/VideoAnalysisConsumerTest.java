@@ -2,6 +2,7 @@ package com.example.server.consumer;
 
 import com.example.server.service.AiService;
 import com.example.server.service.AnalysisJobService;
+import com.example.server.service.ai.AiProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,17 @@ class VideoAnalysisConsumerTest {
                 VideoAnalysisConsumer.MAX_RECONSUME_TIMES + 1,
                 "provider unavailable"
         );
+    }
+
+    @Test
+    void acknowledgesNonRetryableProviderFailuresAfterMarkingTheJobFailed() {
+        doThrow(new AiProviderException("invalid api key", null, false, 0))
+                .when(aiService).processAnalysisJob("job-1", 0);
+
+        consumer.onMessage(message(0));
+
+        verify(analysisJobService).markFailed("job-1", 0, "invalid api key");
+        verify(analysisJobService, never()).markRetrying("job-1", 1, "invalid api key");
     }
 
     private MessageExt message(int reconsumeTimes) {

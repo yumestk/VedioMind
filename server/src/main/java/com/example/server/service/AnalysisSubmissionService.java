@@ -2,7 +2,9 @@ package com.example.server.service;
 
 import com.example.server.dto.AnalysisJobMessage;
 import com.example.server.entity.AnalysisJob;
+import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
+import com.example.server.service.ai.AiRateLimitService;
 import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.producer.TransactionSendResult;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -24,21 +26,25 @@ public class AnalysisSubmissionService {
     private final AnalysisJobService analysisJobService;
     private final MediaFileMapper mediaFileMapper;
     private final RedissonClient redissonClient;
+    private final AiRateLimitService rateLimitService;
 
     public AnalysisSubmissionService(
             RocketMQTemplate rocketMQTemplate,
             AnalysisJobService analysisJobService,
             MediaFileMapper mediaFileMapper,
-            RedissonClient redissonClient
+            RedissonClient redissonClient,
+            AiRateLimitService rateLimitService
     ) {
         this.rocketMQTemplate = rocketMQTemplate;
         this.analysisJobService = analysisJobService;
         this.mediaFileMapper = mediaFileMapper;
         this.redissonClient = redissonClient;
+        this.rateLimitService = rateLimitService;
     }
 
     public AnalysisJob submit(Long mediaId) {
-        if (mediaFileMapper.selectById(mediaId) == null) {
+        MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
+        if (mediaFile == null) {
             throw new IllegalArgumentException("Media does not exist: " + mediaId);
         }
 
@@ -55,6 +61,7 @@ public class AnalysisSubmissionService {
                 return activeJob;
             }
 
+            rateLimitService.requireRequest(mediaFile.getUserId());
             AnalysisJobMessage command = new AnalysisJobMessage(UUID.randomUUID().toString(), mediaId);
             TransactionSendResult result = rocketMQTemplate.sendMessageInTransaction(
                     TOPIC,

@@ -2,6 +2,7 @@ package com.example.server.consumer;
 
 import com.example.server.service.VideoAgentRunService;
 import com.example.server.service.VideoAgentWorkflowService;
+import com.example.server.service.ai.AiProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.jupiter.api.Test;
@@ -12,6 +13,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 class VideoAgentConsumerTest {
 
@@ -30,6 +32,17 @@ class VideoAgentConsumerTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verify(runService).markRetrying("run-1", 1, "model unavailable");
+    }
+
+    @Test
+    void acknowledgesNonRetryableProviderFailuresAfterMarkingTheRunFailed() {
+        doThrow(new AiProviderException("forbidden", null, false, 0))
+                .when(workflowService).process("run-1", 0);
+
+        consumer.onMessage(message(0));
+
+        verify(runService).markFailed("run-1", 0, "forbidden");
+        verify(runService, never()).markRetrying("run-1", 1, "forbidden");
     }
 
     private MessageExt message(int retries) {

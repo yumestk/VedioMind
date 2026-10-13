@@ -2,6 +2,7 @@ package com.example.server.service;
 
 import com.example.server.dto.VideoAgentRunMessage;
 import com.example.server.entity.VideoAgentRun;
+import com.example.server.service.ai.AiRateLimitService;
 import org.apache.rocketmq.client.producer.LocalTransactionState;
 import org.apache.rocketmq.client.producer.TransactionSendResult;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -21,17 +22,20 @@ public class VideoAgentSubmissionService {
     private final MediaService mediaService;
     private final VideoKnowledgeIndexService indexService;
     private final VideoAgentRunService runService;
+    private final AiRateLimitService rateLimitService;
 
     public VideoAgentSubmissionService(
             RocketMQTemplate rocketMQTemplate,
             MediaService mediaService,
             VideoKnowledgeIndexService indexService,
-            VideoAgentRunService runService
+            VideoAgentRunService runService,
+            AiRateLimitService rateLimitService
     ) {
         this.rocketMQTemplate = rocketMQTemplate;
         this.mediaService = mediaService;
         this.indexService = indexService;
         this.runService = runService;
+        this.rateLimitService = rateLimitService;
     }
 
     public VideoAgentRun submit(Long mediaId, Long userId, String goal) {
@@ -41,6 +45,7 @@ public class VideoAgentSubmissionService {
             throw new IllegalArgumentException("Learning Agent is only available in Study Mode");
         }
         String contextVersion = indexService.requireReady(mediaId).context().version();
+        rateLimitService.requireRequest(userId);
         VideoAgentRunMessage command = new VideoAgentRunMessage(
                 UUID.randomUUID().toString(), mediaId, normalizedGoal, contextVersion
         );

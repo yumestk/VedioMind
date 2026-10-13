@@ -2,7 +2,7 @@
 
 面向长视频的 AI 内容理解平台。用户可以上传本地视频，或粘贴 Bilibili/YouTube 公共视频链接；系统复用本地 ASR 或平台字幕完成内容总结、章节生成和带引用问答，并在前端展示可恢复的任务进度。
 
-> 当前重点是项目演示与异步架构闭环。完整鉴权、用量限制和第三方平台长期治理仍在 Roadmap 中，不建议直接部署到公网。
+> 当前重点是项目演示与异步架构闭环。完整鉴权、精细用量计费和第三方平台长期治理仍在 Roadmap 中，不建议直接部署到公网。
 
 ## 核心能力
 
@@ -16,8 +16,9 @@
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳；DeepSeek 生成分块摘要、全局总结和语义章节。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
-- 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
+- 供应商瞬时故障先在客户端有限重试，耗尽后再由 RocketMQ 恢复当前任务阶段；鉴权和参数等永久错误直接标记 `FAILED`，不做无效重投。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
+- Redisson 用户级、全局和供应商级令牌桶限制 AI 请求；DeepSeek、阿里云 ASR 与 Embedding 共用轻量重试器，仅对网络错误、408、429 和 5xx 最多重试 3 次，并使用带抖动的指数退避。
 - 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
@@ -226,7 +227,7 @@ export TESSERACT_PATH=/path/to/tesseract
 export YTDLP_PATH=/path/to/yt-dlp
 ```
 
-数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。
+数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。AI 入口默认限制为单用户每分钟 5 次、全局每分钟 30 次，供应商调用额度可通过 `AI_RATE_LIMIT_*` 环境变量调整。
 
 本地上传默认上限为 10 GiB，可通过 `MEDIA_UPLOAD_MAX_FILE_SIZE_BYTES` 修改。预签名地址必须使用浏览器能够访问的 MinIO 地址；远程部署时设置 `MINIO_PUBLIC_ENDPOINT` 与 `MINIO_CORS_ALLOW_ORIGIN`。若本机的 `9000/9001` 已被占用，可在启动 Compose 前设置 `MINIO_API_PORT` 与 `MINIO_CONSOLE_PORT`，并同步调整 `MINIO_ENDPOINT`、`MINIO_PUBLIC_ENDPOINT`。
 
@@ -260,7 +261,7 @@ npm test
 npm run build
 ```
 
-当前 76 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 87 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 
