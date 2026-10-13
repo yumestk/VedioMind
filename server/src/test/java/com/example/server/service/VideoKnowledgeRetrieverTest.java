@@ -1,0 +1,66 @@
+package com.example.server.service;
+
+import com.example.server.entity.VideoKnowledgeChunk;
+import com.example.server.service.ai.impl.AliyunTextEmbeddingClient;
+import com.example.server.service.context.VideoContext;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class VideoKnowledgeRetrieverTest {
+
+    private final VideoKnowledgeIndexService indexService = mock(VideoKnowledgeIndexService.class);
+    private final AliyunTextEmbeddingClient embeddingClient = mock(AliyunTextEmbeddingClient.class);
+    private final VideoKnowledgeRetriever retriever = new VideoKnowledgeRetriever(
+            indexService, embeddingClient
+    );
+
+    @Test
+    void ranksSemanticallyRelevantChunksAndReturnsSentenceEvidenceIds() {
+        VideoContext context = new VideoContext(
+                42L,
+                "t1-v1-p2",
+                "ALIYUN_ASR",
+                new VideoContext.Modality("AVAILABLE", 1, 2, 2, null),
+                new VideoContext.Modality("AVAILABLE", 1, 0, 0, null),
+                List.of(
+                        new VideoContext.TranscriptEvidence(1L, 0, 1_000, "network basics"),
+                        new VideoContext.TranscriptEvidence(2L, 300_000, 301_000, "database index")
+                ),
+                List.of()
+        );
+        VideoKnowledgeChunk networking = chunk(0, "network", "[\"network\"]", "[1.0,0.0]");
+        VideoKnowledgeChunk database = chunk(1, "database", "[\"database\"]", "[0.0,1.0]");
+        when(indexService.requireReady(42L)).thenReturn(
+                new VideoKnowledgeIndexService.IndexSnapshot(
+                        context, List.of(networking, database), "summaries"
+                )
+        );
+        when(embeddingClient.embedQuery("network question")).thenReturn(List.of(1.0, 0.0));
+
+        List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
+                42L, "network question"
+        );
+
+        assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
+                .containsExactly(0, 1);
+        assertThat(hits.get(0).transcriptSegmentIds()).containsExactly(1L);
+        assertThat(hits.get(0).score()).isGreaterThan(hits.get(1).score());
+    }
+
+    private VideoKnowledgeChunk chunk(int index, String summary, String keywords, String embedding) {
+        VideoKnowledgeChunk chunk = new VideoKnowledgeChunk();
+        chunk.setChunkIndex(index);
+        chunk.setStartMs(index * VideoKnowledgeIndexService.CHUNK_MS);
+        chunk.setEndMs((index + 1L) * VideoKnowledgeIndexService.CHUNK_MS);
+        chunk.setSummary(summary);
+        chunk.setKeywordsJson(keywords);
+        chunk.setEmbeddingJson(embedding);
+        chunk.setStatus("READY");
+        return chunk;
+    }
+}

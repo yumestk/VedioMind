@@ -45,8 +45,9 @@ const stages = [
   { status: 'EXTRACTING_AUDIO', progress: 20, label: '音频' },
   { status: 'TRANSCRIBING', progress: 40, label: '转写' },
   { status: 'PROCESSING_VISUAL_EVIDENCE', progress: 60, label: '画面' },
-  { status: 'SUMMARIZING', progress: 75, label: '总结' },
-  { status: 'GENERATING_CHAPTERS', progress: 90, label: '章节' },
+  { status: 'BUILDING_KNOWLEDGE_INDEX', progress: 70, label: '索引' },
+  { status: 'SUMMARIZING', progress: 85, label: '总结' },
+  { status: 'GENERATING_CHAPTERS', progress: 95, label: '章节' },
   { status: 'SUCCEEDED', progress: 100, label: '完成' }
 ]
 
@@ -56,6 +57,7 @@ const labels = {
   EXTRACTING_AUDIO: '正在提取音频',
   TRANSCRIBING: '正在识别语音',
   PROCESSING_VISUAL_EVIDENCE: '正在提取关键帧并识别画面文字',
+  BUILDING_KNOWLEDGE_INDEX: '正在构建长视频知识索引',
   SUMMARIZING: '正在生成总结',
   GENERATING_CHAPTERS: '正在生成章节',
   RETRYING: '任务异常，准备重试',

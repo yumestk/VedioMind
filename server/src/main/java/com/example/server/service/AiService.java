@@ -48,6 +48,7 @@ public class AiService {
     private final RedissonClient redissonClient;
     private final ObjectStorageService objectStorageService;
     private final VisualEvidenceService visualEvidenceService;
+    private final VideoKnowledgeIndexService knowledgeIndexService;
 
     public AiService(
             MediaFileMapper mediaFileMapper,
@@ -61,7 +62,8 @@ public class AiService {
             StringRedisTemplate redisTemplate,
             RedissonClient redissonClient,
             ObjectStorageService objectStorageService,
-            VisualEvidenceService visualEvidenceService
+            VisualEvidenceService visualEvidenceService,
+            VideoKnowledgeIndexService knowledgeIndexService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.audioExtractor = audioExtractor;
@@ -75,6 +77,7 @@ public class AiService {
         this.redissonClient = redissonClient;
         this.objectStorageService = objectStorageService;
         this.visualEvidenceService = visualEvidenceService;
+        this.knowledgeIndexService = knowledgeIndexService;
     }
 
     public void processAnalysisJob(String jobId, int retryCount) {
@@ -134,24 +137,44 @@ public class AiService {
             if (transcript.isBlank()) {
                 throw new IllegalStateException("Speech recognition returned an empty transcript");
             }
-            analysisJobService.markStage(jobId, AnalysisJobStatus.SUMMARIZING, 75);
+            VideoKnowledgeIndexService.IndexSnapshot knowledgeIndex = null;
+            if (isLocalStudyMedia(mediaFile)) {
+                analysisJobService.markStage(
+                        jobId, AnalysisJobStatus.BUILDING_KNOWLEDGE_INDEX, 70
+                );
+                knowledgeIndex = knowledgeIndexService.build(mediaFile.getId());
+            }
+
+            analysisJobService.markStage(
+                    jobId,
+                    AnalysisJobStatus.SUMMARIZING,
+                    knowledgeIndex == null ? 75 : 85
+            );
             String summary = mediaFile.getAiSummary();
-            if (summary == null || summary.isBlank()) {
-                summary = contentSummarizer.summarize(transcript);
+            String summaryContextVersion = knowledgeIndex == null
+                    ? null : knowledgeIndex.context().version();
+            boolean summaryIsCurrent = summary != null && !summary.isBlank()
+                    && (summaryContextVersion == null
+                    || summaryContextVersion.equals(mediaFile.getAiSummaryContextVersion()));
+            if (!summaryIsCurrent) {
+                String summaryInput = knowledgeIndex == null
+                        ? transcript : knowledgeIndex.summaryMaterial();
+                summary = contentSummarizer.summarize(summaryInput);
                 if (summary == null || summary.isBlank()) {
                     throw new IllegalStateException("The language model returned an empty summary");
                 }
-                mediaFileMapper.update(
-                        null,
-                        new UpdateWrapper<MediaFile>()
-                                .eq("id", mediaFile.getId())
-                                .set("ai_summary", summary)
-                );
+                UpdateWrapper<MediaFile> update = new UpdateWrapper<MediaFile>()
+                        .eq("id", mediaFile.getId())
+                        .set("ai_summary", summary);
+                if (summaryContextVersion != null) {
+                    update.set("ai_summary_context_version", summaryContextVersion);
+                }
+                mediaFileMapper.update(null, update);
             }
 
             List<VideoChapter> chapters = chapterService.listByMediaId(mediaFile.getId());
             if (chapters.isEmpty()) {
-                analysisJobService.markStage(jobId, AnalysisJobStatus.GENERATING_CHAPTERS, 90);
+                analysisJobService.markStage(jobId, AnalysisJobStatus.GENERATING_CHAPTERS, 95);
                 chapterService.replace(mediaFile.getId(), chapterGenerator.generate(segments));
             }
 

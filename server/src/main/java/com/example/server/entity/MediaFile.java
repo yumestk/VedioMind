@@ -30,6 +30,7 @@ public class MediaFile {
     private String transcriptLanguage;
     private Integer transcriptRevision;
     private String aiSummary;
+    private String aiSummaryContextVersion;
     private String coverUrl;
     private LocalDateTime uploadTime;
 }

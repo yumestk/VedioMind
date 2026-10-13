@@ -13,6 +13,7 @@ import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptSegmentDraft;
 import com.example.server.service.ai.TranscriptionResult;
 import com.example.server.service.ai.VideoChapterDraft;
+import com.example.server.service.context.VideoContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RLock;
@@ -44,6 +45,7 @@ class AiServiceTest {
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
     private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
+    private final VideoKnowledgeIndexService knowledgeIndexService = mock(VideoKnowledgeIndexService.class);
     private final RLock lock = mock(RLock.class);
 
     private AiService aiService;
@@ -62,7 +64,8 @@ class AiServiceTest {
                 redisTemplate,
                 redissonClient,
                 objectStorageService,
-                visualEvidenceService
+                visualEvidenceService,
+                knowledgeIndexService
         );
         when(redissonClient.getLock("lock:analysis-job:job-1")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
@@ -75,6 +78,7 @@ class AiServiceTest {
         when(analysisJobService.getRequired("job-1")).thenReturn(job);
         when(visualEvidenceService.processAsync(any(), any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
+        when(knowledgeIndexService.build(42L)).thenReturn(indexSnapshot());
     }
 
     @Test
@@ -97,7 +101,7 @@ class AiServiceTest {
         when(speechTranscriber.transcribe(audioFile)).thenReturn(result);
         when(transcriptService.replace(42L, result.segments(), "ALIYUN_ASR")).thenReturn(persisted);
         when(transcriptService.joinText(persisted)).thenReturn("first sentence\nsecond sentence");
-        when(contentSummarizer.summarize("first sentence\nsecond sentence")).thenReturn("the summary");
+        when(contentSummarizer.summarize("indexed summaries")).thenReturn("the summary");
         List<VideoChapterDraft> chapterDrafts = List.of(
                 new VideoChapterDraft("First chapter", 0, 3_000)
         );
@@ -109,10 +113,12 @@ class AiServiceTest {
         verify(visualEvidenceService).processAsync(42L, "https://media/video.mp4");
         verify(speechTranscriber).transcribe(audioFile);
         verify(transcriptService).replace(42L, result.segments(), "ALIYUN_ASR");
-        verify(contentSummarizer).summarize("first sentence\nsecond sentence");
+        verify(knowledgeIndexService).build(42L);
+        verify(contentSummarizer).summarize("indexed summaries");
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.TRANSCRIBING, 40);
-        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 75);
-        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.GENERATING_CHAPTERS, 90);
+        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.BUILDING_KNOWLEDGE_INDEX, 70);
+        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.SUMMARIZING, 85);
+        verify(analysisJobService).markStage("job-1", AnalysisJobStatus.GENERATING_CHAPTERS, 95);
         verify(chapterService).replace(42L, chapterDrafts);
         verify(analysisJobService).markSucceeded("job-1", null);
         verify(redisTemplate).delete("media:list:v3:user:7");
@@ -122,6 +128,7 @@ class AiServiceTest {
     void reusesPersistedTranscriptSummaryAndChapters() {
         MediaFile media = media();
         media.setAiSummary("saved summary");
+        media.setAiSummaryContextVersion("t1-v1-p2");
         List<TranscriptSegment> persisted = List.of(
                 segment(1L, 0, 0, 1_500, "saved transcript")
         );
@@ -160,6 +167,7 @@ class AiServiceTest {
         aiService.processAnalysisJob("job-1", 0);
 
         verify(visualEvidenceService, never()).processAsync(any(), any());
+        verify(knowledgeIndexService, never()).build(any());
         verify(objectStorageService, never()).createReadUrl(any());
         verify(analysisJobService).markSucceeded("job-1", null);
     }
@@ -168,6 +176,7 @@ class AiServiceTest {
     void visualEvidenceFailureDoesNotBlockTranscriptResults() {
         MediaFile media = media();
         media.setAiSummary("saved summary");
+        media.setAiSummaryContextVersion("t1-v1-p2");
         List<TranscriptSegment> persisted = List.of(
                 segment(1L, 0, 0, 1_500, "saved transcript")
         );
@@ -194,6 +203,19 @@ class AiServiceTest {
         media.setSourceType("LOCAL_UPLOAD");
         media.setAnalysisMode("STUDY");
         return media;
+    }
+
+    private VideoKnowledgeIndexService.IndexSnapshot indexSnapshot() {
+        VideoContext context = new VideoContext(
+                42L,
+                "t1-v1-p2",
+                "ALIYUN_ASR",
+                new VideoContext.Modality("AVAILABLE", 1, 1, 1, null),
+                new VideoContext.Modality("AVAILABLE", 1, 0, 0, null),
+                List.of(new VideoContext.TranscriptEvidence(1L, 0, 1_500, "first sentence")),
+                List.of()
+        );
+        return new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(), "indexed summaries");
     }
 
     private TranscriptSegment segment(

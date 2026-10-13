@@ -8,9 +8,10 @@
 
 - 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
 - Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
+- Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块持久化摘要、关键词和阿里云 `text-embedding-v4` 向量；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
-- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳，DeepSeek 基于 Transcript 生成总结和语义章节。
+- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳；DeepSeek 生成分块摘要、全局总结和语义章节。
 - RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 消费失败由 RocketMQ 重试；达到上限后标记 `FAILED` 并进入死信流程。
@@ -62,12 +63,19 @@ flowchart TD
     X --> Y
     W -->|异常| Z[记录视觉告警与可恢复 Checkpoint]
     Z --> Y
-    Y --> L[基于 Transcript 生成 Summary]
-    L --> Q[生成并校验语义章节]
+    Y --> AA{本地 Study 视频?}
+    AA -->|是| AB[按 5 分钟生成版本化知识块]
+    AB --> AC[逐块摘要并批量生成 Embedding]
+    AC --> L[基于全部 Chunk 生成全局 Summary]
+    AA -->|否| AD[基于平台 Transcript 生成 Summary]
+    AD --> Q[生成并校验语义章节]
+    L --> Q
     Q --> M[标记 SUCCEEDED]
 
     J -->|异常| N[RocketMQ 重试]
     K -->|异常| N
+    AB -->|异常| N
+    AC -->|异常| N
     L -->|异常| N
     Q -->|异常| N
     N -->|超过上限| O[FAILED / DLQ]
@@ -75,6 +83,7 @@ flowchart TD
     P[前端轮询 Job API] --> C
     P --> J
     P --> K
+    P --> AB
     P --> L
     P --> Q
     P --> M
@@ -88,6 +97,7 @@ QUEUED
   → EXTRACTING_AUDIO
   → TRANSCRIBING
   → PROCESSING_VISUAL_EVIDENCE（仅在视觉分支仍在运行时出现）
+  → BUILDING_KNOWLEDGE_INDEX（仅本地 Study 视频）
   → SUMMARIZING
   → GENERATING_CHAPTERS
   → SUCCEEDED
@@ -108,7 +118,7 @@ QUEUED
 | 数据 | MySQL 8、Redis、Flyway |
 | 对象存储 | MinIO |
 | 媒体处理 | FFmpeg、Tesseract OCR、yt-dlp |
-| AI | 阿里云 Paraformer ASR、DeepSeek |
+| AI | 阿里云 Paraformer ASR、text-embedding-v4、DeepSeek |
 
 ## 主要接口
 
@@ -224,13 +234,14 @@ npm test
 npm run build
 ```
 
-当前 49 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、Bilibili/YouTube 字幕解析、问答引用校验、多轮上下文编排、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 56 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、混合检索、Bilibili/YouTube 字幕解析、问答引用校验、多轮上下文编排、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
-- Study Mode 的长视频检索/RAG、图片模型理解和有限 Agent 编排。
+- 将已经建立的长视频混合检索接入多轮问答，并评测召回质量。
+- Study Mode 的图片模型理解和有限 Agent 编排。
 - 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。
 - 章节人工编辑、合并拆分和播放器进度条标记。
-- 让问答和总结通过混合检索按需消费已建立的多模态 VideoContext。
+- 让 Agent 通过混合检索按需消费已建立的多模态 VideoContext。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。
