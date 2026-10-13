@@ -6,9 +6,14 @@ import {
   initiateMediaUpload,
   putMediaUploadPart
 } from '../api/media'
+import {
+  isRetriableUploadError,
+  shouldDiscardUploadSession,
+  uploadRetryDelay
+} from './uploadRetry.js'
 
 const CONCURRENCY = 3
-const MAX_ATTEMPTS = 3
+const MAX_ATTEMPTS = 4
 const STORAGE_KEY = 'pending-media-upload'
 
 export const fileFingerprint = file => `${file.name}:${file.size}:${file.lastModified}`
@@ -64,6 +69,7 @@ export class MultipartUploader {
     const parts = [...this.parts.values()]
       .sort((left, right) => left.partNumber - right.partNumber)
       .map(({ partNumber, etag }) => ({ partNumber, etag }))
+    this.emitProgress({ phase: 'finalizing' })
     const media = await completeMediaUpload(this.sessionId, this.userId, parts)
     this.clearStoredSession()
     this.onProgress?.({ percent: 100, speed: 0, eta: 0 })
@@ -95,8 +101,12 @@ export class MultipartUploader {
           this.clearStoredSession()
           return { id: session.mediaId }
         }
-      } catch {
-        this.clearStoredSession()
+      } catch (error) {
+        if (shouldDiscardUploadSession(error)) {
+          this.clearStoredSession()
+        } else {
+          throw error
+        }
       }
     }
 
@@ -137,15 +147,16 @@ export class MultipartUploader {
       } catch (error) {
         this.activeBytes.delete(partNumber)
         if (this.paused || this.cancelled) return
-        if (attempt === MAX_ATTEMPTS) throw error
-        await wait(500 * 2 ** (attempt - 1))
+        if (attempt === MAX_ATTEMPTS || !isRetriableUploadError(error)) throw error
+        this.emitProgress({ phase: 'retrying', retryAttempt: attempt })
+        await wait(uploadRetryDelay(attempt))
       } finally {
         this.controllers.delete(controller)
       }
     }
   }
 
-  emitProgress() {
+  emitProgress(extra = {}) {
     const active = [...this.activeBytes.values()].reduce((total, bytes) => total + bytes, 0)
     const uploaded = Math.min(this.file.size, this.baseUploadedBytes + active)
     const elapsedSeconds = Math.max((Date.now() - this.startedAt) / 1000, 0.001)
@@ -154,7 +165,9 @@ export class MultipartUploader {
     this.onProgress?.({
       percent: Math.round((uploaded / this.file.size) * 100),
       speed,
-      eta: speed > 0 ? Math.ceil(remaining / speed) : null
+      eta: speed > 0 ? Math.ceil(remaining / speed) : null,
+      phase: 'uploading',
+      ...extra
     })
   }
 

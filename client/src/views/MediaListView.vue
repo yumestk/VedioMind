@@ -179,6 +179,13 @@ const uploadFile = async (file) => {
     uploadProgress.value = progress.percent
     uploadSpeed.value = progress.speed
     uploadEta.value = progress.eta
+    if (progress.phase === 'retrying') {
+      uploadLabel.value = `网络波动，正在重试第 ${progress.retryAttempt} 次`
+    } else if (progress.phase === 'finalizing') {
+      uploadLabel.value = '正在校验文件并完成上传'
+    } else {
+      uploadLabel.value = `正在上传 ${file.name}`
+    }
   })
   await runMultipartUpload()
 }
