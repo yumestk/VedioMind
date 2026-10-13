@@ -2,7 +2,7 @@
   <div v-if="!hasTranscript" class="empty-content">
     <span>?</span>
     <h3>还不能向视频提问</h3>
-    <p>请先完成 AI 分析，问答会严格基于带时间戳的字幕。</p>
+    <p>请先完成 AI 分析，问答会严格基于带时间戳的原始字幕证据。</p>
   </div>
   <section v-else class="conversation-panel">
     <div class="conversation-toolbar">
@@ -53,7 +53,8 @@
     <div v-else class="conversation-intro">
       <span>?</span>
       <h3>向这个视频提问</h3>
-      <p>可以连续追问。回答只使用当前视频字幕，并附带可点击的原文时间引用。</p>
+      <p v-if="isStudyMode">可以连续追问。回答会先检索相关内容，并附带可点击的原文时间引用。</p>
+      <p v-else>可以连续追问。回答基于平台字幕，并附带可点击的原文时间引用。</p>
     </div>
 
     <form class="question-form" @submit.prevent="submitQuestion">
@@ -65,7 +66,9 @@
       ></textarea>
       <div class="question-actions">
         <span v-if="error" class="question-error">{{ error }}</span>
-        <span v-else class="question-hint">多轮对话 · 仅基于字幕</span>
+        <span v-else class="question-hint">
+          {{ isStudyMode ? '多轮对话 · 基于长视频检索' : '多轮对话 · 基于平台字幕' }}
+        </span>
         <button class="primary-button compact" :disabled="submitting || !question.trim()">
           {{ submitting ? '回答中…' : '提问' }}
         </button>
@@ -75,7 +78,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   createVideoConversation,
   getConversationMessages,
@@ -87,7 +90,8 @@ import { errorMessage } from '../api/http'
 const props = defineProps({
   mediaId: { type: Number, required: true },
   userId: { type: Number, required: true },
-  hasTranscript: { type: Boolean, default: false }
+  hasTranscript: { type: Boolean, default: false },
+  analysisMode: { type: String, default: '' }
 })
 
 defineEmits(['seek'])
@@ -99,6 +103,7 @@ const question = ref('')
 const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
+const isStudyMode = computed(() => props.analysisMode === 'STUDY')
 
 const loadMessages = async (conversationId) => {
   if (!conversationId) {

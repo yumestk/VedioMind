@@ -32,12 +32,14 @@ class VideoConversationServiceTest {
     private final VideoConversationStore store = mock(VideoConversationStore.class);
     private final MediaService mediaService = mock(MediaService.class);
     private final VideoQuestionService questionService = mock(VideoQuestionService.class);
+    private final VideoKnowledgeRetriever knowledgeRetriever = mock(VideoKnowledgeRetriever.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
     private final VideoConversationService service = new VideoConversationService(
             store,
             mediaService,
             questionService,
+            knowledgeRetriever,
             redissonClient
     );
 
@@ -80,6 +82,82 @@ class VideoConversationServiceTest {
                 new DeepSeekMessage("assistant", "上一答")
         );
         verify(store).saveTurn(conversation, "继续说说", answer);
+        verify(knowledgeRetriever, never()).search(any(), any());
+        verify(lock).unlock();
+    }
+
+    @Test
+    void retrievesStudyEvidenceWithThePreviousTurnBeforeAnswering() throws InterruptedException {
+        VideoConversation conversation = conversation();
+        TranscriptSegmentResponse first = new TranscriptSegmentResponse(
+                9L, 0, 1_000L, 2_000L, "第一段字幕"
+        );
+        TranscriptSegmentResponse second = new TranscriptSegmentResponse(
+                10L, 1, 2_000L, 3_000L, "第二段字幕"
+        );
+        List<VideoMessage> history = List.of(
+                message("USER", "介绍数据库"),
+                message("ASSISTANT", "视频介绍了 MySQL 和 PostgreSQL")
+        );
+        VideoQuestionResponse answer = new VideoQuestionResponse("新回答", List.of());
+        ConversationTurnResponse saved = new ConversationTurnResponse(
+                VideoConversationResponse.from(conversation), null, null
+        );
+
+        when(store.getRequired(7L)).thenReturn(conversation);
+        when(redissonClient.getLock("lock:video-conversation:7")).thenReturn(lock);
+        when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        when(mediaService.getTranscript(42L, 3L)).thenReturn(
+                new MediaTranscriptResponse(42L, List.of(first, second))
+        );
+        when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
+        when(store.listRecentMessages(7L, 12)).thenReturn(history);
+        when(knowledgeRetriever.search(
+                42L,
+                "上一问：介绍数据库\n上一答：视频介绍了 MySQL 和 PostgreSQL\n当前问题：第二个有什么优点？"
+        )).thenReturn(List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
+                0, 0, 300_000, "摘要", List.of("PostgreSQL"), 0.9, List.of(10L, 9L, 10L)
+        )));
+        when(questionService.answer(
+                eq("第二个有什么优点？"), eq(List.of(second, first)), any()
+        )).thenReturn(answer);
+        when(store.saveTurn(conversation, "第二个有什么优点？", answer)).thenReturn(saved);
+
+        assertThat(service.ask(7L, 3L, "第二个有什么优点？")).isSameAs(saved);
+
+        verify(questionService).answer(
+                eq("第二个有什么优点？"), eq(List.of(second, first)), any()
+        );
+        verify(store).saveTurn(conversation, "第二个有什么优点？", answer);
+        verify(lock).unlock();
+    }
+
+    @Test
+    void reportsStudyIndexAsNotReadyWithoutSavingAPartialTurn() throws InterruptedException {
+        VideoConversation conversation = conversation();
+        List<TranscriptSegmentResponse> segments = List.of(
+                new TranscriptSegmentResponse(9L, 0, 1_000L, 2_000L, "字幕")
+        );
+        when(store.getRequired(7L)).thenReturn(conversation);
+        when(redissonClient.getLock("lock:video-conversation:7")).thenReturn(lock);
+        when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
+        when(lock.isHeldByCurrentThread()).thenReturn(true);
+        when(mediaService.getTranscript(42L, 3L)).thenReturn(
+                new MediaTranscriptResponse(42L, segments)
+        );
+        when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
+        when(store.listRecentMessages(7L, 12)).thenReturn(List.of());
+        when(knowledgeRetriever.search(42L, "当前问题：问题")).thenThrow(
+                new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready")
+        );
+
+        assertThatThrownBy(() -> service.ask(7L, 3L, "问题"))
+                .isInstanceOf(VideoConversationService.ConversationNotReadyException.class)
+                .hasMessageContaining("重新进行 AI 分析");
+
+        verify(questionService, never()).answer(any(), any(), any());
+        verify(store, never()).saveTurn(any(), any(), any());
         verify(lock).unlock();
     }
 

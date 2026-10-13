@@ -32,6 +32,7 @@ public class VideoKnowledgeRetriever {
         List<Double> queryVector = embeddingClient.embedQuery(query.trim());
         return index.chunks().stream()
                 .map(chunk -> hit(index.context(), query, queryVector, chunk))
+                .filter(hit -> !hit.transcriptSegmentIds().isEmpty())
                 .sorted(Comparator.comparingDouble(KnowledgeSearchHit::score).reversed()
                         .thenComparingLong(KnowledgeSearchHit::startMs))
                 .limit(TOP_K)

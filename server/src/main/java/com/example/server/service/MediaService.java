@@ -106,6 +106,10 @@ public class MediaService {
         getOwnedMedia(mediaId, userId);
     }
 
+    public boolean isStudyMode(Long mediaId, Long userId) {
+        return "STUDY".equals(getOwnedMedia(mediaId, userId).getAnalysisMode());
+    }
+
     public MediaTranscriptResponse getTranscript(Long mediaId, Long userId) {
         getOwnedMedia(mediaId, userId);
         return new MediaTranscriptResponse(

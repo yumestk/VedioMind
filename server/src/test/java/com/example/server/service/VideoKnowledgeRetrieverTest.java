@@ -52,6 +52,39 @@ class VideoKnowledgeRetrieverTest {
         assertThat(hits.get(0).score()).isGreaterThan(hits.get(1).score());
     }
 
+    @Test
+    void excludesVisualOnlyChunksFromTranscriptQuestionEvidence() {
+        VideoContext context = new VideoContext(
+                42L,
+                "t1-v1-p2",
+                "ALIYUN_ASR",
+                new VideoContext.Modality("AVAILABLE", 1, 1, 1, null),
+                new VideoContext.Modality("AVAILABLE", 1, 1, 1, null),
+                List.of(new VideoContext.TranscriptEvidence(
+                        2L, 300_000, 301_000, "database index"
+                )),
+                List.of(new VideoContext.VisualEvidence(
+                        3L, 1_000, "frame.jpg", "SUCCEEDED", 90.0, "visual title"
+                ))
+        );
+        VideoKnowledgeChunk visualOnly = chunk(0, "visual", "[\"visual\"]", "[1.0,0.0]");
+        VideoKnowledgeChunk transcript = chunk(1, "database", "[\"database\"]", "[0.0,1.0]");
+        when(indexService.requireReady(42L)).thenReturn(
+                new VideoKnowledgeIndexService.IndexSnapshot(
+                        context, List.of(visualOnly, transcript), "summaries"
+                )
+        );
+        when(embeddingClient.embedQuery("visual question")).thenReturn(List.of(1.0, 0.0));
+
+        List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
+                42L, "visual question"
+        );
+
+        assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
+                .containsExactly(1);
+        assertThat(hits.getFirst().transcriptSegmentIds()).containsExactly(2L);
+    }
+
     private VideoKnowledgeChunk chunk(int index, String summary, String keywords, String embedding) {
         VideoKnowledgeChunk chunk = new VideoKnowledgeChunk();
         chunk.setChunkIndex(index);

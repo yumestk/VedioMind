@@ -78,6 +78,7 @@
               :media-id="numericMediaId"
               :user-id="currentUser.id"
               :has-transcript="Boolean(transcriptSegments.length)"
+              :analysis-mode="media.analysisMode"
               @seek="seekTo"
             />
           </div>

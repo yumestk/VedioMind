@@ -50,8 +50,11 @@ public class VideoQuestionService {
         if (question.trim().length() > 500) {
             throw new IllegalArgumentException("Question must not exceed 500 characters");
         }
-        if (segments == null || segments.isEmpty()) {
-            throw new IllegalArgumentException("Transcript segments must not be empty");
+        if (segments == null) {
+            throw new IllegalArgumentException("Transcript segments must not be null");
+        }
+        if (segments.isEmpty()) {
+            return new VideoQuestionResponse(NO_ANSWER, List.of());
         }
 
         Map<Long, TranscriptSegmentResponse> segmentsById = segments.stream()

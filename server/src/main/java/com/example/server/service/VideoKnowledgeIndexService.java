@@ -126,7 +126,9 @@ public class VideoKnowledgeIndexService {
                 .sorted(Comparator.comparingInt(VideoKnowledgeChunk::getChunkIndex))
                 .toList();
         if (plans.isEmpty() || ready.size() != plans.size()) {
-            throw new IllegalStateException("Knowledge index is not ready for the current VideoContext");
+            throw new KnowledgeIndexNotReadyException(
+                    "Knowledge index is not ready for the current VideoContext"
+            );
         }
         return new IndexSnapshot(context, ready, summaryMaterial(ready));
     }
@@ -262,6 +264,12 @@ public class VideoKnowledgeIndexService {
 
         private MutableChunk(int index) {
             this.index = index;
+        }
+    }
+
+    public static class KnowledgeIndexNotReadyException extends RuntimeException {
+        public KnowledgeIndexNotReadyException(String message) {
+            super(message);
         }
     }
 }
