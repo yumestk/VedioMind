@@ -50,6 +50,7 @@ server/src/main/resources/application-local.yaml
 /mysql/
 /minio/
 /rocketmq/store/
+/qdrant/storage/
 /uploads/
 /logs/
 /tmp/

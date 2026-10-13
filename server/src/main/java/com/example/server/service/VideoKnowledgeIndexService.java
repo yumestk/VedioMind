@@ -33,17 +33,20 @@ public class VideoKnowledgeIndexService {
     private final VideoContextService contextService;
     private final VideoChunkSummarizer chunkSummarizer;
     private final AliyunTextEmbeddingClient embeddingClient;
+    private final QdrantKnowledgeIndexService qdrantIndexService;
 
     public VideoKnowledgeIndexService(
             VideoKnowledgeChunkMapper chunkMapper,
             VideoContextService contextService,
             VideoChunkSummarizer chunkSummarizer,
-            AliyunTextEmbeddingClient embeddingClient
+            AliyunTextEmbeddingClient embeddingClient,
+            QdrantKnowledgeIndexService qdrantIndexService
     ) {
         this.chunkMapper = chunkMapper;
         this.contextService = contextService;
         this.chunkSummarizer = chunkSummarizer;
         this.embeddingClient = embeddingClient;
+        this.qdrantIndexService = qdrantIndexService;
     }
 
     public IndexSnapshot build(Long mediaId) {
@@ -111,6 +114,12 @@ public class VideoKnowledgeIndexService {
                 .toList();
         if (ready.size() != plans.size()) {
             throw new IllegalStateException("Knowledge index is incomplete");
+        }
+        try {
+            qdrantIndexService.replaceMediaIndex(ready);
+        } catch (QdrantKnowledgeIndexService.QdrantUnavailableException exception) {
+            log.warn("Qdrant index unavailable for media {}; MySQL index remains usable: {}",
+                    mediaId, exception.getMessage());
         }
         cleanupStale(mediaId, context.version());
         log.info("Knowledge index ready for media {}: {} chunks, {} new summaries, {} embedding tokens",

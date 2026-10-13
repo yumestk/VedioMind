@@ -17,6 +17,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,8 +28,9 @@ class VideoKnowledgeIndexServiceTest {
     private final VideoContextService contextService = mock(VideoContextService.class);
     private final VideoChunkSummarizer summarizer = mock(VideoChunkSummarizer.class);
     private final AliyunTextEmbeddingClient embeddingClient = mock(AliyunTextEmbeddingClient.class);
+    private final QdrantKnowledgeIndexService qdrantIndexService = mock(QdrantKnowledgeIndexService.class);
     private final VideoKnowledgeIndexService service = new VideoKnowledgeIndexService(
-            chunkMapper, contextService, summarizer, embeddingClient
+            chunkMapper, contextService, summarizer, embeddingClient, qdrantIndexService
     );
 
     @Test
@@ -81,6 +83,7 @@ class VideoKnowledgeIndexServiceTest {
         verify(summarizer, times(1)).summarize(any());
         verify(embeddingClient, times(1)).embedDocuments(any());
         verify(chunkMapper, times(1)).insert(any(VideoKnowledgeChunk.class));
+        verify(qdrantIndexService, times(2)).replaceMediaIndex(any());
         assertThat(rows).hasSize(1);
     }
 
@@ -128,6 +131,33 @@ class VideoKnowledgeIndexServiceTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("embedding unavailable");
         verify(chunkMapper, never()).delete(any());
+        verify(qdrantIndexService, never()).replaceMediaIndex(any());
+    }
+
+    @Test
+    void keepsTheMysqlIndexReadyWhenQdrantIsUnavailable() {
+        mapperBackedByMemory();
+        when(contextService.build(42L)).thenReturn(context(
+                "t1-v1-p2",
+                List.of(transcript(1L, 0, "first")),
+                List.of()
+        ));
+        when(summarizer.summarize(any())).thenReturn(
+                new VideoChunkSummarizer.ChunkSummary("summary", List.of("topic"))
+        );
+        when(embeddingClient.embedDocuments(any())).thenReturn(new AliyunTextEmbeddingClient.EmbeddingBatch(
+                List.of(vector(1)),
+                8
+        ));
+        doThrow(new QdrantKnowledgeIndexService.QdrantUnavailableException(
+                "down", new IllegalStateException("connection refused")
+        )).when(qdrantIndexService).replaceMediaIndex(any());
+
+        VideoKnowledgeIndexService.IndexSnapshot result = service.build(42L);
+
+        assertThat(result.chunks()).hasSize(1);
+        assertThat(result.chunks().getFirst().getStatus()).isEqualTo("READY");
+        verify(chunkMapper).delete(any());
     }
 
     @SafeVarargs

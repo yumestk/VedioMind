@@ -14,6 +14,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -24,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class MediaService {
 
+    private static final Logger log = LoggerFactory.getLogger(MediaService.class);
     static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v3:user:";
 
     private final MediaFileMapper mediaFileMapper;
@@ -35,6 +38,7 @@ public class MediaService {
     private final ChapterService chapterService;
     private final VisualEvidenceService visualEvidenceService;
     private final RedissonClient redissonClient;
+    private final QdrantKnowledgeIndexService qdrantIndexService;
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
@@ -45,7 +49,8 @@ public class MediaService {
             TranscriptService transcriptService,
             ChapterService chapterService,
             VisualEvidenceService visualEvidenceService,
-            RedissonClient redissonClient
+            RedissonClient redissonClient,
+            QdrantKnowledgeIndexService qdrantIndexService
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.objectStorageService = objectStorageService;
@@ -56,6 +61,7 @@ public class MediaService {
         this.chapterService = chapterService;
         this.visualEvidenceService = visualEvidenceService;
         this.redissonClient = redissonClient;
+        this.qdrantIndexService = qdrantIndexService;
     }
 
     public MediaListItemResponse importFromUrl(String url, Long userId) {
@@ -158,6 +164,12 @@ public class MediaService {
             objectStorageService.remove(media.getObjectKey());
         }
         visualEvidenceService.removeObjects(media.getId());
+        try {
+            qdrantIndexService.deleteMedia(media.getId());
+        } catch (QdrantKnowledgeIndexService.QdrantUnavailableException exception) {
+            log.warn("Qdrant cleanup unavailable for deleted media {}: {}",
+                    media.getId(), exception.getMessage());
+        }
         mediaFileMapper.deleteById(media.getId());
         invalidateList(userId);
     }

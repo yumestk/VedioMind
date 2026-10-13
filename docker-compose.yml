@@ -102,6 +102,20 @@ services:
     networks:
       - my-network
 
+  # =========================================
+  # 7. Qdrant (向量索引)
+  # =========================================
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    container_name: qdrant-media
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant/storage:/qdrant/storage
+    networks:
+      - my-network
+
 networks:
   my-network:
     driver: bridge

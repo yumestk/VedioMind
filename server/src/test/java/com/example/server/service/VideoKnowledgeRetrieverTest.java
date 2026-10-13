@@ -6,17 +6,20 @@ import com.example.server.service.context.VideoContext;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VideoKnowledgeRetrieverTest {
 
     private final VideoKnowledgeIndexService indexService = mock(VideoKnowledgeIndexService.class);
     private final AliyunTextEmbeddingClient embeddingClient = mock(AliyunTextEmbeddingClient.class);
+    private final QdrantKnowledgeIndexService qdrantIndexService = mock(QdrantKnowledgeIndexService.class);
     private final VideoKnowledgeRetriever retriever = new VideoKnowledgeRetriever(
-            indexService, embeddingClient
+            indexService, embeddingClient, qdrantIndexService
     );
 
     @Test
@@ -87,9 +90,48 @@ class VideoKnowledgeRetrieverTest {
                 .containsExactly(3L);
     }
 
+    @Test
+    void reranksOnlyQdrantCandidatesWhenTheIndexIsComplete() {
+        VideoContext context = new VideoContext(
+                42L,
+                "t1-v1-p2",
+                "ALIYUN_ASR",
+                new VideoContext.Modality("AVAILABLE", 1, 0, 0, null),
+                new VideoContext.Modality("UNAVAILABLE", 0, 0, 0, null),
+                List.of(),
+                List.of()
+        );
+        List<VideoKnowledgeChunk> chunks = IntStream.range(0, 13)
+                .mapToObj(index -> chunk(
+                        index,
+                        "chunk " + index,
+                        "[]",
+                        index == 12 ? "[]" : "[1.0,0.0]"
+                ))
+                .toList();
+        when(embeddingClient.embedQuery("topic")).thenReturn(List.of(1.0, 0.0));
+        when(qdrantIndexService.search(
+                42L, "t1-v1-p2", 1, List.of(1.0, 0.0), 12
+        )).thenReturn(IntStream.rangeClosed(1, 12).mapToObj(Long::valueOf).toList());
+
+        List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.searchMultimodal(
+                new VideoKnowledgeIndexService.IndexSnapshot(context, chunks, "summaries"),
+                "topic"
+        );
+
+        assertThat(hits).hasSize(4);
+        verify(qdrantIndexService).search(
+                42L, "t1-v1-p2", 1, List.of(1.0, 0.0), 12
+        );
+    }
+
     private VideoKnowledgeChunk chunk(int index, String summary, String keywords, String embedding) {
         VideoKnowledgeChunk chunk = new VideoKnowledgeChunk();
         chunk.setChunkIndex(index);
+        chunk.setId((long) index + 1);
+        chunk.setMediaId(42L);
+        chunk.setContextVersion("t1-v1-p2");
+        chunk.setProcessorVersion(1);
         chunk.setStartMs(index * VideoKnowledgeIndexService.CHUNK_MS);
         chunk.setEndMs((index + 1L) * VideoKnowledgeIndexService.CHUNK_MS);
         chunk.setSummary(summary);

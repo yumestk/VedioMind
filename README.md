@@ -8,8 +8,8 @@
 
 - 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
 - Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
-- Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块持久化摘要、关键词和阿里云 `text-embedding-v4` 向量；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
-- Study Mode 问答使用当前问题与上一轮对话执行 Chunk 向量、关键词混合检索，再回到原始句级字幕生成带引用回答；Quick Insight 继续直接使用平台字幕。
+- Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块将摘要、关键词和阿里云 `text-embedding-v4` 向量持久化到 MySQL，并将就绪向量同步到可重建的 Qdrant 检索索引；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
+- Study Mode 问答使用当前问题与上一轮对话从 Qdrant 召回 Chunk 候选，并结合 MySQL 关键词和原始向量精排，再回到句级字幕生成带引用回答；Qdrant 缺失或不可用时自动退回 MySQL 精确扫描，Quick Insight 继续直接使用平台字幕。
 - Study Mode 提供持久化学习助手：Planner 将目标拆成最多 3 个子任务，Executor 按任务检索字幕与 OCR，Critic 校验证据并生成核心结论、知识点和 3 道自测题；最多修订一次，所有引用由后端校验。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
@@ -70,6 +70,7 @@ flowchart TD
     AA -->|是| AB[按 5 分钟生成版本化知识块]
     AB --> AC[逐块摘要并批量生成 Embedding]
     AC --> L[基于全部 Chunk 生成全局 Summary]
+    AC -. 最佳努力同步 .-> AE[(Qdrant 可重建索引)]
     AA -->|否| AD[基于平台 Transcript 生成 Summary]
     AD --> Q[生成并校验语义章节]
     L --> Q
@@ -137,7 +138,7 @@ flowchart LR
 | 前端 | Vue 3、Vue Router、Axios、Vite、Marked、DOMPurify |
 | 后端 | Java 21、Spring Boot 3、MyBatis-Plus、Undertow |
 | 异步任务 | RocketMQ 4.9.4、Redisson |
-| 数据 | MySQL 8、Redis、Flyway |
+| 数据 | MySQL 8、Redis、Qdrant、Flyway |
 | 对象存储 | MinIO |
 | 媒体处理 | FFmpeg、Tesseract OCR、yt-dlp |
 | AI | 阿里云 Paraformer ASR、text-embedding-v4、DeepSeek |
@@ -204,7 +205,7 @@ RocketMQ 无法接收任务时，接口返回 HTTP `503 Service Unavailable` 和
 docker compose up -d
 ```
 
-默认会启动 MySQL、Redis、MinIO、RocketMQ NameServer、Broker 和 Dashboard。端口见 [docker-compose.yml](docker-compose.yml)。
+默认会启动 MySQL、Redis、Qdrant、MinIO、RocketMQ NameServer、Broker 和 Dashboard。端口见 [docker-compose.yml](docker-compose.yml)。
 
 演示前可确认 RocketMQ 两个核心容器均为 `Up`：
 
@@ -225,7 +226,7 @@ export TESSERACT_PATH=/path/to/tesseract
 export YTDLP_PATH=/path/to/yt-dlp
 ```
 
-数据库连接、MinIO、Redis 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。
+数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。
 
 本地上传默认上限为 10 GiB，可通过 `MEDIA_UPLOAD_MAX_FILE_SIZE_BYTES` 修改。预签名地址必须使用浏览器能够访问的 MinIO 地址；远程部署时设置 `MINIO_PUBLIC_ENDPOINT` 与 `MINIO_CORS_ALLOW_ORIGIN`。若本机的 `9000/9001` 已被占用，可在启动 Compose 前设置 `MINIO_API_PORT` 与 `MINIO_CONSOLE_PORT`，并同步调整 `MINIO_ENDPOINT`、`MINIO_PUBLIC_ENDPOINT`。
 
@@ -259,7 +260,7 @@ npm test
 npm run build
 ```
 
-当前 66 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 76 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 

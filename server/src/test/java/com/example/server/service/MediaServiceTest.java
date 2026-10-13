@@ -14,6 +14,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -29,6 +30,7 @@ class MediaServiceTest {
     private final ChapterService chapterService = mock(ChapterService.class);
     private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
+    private final QdrantKnowledgeIndexService qdrantIndexService = mock(QdrantKnowledgeIndexService.class);
     private final MediaService mediaService = new MediaService(
             mediaFileMapper,
             objectStorageService,
@@ -38,7 +40,8 @@ class MediaServiceTest {
             transcriptService,
             chapterService,
             visualEvidenceService,
-            redissonClient
+            redissonClient,
+            qdrantIndexService
     );
 
     @Test
@@ -105,6 +108,7 @@ class MediaServiceTest {
 
         verify(objectStorageService).remove("objects/lesson.mp4");
         verify(visualEvidenceService).removeObjects(42L);
+        verify(qdrantIndexService).deleteMedia(42L);
         verify(mediaFileMapper).deleteById(42L);
     }
 
@@ -125,5 +129,20 @@ class MediaServiceTest {
         verify(lock).lock();
         verify(lock).unlock();
         verify(objectStorageService).remove("objects/lesson.mp4");
+    }
+
+    @Test
+    void deletionContinuesWhenQdrantCleanupIsUnavailable() {
+        MediaFile media = new MediaFile();
+        media.setId(42L);
+        media.setUserId(7L);
+        when(mediaFileMapper.selectOne(any())).thenReturn(media);
+        doThrow(new QdrantKnowledgeIndexService.QdrantUnavailableException(
+                "down", new IllegalStateException("connection refused")
+        )).when(qdrantIndexService).deleteMedia(42L);
+
+        mediaService.delete(42L, 7L);
+
+        verify(mediaFileMapper).deleteById(42L);
     }
 }
