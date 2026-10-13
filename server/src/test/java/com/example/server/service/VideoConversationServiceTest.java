@@ -117,7 +117,8 @@ class VideoConversationServiceTest {
                 42L,
                 "上一问：介绍数据库\n上一答：视频介绍了 MySQL 和 PostgreSQL\n当前问题：第二个有什么优点？"
         )).thenReturn(List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
-                0, 0, 300_000, "摘要", List.of("PostgreSQL"), 0.9, List.of(10L, 9L, 10L)
+                0, 0, 300_000, "摘要", List.of("PostgreSQL"), 0.9,
+                List.of(10L, 9L, 10L), List.of()
         )));
         when(questionService.answer(
                 eq("第二个有什么优点？"), eq(List.of(second, first)), any()

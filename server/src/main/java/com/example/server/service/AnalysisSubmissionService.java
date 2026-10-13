@@ -59,6 +59,7 @@ public class AnalysisSubmissionService {
             TransactionSendResult result = rocketMQTemplate.sendMessageInTransaction(
                     TOPIC,
                     MessageBuilder.withPayload(command)
+                            .setHeader(VideoAgentSubmissionService.TASK_TYPE_HEADER, "ANALYSIS")
                             .setHeader(JOB_ID_HEADER, command.jobId())
                             .build(),
                     command

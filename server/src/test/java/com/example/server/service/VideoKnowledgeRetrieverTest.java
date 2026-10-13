@@ -83,6 +83,8 @@ class VideoKnowledgeRetrieverTest {
         assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
                 .containsExactly(1);
         assertThat(hits.getFirst().transcriptSegmentIds()).containsExactly(2L);
+        assertThat(retriever.searchMultimodal(42L, "visual question").getFirst().visualEvidenceIds())
+                .containsExactly(3L);
     }
 
     private VideoKnowledgeChunk chunk(int index, String summary, String keywords, String embedding) {

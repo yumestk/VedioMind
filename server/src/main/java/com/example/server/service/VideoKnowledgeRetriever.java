@@ -25,14 +25,25 @@ public class VideoKnowledgeRetriever {
     }
 
     public List<KnowledgeSearchHit> search(Long mediaId, String query) {
+        return searchMultimodal(mediaId, query).stream()
+                .filter(hit -> !hit.transcriptSegmentIds().isEmpty())
+                .toList();
+    }
+
+    public List<KnowledgeSearchHit> searchMultimodal(Long mediaId, String query) {
+        return searchMultimodal(indexService.requireReady(mediaId), query);
+    }
+
+    public List<KnowledgeSearchHit> searchMultimodal(
+            VideoKnowledgeIndexService.IndexSnapshot index,
+            String query
+    ) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("Knowledge search query must not be empty");
         }
-        VideoKnowledgeIndexService.IndexSnapshot index = indexService.requireReady(mediaId);
         List<Double> queryVector = embeddingClient.embedQuery(query.trim());
         return index.chunks().stream()
                 .map(chunk -> hit(index.context(), query, queryVector, chunk))
-                .filter(hit -> !hit.transcriptSegmentIds().isEmpty())
                 .sorted(Comparator.comparingDouble(KnowledgeSearchHit::score).reversed()
                         .thenComparingLong(KnowledgeSearchHit::startMs))
                 .limit(TOP_K)
@@ -54,6 +65,12 @@ public class VideoKnowledgeRetriever {
                         && segment.startMs() < chunk.getEndMs())
                 .map(VideoContext.TranscriptEvidence::id)
                 .toList();
+        List<Long> visualIds = context.visualEvidence().stream()
+                .filter(frame -> frame.ocrText() != null && !frame.ocrText().isBlank())
+                .filter(frame -> frame.timestampMs() >= chunk.getStartMs()
+                        && frame.timestampMs() < chunk.getEndMs())
+                .map(VideoContext.VisualEvidence::id)
+                .toList();
         return new KnowledgeSearchHit(
                 chunk.getChunkIndex(),
                 chunk.getStartMs(),
@@ -61,7 +78,8 @@ public class VideoKnowledgeRetriever {
                 chunk.getSummary(),
                 keywords,
                 semanticScore * 0.8 + keywordScore * 0.2,
-                segmentIds
+                segmentIds,
+                visualIds
         );
     }
 
@@ -108,11 +126,13 @@ public class VideoKnowledgeRetriever {
             String summary,
             List<String> keywords,
             double score,
-            List<Long> transcriptSegmentIds
+            List<Long> transcriptSegmentIds,
+            List<Long> visualEvidenceIds
     ) {
         public KnowledgeSearchHit {
             keywords = List.copyOf(keywords);
             transcriptSegmentIds = List.copyOf(transcriptSegmentIds);
+            visualEvidenceIds = List.copyOf(visualEvidenceIds);
         }
     }
 }

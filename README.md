@@ -10,6 +10,7 @@
 - Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
 - Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块持久化摘要、关键词和阿里云 `text-embedding-v4` 向量；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
 - Study Mode 问答使用当前问题与上一轮对话执行 Chunk 向量、关键词混合检索，再回到原始句级字幕生成带引用回答；Quick Insight 继续直接使用平台字幕。
+- Study Mode 提供持久化学习助手：Planner 将目标拆成最多 3 个子任务，Executor 按任务检索字幕与 OCR，Critic 校验证据并生成核心结论、知识点和 3 道自测题；最多修订一次，所有引用由后端校验。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳；DeepSeek 生成分块摘要、全局总结和语义章节。
@@ -36,6 +37,7 @@
 - 字幕支持本地播放高亮、点击时间跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
 - 关键帧和 OCR 作为内部证据供后续检索、问答与 Agent 使用，不直接向普通用户展示原始 OCR 卡片；URL 视频因不下载原文件，其 VideoContext 明确标记视觉模态不适用。
 - 视频问答按媒体持久化会话、消息与引用快照，支持会话切换和刷新恢复；最近 6 轮对话帮助模型理解指代，Study Mode 使用上一轮问答召回 Top 4 知识块并回源原始句级字幕，URL 视频继续使用完整平台字幕。
+- Study Mode 的“学习助手”异步生成结构化学习笔记；任务历史和当前阶段可在刷新后恢复，字幕与画面文字引用均可点击跳转播放器。
 - 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击后按来源跳转本地播放器或平台嵌入播放器。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
 
@@ -109,6 +111,25 @@ QUEUED
 
 这里选择 RocketMQ 事务消息而不是额外引入 Outbox：项目已经依赖 RocketMQ，事务消息能够以更少的组件完成当前所需的“本地任务记录 + MQ 投递”一致性。消费者侧的幂等、状态恢复和重试仍由 `AnalysisJob`、Redisson 与 RocketMQ 共同完成。
 
+学习助手复用同一事务生产者，但使用独立 Topic、Consumer 和持久化状态：
+
+```mermaid
+flowchart LR
+    A[提交学习目标] --> B[RocketMQ 事务消息]
+    B --> C[持久化 AgentRun]
+    C --> D[Planner 全局规划]
+    D --> E[Executor 分任务检索与草稿]
+    E --> F[Critic 校验]
+    F -->|通过| G[结构化学习笔记]
+    F -->|不通过，最多一次| H[Revision]
+    H --> G
+    D -. Checkpoint .-> I[(AgentStep)]
+    E -. Checkpoint .-> I
+    F -. Checkpoint .-> I
+```
+
+每次模型与检索调用前先持久化预算消耗；成功阶段立即写入 `video_agent_steps`，RocketMQ 重投时从最近成功阶段继续，不重复执行已经完成的 Executor。单任务最多 3 个子任务、9 次生成调用、6 次检索调用和 10 分钟执行时间。
+
 ## 技术栈
 
 | 层次 | 技术 |
@@ -139,6 +160,9 @@ QUEUED
 | `POST` | `/media/{mediaId}/conversations` | 创建问答会话 |
 | `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
 | `POST` | `/conversations/{conversationId}/messages` | 基于字幕进行带上下文的追问 |
+| `POST` | `/media/{mediaId}/agent-runs` | 创建 Study Mode 学习助手任务 |
+| `GET` | `/media/{mediaId}/agent-runs` | 查询媒体的学习任务历史 |
+| `GET` | `/agent-runs/{runId}` | 查询学习任务阶段、用量与结构化结果 |
 | `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
 | `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
 | `GET` | `/analysis/media/{mediaId}/active-job` | 查询媒体当前活动任务 |
@@ -235,14 +259,14 @@ npm test
 npm run build
 ```
 
-当前 60 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 66 个后端测试覆盖事务消息提交/回查、RocketMQ 不可用错误映射、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 
 - Spring Security、密码哈希、资源所有权校验与统一错误响应。
 - 建立中英文长视频问答集，评测 Chunk Recall@4、无答案拒答率、引用准确率和上下文压缩比例。
-- Study Mode 的图片模型理解和有限 Agent 编排。
+- 建立学习助手评测集，对比单次生成与 Agent 的目标覆盖率、事实支持率、引用准确率、耗时和 Token 成本。
 - 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。
 - 章节人工编辑、合并拆分和播放器进度条标记。
-- 让 Agent 通过混合检索按需消费已建立的多模态 VideoContext。
+- Study Mode 的图片模型理解；当前视觉模态仅消费 OCR 文本，不理解图表和无文字画面。
 - 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。

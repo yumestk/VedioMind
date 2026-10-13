@@ -36,6 +36,10 @@ public class DeepSeekChatClient {
     }
 
     public String chat(String systemPrompt, List<DeepSeekMessage> conversation) {
+        return chatWithUsage(systemPrompt, conversation).content();
+    }
+
+    public ChatResult chatWithUsage(String systemPrompt, List<DeepSeekMessage> conversation) {
         if (systemPrompt == null || systemPrompt.isBlank() || conversation == null || conversation.isEmpty()) {
             throw new IllegalArgumentException("DeepSeek messages must not be empty");
         }
@@ -86,9 +90,17 @@ public class DeepSeekChatClient {
             if (content == null || content.isBlank()) {
                 throw new IllegalStateException("Language model returned an empty response");
             }
-            return content;
+            JSONObject usage = responseJson.getJSONObject("usage");
+            return new ChatResult(
+                    content,
+                    usage == null ? null : usage.getInteger("prompt_tokens"),
+                    usage == null ? null : usage.getInteger("completion_tokens")
+            );
         } catch (IOException exception) {
             throw new IllegalStateException("Language model connection failed", exception);
         }
+    }
+
+    public record ChatResult(String content, Integer inputTokens, Integer outputTokens) {
     }
 }

@@ -45,6 +45,25 @@ export const sendConversationMessage = async (conversationId, userId, question) 
   return response.data
 }
 
+export const listVideoAgentRuns = async (mediaId, userId) => {
+  const response = await http.get(`/media/${mediaId}/agent-runs`, { params: { userId } })
+  return response.data
+}
+
+export const createVideoAgentRun = async (mediaId, userId, goal) => {
+  const response = await http.post(
+    `/media/${mediaId}/agent-runs`,
+    { goal },
+    { params: { userId } }
+  )
+  return response.data
+}
+
+export const getVideoAgentRun = async (runId, userId) => {
+  const response = await http.get(`/agent-runs/${runId}`, { params: { userId } })
+  return response.data
+}
+
 export const initiateMediaUpload = async (file, userId) => {
   const response = await http.post('/media/uploads', {
     filename: file.name,

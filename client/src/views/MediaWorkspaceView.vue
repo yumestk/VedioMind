@@ -61,6 +61,11 @@
             <button :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">AI 总结</button>
             <button :class="{ active: activeTab === 'timeline' }" @click="activeTab = 'timeline'">内容时间轴</button>
             <button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">视频问答</button>
+            <button
+              v-if="media.analysisMode === 'STUDY'"
+              :class="{ active: activeTab === 'agent' }"
+              @click="activeTab = 'agent'"
+            >学习助手</button>
           </div>
           <div class="content-scroll">
             <SummaryPanel v-show="activeTab === 'summary'" :summary="media.summary" />
@@ -81,6 +86,14 @@
               :analysis-mode="media.analysisMode"
               @seek="seekTo"
             />
+            <StudyAgentPanel
+              v-if="media.analysisMode === 'STUDY'"
+              v-show="activeTab === 'agent'"
+              :media-id="numericMediaId"
+              :user-id="currentUser.id"
+              :has-transcript="Boolean(transcriptSegments.length)"
+              @seek="seekTo"
+            />
           </div>
         </section>
       </div>
@@ -97,6 +110,7 @@ import ContentTimelinePanel from '../components/ContentTimelinePanel.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import ExternalVideoPlayer from '../components/ExternalVideoPlayer.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
+import StudyAgentPanel from '../components/StudyAgentPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
