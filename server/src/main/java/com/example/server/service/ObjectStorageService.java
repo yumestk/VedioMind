@@ -12,6 +12,7 @@ import software.amazon.awssdk.services.s3.model.CompletedMultipartUpload;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListPartsRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
@@ -22,9 +23,14 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 import software.amazon.awssdk.services.s3.presigner.model.UploadPartPresignRequest;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -129,6 +135,33 @@ public class ObjectStorageService {
             }
             throw exception;
         }
+    }
+
+    public String calculateSha256(String objectKey) {
+        try (InputStream input = s3Client.getObject(GetObjectRequest.builder()
+                .bucket(bucketName)
+                .key(objectKey)
+                .build())) {
+            return sha256(input);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to read uploaded media for content hashing", exception);
+        }
+    }
+
+    static String sha256(InputStream input) throws IOException {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is not available", exception);
+        }
+
+        byte[] buffer = new byte[1024 * 1024];
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            digest.update(buffer, 0, read);
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
 
     public String createReadUrl(String objectKey) {

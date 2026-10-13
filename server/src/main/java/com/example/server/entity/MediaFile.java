@@ -25,6 +25,7 @@ public class MediaFile {
     private String objectKey;
     private String mimeType;
     private Long fileSize;
+    private String contentSha256;
     private Long durationMs;
     private String transcriptSource;
     private String transcriptLanguage;

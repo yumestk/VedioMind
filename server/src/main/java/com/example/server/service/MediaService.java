@@ -12,6 +12,8 @@ import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.external.ExternalVideoImportService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -32,6 +34,7 @@ public class MediaService {
     private final TranscriptService transcriptService;
     private final ChapterService chapterService;
     private final VisualEvidenceService visualEvidenceService;
+    private final RedissonClient redissonClient;
 
     public MediaService(
             MediaFileMapper mediaFileMapper,
@@ -41,7 +44,8 @@ public class MediaService {
             ObjectMapper objectMapper,
             TranscriptService transcriptService,
             ChapterService chapterService,
-            VisualEvidenceService visualEvidenceService
+            VisualEvidenceService visualEvidenceService,
+            RedissonClient redissonClient
     ) {
         this.mediaFileMapper = mediaFileMapper;
         this.objectStorageService = objectStorageService;
@@ -51,6 +55,7 @@ public class MediaService {
         this.transcriptService = transcriptService;
         this.chapterService = chapterService;
         this.visualEvidenceService = visualEvidenceService;
+        this.redissonClient = redissonClient;
     }
 
     public MediaListItemResponse importFromUrl(String url, Long userId) {
@@ -132,11 +137,28 @@ public class MediaService {
 
     public void delete(Long mediaId, Long userId) {
         MediaFile media = getOwnedMedia(mediaId, userId);
+        if (media.getContentSha256() == null || media.getContentSha256().isBlank()) {
+            deleteMedia(media, userId);
+            return;
+        }
+
+        RLock lock = redissonClient.getLock(contentLockKey(userId, media.getContentSha256()));
+        lock.lock();
+        try {
+            deleteMedia(getOwnedMedia(mediaId, userId), userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private void deleteMedia(MediaFile media, Long userId) {
         if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
             objectStorageService.remove(media.getObjectKey());
         }
-        visualEvidenceService.removeObjects(mediaId);
-        mediaFileMapper.deleteById(mediaId);
+        visualEvidenceService.removeObjects(media.getId());
+        mediaFileMapper.deleteById(media.getId());
         invalidateList(userId);
     }
 
@@ -145,7 +167,8 @@ public class MediaService {
             String filename,
             String objectKey,
             String mimeType,
-            long fileSize
+            long fileSize,
+            String contentSha256
     ) {
         requireUserId(userId);
         MediaFile existing = mediaFileMapper.selectOne(
@@ -167,6 +190,7 @@ public class MediaService {
         media.setObjectKey(objectKey);
         media.setMimeType(mimeType);
         media.setFileSize(fileSize);
+        media.setContentSha256(contentSha256);
         media.setUploadTime(LocalDateTime.now());
         mediaFileMapper.insert(media);
         invalidateList(userId);
@@ -175,6 +199,22 @@ public class MediaService {
 
     MediaListItemResponse getListItem(Long mediaId, Long userId) {
         return MediaListItemResponse.from(getOwnedMedia(mediaId, userId));
+    }
+
+    MediaFile findByContentSha256(Long userId, String contentSha256) {
+        requireUserId(userId);
+        if (contentSha256 == null || contentSha256.isBlank()) {
+            return null;
+        }
+        return mediaFileMapper.selectOne(
+                new LambdaQueryWrapper<MediaFile>()
+                        .eq(MediaFile::getUserId, userId)
+                        .eq(MediaFile::getContentSha256, contentSha256)
+        );
+    }
+
+    static String contentLockKey(Long userId, String contentSha256) {
+        return "lock:media-content:" + userId + ":" + contentSha256;
     }
 
     private MediaFile getOwnedMedia(Long mediaId, Long userId) {

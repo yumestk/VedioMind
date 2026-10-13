@@ -9,9 +9,11 @@ import com.example.server.dto.MediaUploadSessionResponse;
 import com.example.server.dto.UploadPartUrlResponse;
 import com.example.server.dto.UploadedPartResponse;
 import com.example.server.entity.MediaUploadSession;
+import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaUploadSessionMapper;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -126,6 +128,13 @@ public class MediaUploadService {
             }
             requireUploading(session);
 
+            if (hasContentHash(session)) {
+                MediaListItemResponse existing = reuseExistingMedia(session, userId);
+                if (existing != null) {
+                    return existing;
+                }
+            }
+
             Long finalSize = objectStorageService.objectSize(session.getObjectKey());
             if (finalSize == null) {
                 List<ObjectStorageService.StoredPart> storedParts = validateParts(session, request);
@@ -138,23 +147,85 @@ public class MediaUploadService {
                 throw new IllegalStateException("Completed upload size does not match the selected file");
             }
 
-            MediaListItemResponse media = mediaService.registerLocalUpload(
-                    userId,
-                    session.getFilename(),
-                    session.getObjectKey(),
-                    session.getMimeType(),
-                    session.getFileSize()
-            );
-            session.setStatus(COMPLETED);
-            session.setMediaId(media.id());
-            session.setUpdatedAt(LocalDateTime.now());
-            sessionMapper.updateById(session);
-            return media;
+            if (!hasContentHash(session)) {
+                session.setContentSha256(objectStorageService.calculateSha256(session.getObjectKey()));
+                session.setUpdatedAt(LocalDateTime.now());
+                sessionMapper.updateById(session);
+            }
+
+            return registerOrReuseMedia(session, userId);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }
         }
+    }
+
+    private MediaListItemResponse reuseExistingMedia(MediaUploadSession session, Long userId) {
+        RLock lock = redissonClient.getLock(MediaService.contentLockKey(userId, session.getContentSha256()));
+        lock.lock();
+        try {
+            MediaFile existing = mediaService.findByContentSha256(userId, session.getContentSha256());
+            return existing == null ? null : reuseMedia(session, existing);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private MediaListItemResponse registerOrReuseMedia(MediaUploadSession session, Long userId) {
+        RLock lock = redissonClient.getLock(MediaService.contentLockKey(userId, session.getContentSha256()));
+        lock.lock();
+        try {
+            MediaFile existing = mediaService.findByContentSha256(userId, session.getContentSha256());
+            if (existing != null) {
+                return reuseMedia(session, existing);
+            }
+
+            try {
+                MediaListItemResponse media = mediaService.registerLocalUpload(
+                        userId,
+                        session.getFilename(),
+                        session.getObjectKey(),
+                        session.getMimeType(),
+                        session.getFileSize(),
+                        session.getContentSha256()
+                );
+                completeSession(session, media.id());
+                return media;
+            } catch (DuplicateKeyException exception) {
+                MediaFile duplicate = mediaService.findByContentSha256(userId, session.getContentSha256());
+                if (duplicate == null) {
+                    throw exception;
+                }
+                return reuseMedia(session, duplicate);
+            }
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    private MediaListItemResponse reuseMedia(MediaUploadSession session, MediaFile existing) {
+        if (!session.getObjectKey().equals(existing.getObjectKey())) {
+            objectStorageService.remove(session.getObjectKey());
+        }
+        MediaListItemResponse media = MediaListItemResponse.from(existing);
+        completeSession(session, media.id());
+        return media;
+    }
+
+    private void completeSession(MediaUploadSession session, Long mediaId) {
+        session.setStatus(COMPLETED);
+        session.setMediaId(mediaId);
+        session.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.updateById(session);
+    }
+
+    private boolean hasContentHash(MediaUploadSession session) {
+        return session.getContentSha256() != null && !session.getContentSha256().isBlank();
     }
 
     public void abort(String sessionId, Long userId) {

@@ -21,6 +21,7 @@ public class MediaUploadSession {
     private String mimeType;
     private Long fileSize;
     private Long partSize;
+    private String contentSha256;
     private String status;
     private Long mediaId;
     private LocalDateTime createdAt;

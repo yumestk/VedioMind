@@ -18,8 +18,11 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -86,6 +89,7 @@ class MediaUploadServiceTest {
                 new ObjectStorageService.StoredPart(3, "\"etag-3\"", 5)
         );
         when(objectStorageService.listParts("media/random.mp4", "upload-1")).thenReturn(storedParts);
+        when(objectStorageService.calculateSha256("media/random.mp4")).thenReturn("content-hash");
 
         MediaFile media = new MediaFile();
         media.setId(42L);
@@ -95,7 +99,7 @@ class MediaUploadServiceTest {
         media.setAnalysisMode("STUDY");
         MediaListItemResponse mediaResponse = MediaListItemResponse.from(media);
         when(mediaService.registerLocalUpload(
-                7L, "lesson.mp4", "media/random.mp4", "video/mp4", fileSize
+                7L, "lesson.mp4", "media/random.mp4", "video/mp4", fileSize, "content-hash"
         )).thenReturn(mediaResponse);
 
         MediaListItemResponse response = uploadService.complete(
@@ -110,9 +114,64 @@ class MediaUploadServiceTest {
 
         assertThat(response.id()).isEqualTo(42L);
         verify(objectStorageService).completeMultipartUpload("media/random.mp4", "upload-1", storedParts);
-        verify(sessionMapper).updateById(session);
+        verify(sessionMapper, times(2)).updateById(session);
+        assertThat(session.getContentSha256()).isEqualTo("content-hash");
         assertThat(session.getStatus()).isEqualTo("COMPLETED");
         assertThat(session.getMediaId()).isEqualTo(42L);
+    }
+
+    @Test
+    void reusesSameUsersExistingMediaAndDeletesOnlyTheDuplicateObject() {
+        long fileSize = 1024L;
+        MediaUploadSession session = session(fileSize);
+        session.setContentSha256("content-hash");
+        when(sessionMapper.selectById("session-1")).thenReturn(session);
+
+        MediaFile existing = new MediaFile();
+        existing.setId(99L);
+        existing.setUserId(7L);
+        existing.setFilename("original.mp4");
+        existing.setObjectKey("media/original.mp4");
+        existing.setContentSha256("content-hash");
+        when(mediaService.findByContentSha256(7L, "content-hash")).thenReturn(existing);
+
+        MediaListItemResponse response = uploadService.complete(
+                "session-1",
+                new CompleteMediaUploadRequest(List.of()),
+                7L
+        );
+
+        assertThat(response.id()).isEqualTo(99L);
+        verify(objectStorageService).remove("media/random.mp4");
+        verify(objectStorageService, never()).calculateSha256(anyString());
+        verify(mediaService, never()).registerLocalUpload(any(), any(), any(), any(), anyLong(), any());
+        assertThat(session.getStatus()).isEqualTo("COMPLETED");
+        assertThat(session.getMediaId()).isEqualTo(99L);
+    }
+
+    @Test
+    void retryAfterRegistrationLinksTheSameObjectWithoutDeletingIt() {
+        MediaUploadSession session = session(1024L);
+        session.setContentSha256("content-hash");
+        when(sessionMapper.selectById("session-1")).thenReturn(session);
+
+        MediaFile existing = new MediaFile();
+        existing.setId(42L);
+        existing.setUserId(7L);
+        existing.setFilename("lesson.mp4");
+        existing.setObjectKey("media/random.mp4");
+        existing.setContentSha256("content-hash");
+        when(mediaService.findByContentSha256(7L, "content-hash")).thenReturn(existing);
+
+        MediaListItemResponse response = uploadService.complete(
+                "session-1",
+                new CompleteMediaUploadRequest(List.of()),
+                7L
+        );
+
+        assertThat(response.id()).isEqualTo(42L);
+        verify(objectStorageService, never()).remove(anyString());
+        assertThat(session.getStatus()).isEqualTo("COMPLETED");
     }
 
     private MediaUploadSession session(long fileSize) {
