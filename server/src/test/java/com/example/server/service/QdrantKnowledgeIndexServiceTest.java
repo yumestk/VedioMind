@@ -8,6 +8,7 @@ import io.qdrant.client.QdrantClient;
 import io.qdrant.client.grpc.Points;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -29,6 +30,16 @@ class QdrantKnowledgeIndexServiceTest {
     private final QdrantKnowledgeIndexService service = new QdrantKnowledgeIndexService(
             client, "knowledge", TIMEOUT
     );
+
+    @Test
+    void exposesTheProductionConstructorToSpring() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(QdrantKnowledgeIndexService.class);
+            context.refresh();
+
+            assertThat(context.getBean(QdrantKnowledgeIndexService.class)).isNotNull();
+        }
+    }
 
     @Test
     void replacesMediaPointsWithStableChunkIdsAndMetadata() {

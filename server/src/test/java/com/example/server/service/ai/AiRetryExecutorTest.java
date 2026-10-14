@@ -1,6 +1,7 @@
 package com.example.server.service.ai;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,6 +21,17 @@ class AiRetryExecutorTest {
     private final AiRetryExecutor executor = new AiRetryExecutor(
             rateLimitService, delays::add, () -> 100
     );
+
+    @Test
+    void exposesTheProductionConstructorToSpring() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(AiRateLimitService.class, () -> rateLimitService);
+            context.register(AiRetryExecutor.class);
+            context.refresh();
+
+            assertThat(context.getBean(AiRetryExecutor.class)).isNotNull();
+        }
+    }
 
     @Test
     void retriesTransientFailuresThreeTimesWithProviderPermitsAndBackoff() {

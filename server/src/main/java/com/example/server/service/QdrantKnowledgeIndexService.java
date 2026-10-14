@@ -11,6 +11,7 @@ import io.qdrant.client.grpc.Collections;
 import io.qdrant.client.grpc.Common;
 import io.qdrant.client.grpc.Points;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +36,7 @@ public class QdrantKnowledgeIndexService {
     private final Duration timeout;
     private volatile boolean collectionReady;
 
+    @Autowired
     public QdrantKnowledgeIndexService(
             @Value("${qdrant.host:localhost}") String host,
             @Value("${qdrant.grpc-port:6334}") int grpcPort,
