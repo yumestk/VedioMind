@@ -12,7 +12,6 @@ import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
-import com.example.server.service.ai.AiRateLimitService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.redisson.api.RLock;
@@ -46,7 +45,6 @@ public class VideoConversationService {
     private final VideoKnowledgeRetriever knowledgeRetriever;
     private final VideoAgentRunService agentRunService;
     private final RedissonClient redissonClient;
-    private final AiRateLimitService rateLimitService;
 
     public VideoConversationService(
             VideoConversationStore store,
@@ -54,8 +52,7 @@ public class VideoConversationService {
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
             VideoAgentRunService agentRunService,
-            RedissonClient redissonClient,
-            AiRateLimitService rateLimitService
+            RedissonClient redissonClient
     ) {
         this.store = store;
         this.mediaService = mediaService;
@@ -63,7 +60,6 @@ public class VideoConversationService {
         this.knowledgeRetriever = knowledgeRetriever;
         this.agentRunService = agentRunService;
         this.redissonClient = redissonClient;
-        this.rateLimitService = rateLimitService;
     }
 
     public List<VideoConversationResponse> list(Long mediaId, Long userId) {
@@ -88,9 +84,9 @@ public class VideoConversationService {
         return store.listMessages(conversation.getId());
     }
 
-    public ConversationTurnResponse ask(Long conversationId, Long userId, String question) {
+    public ConversationTurnResponse ask(Long mediaId, Long conversationId, Long userId, String question) {
         String normalizedQuestion = normalizeQuestion(question);
-        requireOwnedConversation(conversationId, userId);
+        requireConversationForMedia(mediaId, conversationId, userId);
 
         RLock lock = redissonClient.getLock("lock:video-conversation:" + conversationId);
         boolean locked = false;
@@ -100,13 +96,12 @@ public class VideoConversationService {
                 throw new ConversationBusyException("This conversation is already answering a question");
             }
 
-            VideoConversation conversation = requireOwnedConversation(conversationId, userId);
+            VideoConversation conversation = requireConversationForMedia(mediaId, conversationId, userId);
             MediaTranscriptResponse transcript = mediaService.getTranscript(conversation.getMediaId(), userId);
             if (transcript.segments().isEmpty()) {
                 throw new ConversationNotReadyException("Analyze the video before asking questions");
             }
 
-            rateLimitService.requireRequest(userId);
             List<DeepSeekMessage> history = trimHistory(
                     store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES)
             );
@@ -138,6 +133,18 @@ public class VideoConversationService {
     private VideoConversation requireOwnedConversation(Long conversationId, Long userId) {
         VideoConversation conversation = store.getRequired(conversationId);
         requireMediaOwnership(conversation.getMediaId(), userId);
+        return conversation;
+    }
+
+    private VideoConversation requireConversationForMedia(
+            Long mediaId,
+            Long conversationId,
+            Long userId
+    ) {
+        VideoConversation conversation = requireOwnedConversation(conversationId, userId);
+        if (!mediaId.equals(conversation.getMediaId())) {
+            throw new NoSuchElementException("Video conversation does not belong to this media");
+        }
         return conversation;
     }
 

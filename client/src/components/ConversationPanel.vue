@@ -8,7 +8,7 @@
     <div class="conversation-toolbar">
       <select
         :value="activeConversationId || ''"
-        :disabled="loading || submitting"
+        :disabled="loading || busy"
         aria-label="选择对话"
         @change="switchConversation(Number($event.target.value))"
       >
@@ -17,7 +17,7 @@
           {{ conversation.title }}
         </option>
       </select>
-      <button class="secondary-button compact" :disabled="submitting" @click="startNewConversation">
+      <button class="secondary-button compact" :disabled="busy" @click="startNewConversation">
         ＋ 新对话
       </button>
     </div>
@@ -66,33 +66,15 @@
       <p v-else>可以连续追问。回答基于平台字幕，并附带可点击的原文时间引用。</p>
     </div>
 
-    <form class="question-form" @submit.prevent="submitQuestion">
-      <textarea
-        v-model="question"
-        maxlength="500"
-        :placeholder="linkedAgentRunId ? '例如：第二个知识点能再展开讲讲吗？' : '例如：视频提出了哪些核心观点？'"
-        :disabled="submitting"
-      ></textarea>
-      <div class="question-actions">
-        <span v-if="error" class="question-error">{{ error }}</span>
-        <span v-else class="question-hint">
-          {{ linkedAgentRunId ? '关联深度任务 · 快速 RAG 问答' : isStudyMode ? '多轮对话 · 基于长视频检索' : '多轮对话 · 基于平台字幕' }}
-        </span>
-        <button class="primary-button compact" :disabled="submitting || !question.trim()">
-          {{ submitting ? '回答中…' : '提问' }}
-        </button>
-      </div>
-    </form>
+    <p v-if="error" class="question-error">{{ error }}</p>
   </section>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import {
-  createVideoConversation,
   getConversationMessages,
-  listVideoConversations,
-  sendConversationMessage
+  listVideoConversations
 } from '../api/media'
 import { errorMessage } from '../api/http'
 
@@ -101,7 +83,7 @@ const props = defineProps({
   userId: { type: Number, required: true },
   hasTranscript: { type: Boolean, default: false },
   analysisMode: { type: String, default: '' },
-  followUpRequest: { type: Object, default: null }
+  busy: { type: Boolean, default: false }
 })
 
 defineEmits(['seek'])
@@ -109,9 +91,7 @@ defineEmits(['seek'])
 const conversations = ref([])
 const activeConversationId = ref(null)
 const messages = ref([])
-const question = ref('')
 const loading = ref(false)
-const submitting = ref(false)
 const error = ref('')
 const pendingFollowUp = ref(null)
 const isStudyMode = computed(() => props.analysisMode === 'STUDY')
@@ -166,35 +146,29 @@ const startNewConversation = () => {
   pendingFollowUp.value = null
   activeConversationId.value = null
   messages.value = []
-  question.value = ''
   error.value = ''
 }
 
-const submitQuestion = async () => {
-  const value = question.value.trim()
-  if (!value || submitting.value) return
-  submitting.value = true
+const dispatchContext = () => ({
+  conversationId: activeConversationId.value,
+  sourceAgentRunId: linkedAgentRunId.value
+})
+
+const acceptTurn = turn => {
+  messages.value.push(turn.userMessage, turn.assistantMessage)
+  const index = conversations.value.findIndex(item => item.id === turn.conversation.id)
+  if (index >= 0) conversations.value.splice(index, 1)
+  conversations.value.unshift(turn.conversation)
+  activeConversationId.value = turn.conversation.id
+  pendingFollowUp.value = null
   error.value = ''
-  try {
-    if (!activeConversationId.value) {
-      const conversation = await createVideoConversation(
-        props.mediaId, props.userId, linkedAgentRunId.value
-      )
-      conversations.value.unshift(conversation)
-      activeConversationId.value = conversation.id
-      pendingFollowUp.value = null
-    }
-    const turn = await sendConversationMessage(activeConversationId.value, props.userId, value)
-    messages.value.push(turn.userMessage, turn.assistantMessage)
-    const index = conversations.value.findIndex(item => item.id === turn.conversation.id)
-    if (index >= 0) conversations.value.splice(index, 1)
-    conversations.value.unshift(turn.conversation)
-    question.value = ''
-  } catch (requestError) {
-    error.value = errorMessage(requestError, '视频问答失败')
-  } finally {
-    submitting.value = false
-  }
+}
+
+const continueFromRun = run => {
+  activeConversationId.value = null
+  messages.value = []
+  pendingFollowUp.value = { runId: run.id, title: run.result?.title || run.goal }
+  error.value = ''
 }
 
 const formatTime = (milliseconds) => {
@@ -207,15 +181,9 @@ const formatTime = (milliseconds) => {
   return hours ? `${hours}:${minuteText}:${secondText}` : `${minuteText}:${secondText}`
 }
 
-watch(() => props.followUpRequest, request => {
-  if (!request?.runId) return
-  activeConversationId.value = null
-  messages.value = []
-  question.value = ''
-  error.value = ''
-  pendingFollowUp.value = request
-})
 watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { immediate: true })
+
+defineExpose({ acceptTurn, continueFromRun, dispatchContext })
 </script>
 
 <style scoped>
@@ -242,11 +210,5 @@ watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { im
 .conversation-intro > span { color: var(--accent); font-size: 30px; }
 .conversation-intro h3, .conversation-intro p { margin: 0; }
 .conversation-intro p { max-width: 390px; line-height: 1.7; }
-.question-form { position: sticky; bottom: -26px; display: grid; gap: 8px; margin-top: auto; padding: 12px 0 0; background: linear-gradient(transparent, var(--panel) 18%); }
-.question-form textarea { width: 100%; min-height: 88px; resize: vertical; padding: 12px 13px; border: 1px solid var(--border); border-radius: 11px; outline: none; background: #0e1014; color: var(--text); font: inherit; line-height: 1.5; }
-.question-form textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(197, 249, 70, .08); }
-.question-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.question-hint, .question-error { font-size: 11px; }
-.question-hint { color: var(--muted); }
 .question-error { color: var(--danger); }
 </style>

@@ -8,7 +8,7 @@
     <div class="agent-toolbar">
       <select
         :value="activeRun?.id || ''"
-        :disabled="loading || submitting"
+        :disabled="loading || busy"
         aria-label="选择学习任务"
         @change="selectRun($event.target.value)"
       >
@@ -17,7 +17,7 @@
           {{ run.goal }} · {{ statusLabel(run.status) }}
         </option>
       </select>
-      <button class="secondary-button compact" :disabled="submitting" @click="newRun">＋ 新任务</button>
+      <button class="secondary-button compact" :disabled="busy" @click="newRun">＋ 新任务</button>
     </div>
 
     <div v-if="loading" class="agent-loading"><div class="spinner"></div><span>加载学习任务…</span></div>
@@ -115,46 +115,33 @@
       </footer>
     </div>
 
-    <form v-else class="agent-intro" @submit.prevent="submit">
+    <div v-else class="agent-intro">
       <span>✦</span>
       <h3>生成一份可追溯的学习笔记</h3>
-      <p>学习助手会先规划目标，再检索字幕与画面文字，最后校验引用并生成自测题。</p>
-      <textarea
-        v-model="goal"
-        maxlength="500"
-        :disabled="submitting"
-        placeholder="例如：梳理这节课的核心概念、推导关系，并给我 3 道自测题"
-      ></textarea>
-      <div class="agent-actions">
-        <span v-if="error" class="agent-error">{{ error }}</span>
-        <span v-else>最多 3 个子任务、1 次修订，结果仅基于视频证据</span>
-        <button class="primary-button compact" :disabled="submitting || !goal.trim()">
-          {{ submitting ? '提交中…' : '开始学习分析' }}
-        </button>
-      </div>
-    </form>
+      <p>在下方输入目标，助手会自动判断是否需要规划、检索和结果校验。</p>
+      <p v-if="error" class="agent-error">{{ error }}</p>
+    </div>
   </section>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { createVideoAgentRun, getVideoAgentRun, listVideoAgentRuns } from '../api/media'
+import { getVideoAgentRun, listVideoAgentRuns } from '../api/media'
 import { errorMessage } from '../api/http'
 
 const props = defineProps({
   mediaId: { type: Number, required: true },
   userId: { type: Number, required: true },
-  hasTranscript: { type: Boolean, default: false }
+  hasTranscript: { type: Boolean, default: false },
+  busy: { type: Boolean, default: false }
 })
 
-defineEmits(['seek', 'follow-up'])
+const emit = defineEmits(['seek', 'follow-up', 'run-change'])
 
 const terminal = new Set(['SUCCEEDED', 'FAILED'])
 const runs = ref([])
 const activeRun = ref(null)
-const goal = ref('')
 const loading = ref(false)
-const submitting = ref(false)
 const error = ref('')
 let pollTimer
 
@@ -171,6 +158,7 @@ const refreshActive = async () => {
   try {
     const updated = await getVideoAgentRun(activeRun.value.id, props.userId)
     activeRun.value = updated
+    emit('run-change', updated)
     const index = runs.value.findIndex(run => run.id === updated.id)
     if (index >= 0) runs.value[index] = updated
   } catch (requestError) {
@@ -188,6 +176,7 @@ const initialize = async () => {
   try {
     runs.value = await listVideoAgentRuns(props.mediaId, props.userId)
     activeRun.value = runs.value[0] || null
+    emit('run-change', activeRun.value)
     schedulePoll()
   } catch (requestError) {
     error.value = errorMessage(requestError, '学习任务加载失败')
@@ -196,27 +185,10 @@ const initialize = async () => {
   }
 }
 
-const submit = async () => {
-  const value = goal.value.trim()
-  if (!value || submitting.value) return
-  submitting.value = true
-  error.value = ''
-  try {
-    const run = await createVideoAgentRun(props.mediaId, props.userId, value)
-    runs.value.unshift(run)
-    activeRun.value = run
-    goal.value = ''
-    schedulePoll()
-  } catch (requestError) {
-    error.value = errorMessage(requestError, '学习任务提交失败')
-  } finally {
-    submitting.value = false
-  }
-}
-
 const selectRun = (runId) => {
   clearTimeout(pollTimer)
   activeRun.value = runs.value.find(run => run.id === runId) || null
+  emit('run-change', activeRun.value)
   error.value = ''
   schedulePoll()
 }
@@ -224,8 +196,18 @@ const selectRun = (runId) => {
 const newRun = () => {
   clearTimeout(pollTimer)
   activeRun.value = null
-  goal.value = ''
+  emit('run-change', null)
   error.value = ''
+}
+
+const acceptRun = run => {
+  const index = runs.value.findIndex(item => item.id === run.id)
+  if (index >= 0) runs.value.splice(index, 1)
+  runs.value.unshift(run)
+  activeRun.value = run
+  emit('run-change', run)
+  error.value = ''
+  schedulePoll()
 }
 
 const citationsFor = (refs = []) => refs
@@ -253,6 +235,8 @@ const formatTime = (milliseconds) => {
 
 watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { immediate: true })
 onBeforeUnmount(() => clearTimeout(pollTimer))
+
+defineExpose({ acceptRun })
 </script>
 
 <style scoped>
@@ -264,9 +248,6 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .agent-intro > span { color: var(--accent); font-size: 32px; }
 .agent-intro h3, .agent-intro p { margin: 0; }
 .agent-intro p { max-width: 430px; color: var(--muted); line-height: 1.7; }
-.agent-intro textarea { width: min(100%, 520px); min-height: 110px; margin-top: 12px; resize: vertical; padding: 13px; border: 1px solid var(--border); border-radius: 11px; outline: none; background: #0e1014; color: var(--text); font: inherit; line-height: 1.6; }
-.agent-intro textarea:focus { border-color: var(--accent); }
-.agent-actions { display: flex; width: min(100%, 520px); align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; text-align: left; }
 .agent-error { color: var(--danger); }
 .agent-result { display: grid; gap: 16px; }
 .run-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

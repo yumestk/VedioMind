@@ -26,22 +26,15 @@ export const listVideoConversations = async (mediaId, userId) => {
   return response.data
 }
 
-export const createVideoConversation = async (mediaId, userId, sourceAgentRunId) => {
-  const response = await http.post(`/media/${mediaId}/conversations`, null, {
-    params: { userId, sourceAgentRunId }
-  })
-  return response.data
-}
-
 export const getConversationMessages = async (conversationId, userId) => {
   const response = await http.get(`/conversations/${conversationId}/messages`, { params: { userId } })
   return response.data
 }
 
-export const sendConversationMessage = async (conversationId, userId, question) => {
+export const dispatchAssistantMessage = async (mediaId, userId, request) => {
   const response = await http.post(
-    `/conversations/${conversationId}/messages`,
-    { question },
+    `/media/${mediaId}/assistant/dispatch`,
+    request,
     { params: { userId }, timeout: 5 * 60_000 }
   )
   return response.data
@@ -49,15 +42,6 @@ export const sendConversationMessage = async (conversationId, userId, question) 
 
 export const listVideoAgentRuns = async (mediaId, userId) => {
   const response = await http.get(`/media/${mediaId}/agent-runs`, { params: { userId } })
-  return response.data
-}
-
-export const createVideoAgentRun = async (mediaId, userId, goal) => {
-  const response = await http.post(
-    `/media/${mediaId}/agent-runs`,
-    { goal },
-    { params: { userId } }
-  )
   return response.data
 }
 

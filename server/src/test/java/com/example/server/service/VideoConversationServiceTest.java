@@ -12,7 +12,6 @@ import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
-import com.example.server.service.ai.AiRateLimitService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RLock;
@@ -42,15 +41,13 @@ class VideoConversationServiceTest {
     private final VideoAgentRunService agentRunService = mock(VideoAgentRunService.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
-    private final AiRateLimitService rateLimitService = mock(AiRateLimitService.class);
     private final VideoConversationService service = new VideoConversationService(
             store,
             mediaService,
             questionService,
             knowledgeRetriever,
             agentRunService,
-            redissonClient,
-            rateLimitService
+            redissonClient
     );
 
     @Test
@@ -82,12 +79,11 @@ class VideoConversationServiceTest {
         when(questionService.answer(eq("继续说说"), eq(segments), any(), eq(""))).thenReturn(answer);
         when(store.saveTurn(conversation, "继续说说", answer)).thenReturn(saved);
 
-        assertThat(service.ask(7L, 3L, " 继续说说 ")).isSameAs(saved);
+        assertThat(service.ask(42L, 7L, 3L, " 继续说说 ")).isSameAs(saved);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DeepSeekMessage>> context = ArgumentCaptor.forClass(List.class);
         verify(questionService).answer(eq("继续说说"), eq(segments), context.capture(), eq(""));
-        verify(rateLimitService).requireRequest(3L);
         assertThat(context.getValue()).containsExactly(
                 new DeepSeekMessage("user", "上一问"),
                 new DeepSeekMessage("assistant", "上一答")
@@ -142,7 +138,7 @@ class VideoConversationServiceTest {
         )).thenReturn(answer);
         when(store.saveTurn(conversation, "第二个有什么优点？", answer)).thenReturn(saved);
 
-        assertThat(service.ask(7L, 3L, "第二个有什么优点？")).isSameAs(saved);
+        assertThat(service.ask(42L, 7L, 3L, "第二个有什么优点？")).isSameAs(saved);
 
         verify(questionService).answer(
                 eq("第二个有什么优点？"), eq(List.of(second, first)), any(),
@@ -171,7 +167,7 @@ class VideoConversationServiceTest {
                 new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready")
         );
 
-        assertThatThrownBy(() -> service.ask(7L, 3L, "问题"))
+        assertThatThrownBy(() -> service.ask(42L, 7L, 3L, "问题"))
                 .isInstanceOf(VideoConversationService.ConversationNotReadyException.class)
                 .hasMessageContaining("重新进行 AI 分析");
 
@@ -186,11 +182,22 @@ class VideoConversationServiceTest {
         when(redissonClient.getLock("lock:video-conversation:7")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(false);
 
-        assertThatThrownBy(() -> service.ask(7L, 3L, "问题"))
+        assertThatThrownBy(() -> service.ask(42L, 7L, 3L, "问题"))
                 .isInstanceOf(VideoConversationService.ConversationBusyException.class);
 
         verify(questionService, never()).answer(any(), any(), any(), anyString());
         verify(store, never()).saveTurn(any(), any(), any());
+    }
+
+    @Test
+    void rejectsAConversationFromAnotherMedia() {
+        when(store.getRequired(7L)).thenReturn(conversation());
+
+        assertThatThrownBy(() -> service.ask(99L, 7L, 3L, "问题"))
+                .isInstanceOf(java.util.NoSuchElementException.class)
+                .hasMessageContaining("does not belong");
+
+        verify(redissonClient, never()).getLock(anyString());
     }
 
     @Test

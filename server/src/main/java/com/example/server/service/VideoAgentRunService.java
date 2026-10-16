@@ -84,6 +84,16 @@ public class VideoAgentRunService {
                 .stream().map(VideoAgentRunResponse::from).toList();
     }
 
+    public Optional<VideoAgentRun> findLatestActive(Long mediaId) {
+        return Optional.ofNullable(runMapper.selectOne(
+                new LambdaQueryWrapper<VideoAgentRun>()
+                        .eq(VideoAgentRun::getMediaId, mediaId)
+                        .notIn(VideoAgentRun::getStatus, TERMINAL)
+                        .orderByDesc(VideoAgentRun::getCreatedAt)
+                        .last("LIMIT 1")
+        ));
+    }
+
     public boolean beginAttempt(String runId, int retryCount) {
         VideoAgentRun run = getRequired(runId);
         if (TERMINAL.contains(run.getStatus())) {
