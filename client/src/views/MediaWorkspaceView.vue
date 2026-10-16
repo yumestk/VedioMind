@@ -60,12 +60,7 @@
           <div class="content-tabs" role="tablist">
             <button :class="{ active: activeTab === 'summary' }" @click="activeTab = 'summary'">AI 总结</button>
             <button :class="{ active: activeTab === 'timeline' }" @click="activeTab = 'timeline'">内容时间轴</button>
-            <button :class="{ active: activeTab === 'question' }" @click="activeTab = 'question'">视频问答</button>
-            <button
-              v-if="media.analysisMode === 'STUDY'"
-              :class="{ active: activeTab === 'agent' }"
-              @click="activeTab = 'agent'"
-            >学习助手</button>
+            <button :class="{ active: activeTab === 'assistant' }" @click="activeTab = 'assistant'">AI 助手</button>
           </div>
           <div class="content-scroll">
             <SummaryPanel v-show="activeTab === 'summary'" :summary="media.summary" />
@@ -78,20 +73,12 @@
               :playback-sync-enabled="media.localPlaybackAvailable"
               @seek="seekTo"
             />
-            <ConversationPanel
-              v-show="activeTab === 'question'"
+            <AiAssistantPanel
+              v-show="activeTab === 'assistant'"
               :media-id="numericMediaId"
               :user-id="currentUser.id"
               :has-transcript="Boolean(transcriptSegments.length)"
               :analysis-mode="media.analysisMode"
-              @seek="seekTo"
-            />
-            <StudyAgentPanel
-              v-if="media.analysisMode === 'STUDY'"
-              v-show="activeTab === 'agent'"
-              :media-id="numericMediaId"
-              :user-id="currentUser.id"
-              :has-transcript="Boolean(transcriptSegments.length)"
               @seek="seekTo"
             />
           </div>
@@ -105,12 +92,11 @@
 import { onMounted, ref, watch } from 'vue'
 import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
 import { errorMessage } from '../api/http'
+import AiAssistantPanel from '../components/AiAssistantPanel.vue'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
 import ContentTimelinePanel from '../components/ContentTimelinePanel.vue'
-import ConversationPanel from '../components/ConversationPanel.vue'
 import ExternalVideoPlayer from '../components/ExternalVideoPlayer.vue'
 import SummaryPanel from '../components/SummaryPanel.vue'
-import StudyAgentPanel from '../components/StudyAgentPanel.vue'
 import VideoPlayer from '../components/VideoPlayer.vue'
 import { useAnalysisJob } from '../composables/useAnalysisJob'
 import { useSession } from '../composables/useSession'
