@@ -44,10 +44,11 @@ public class VideoConversationStore {
         this.citationMapper = citationMapper;
     }
 
-    public VideoConversationResponse create(Long mediaId) {
+    public VideoConversationResponse create(Long mediaId, String sourceAgentRunId) {
         LocalDateTime now = LocalDateTime.now();
         VideoConversation conversation = new VideoConversation();
         conversation.setMediaId(mediaId);
+        conversation.setSourceAgentRunId(sourceAgentRunId);
         conversation.setTitle(DEFAULT_TITLE);
         conversation.setCreatedAt(now);
         conversation.setUpdatedAt(now);

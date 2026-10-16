@@ -26,8 +26,10 @@ export const listVideoConversations = async (mediaId, userId) => {
   return response.data
 }
 
-export const createVideoConversation = async (mediaId, userId) => {
-  const response = await http.post(`/media/${mediaId}/conversations`, null, { params: { userId } })
+export const createVideoConversation = async (mediaId, userId, sourceAgentRunId) => {
+  const response = await http.post(`/media/${mediaId}/conversations`, null, {
+    params: { userId, sourceAgentRunId }
+  })
   return response.data
 }
 

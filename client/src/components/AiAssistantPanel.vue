@@ -29,6 +29,7 @@
       :user-id="userId"
       :has-transcript="hasTranscript"
       :analysis-mode="analysisMode"
+      :follow-up-request="followUpRequest"
       @seek="$emit('seek', $event)"
     />
     <StudyAgentPanel
@@ -38,6 +39,7 @@
       :user-id="userId"
       :has-transcript="hasTranscript"
       @seek="$emit('seek', $event)"
+      @follow-up="continueFromRun"
     />
   </section>
 </template>
@@ -57,9 +59,22 @@ const props = defineProps({
 defineEmits(['seek'])
 
 const mode = ref('quick')
+const followUpRequest = ref(null)
 const isStudyMode = computed(() => props.analysisMode === 'STUDY')
 
-watch(() => props.mediaId, () => { mode.value = 'quick' })
+const continueFromRun = run => {
+  followUpRequest.value = {
+    runId: run.id,
+    title: run.result?.title || run.goal,
+    requestId: Date.now()
+  }
+  mode.value = 'quick'
+}
+
+watch(() => props.mediaId, () => {
+  mode.value = 'quick'
+  followUpRequest.value = null
+})
 watch(isStudyMode, studyMode => { if (!studyMode) mode.value = 'quick' })
 </script>
 

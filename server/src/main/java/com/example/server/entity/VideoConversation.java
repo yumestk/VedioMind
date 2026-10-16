@@ -15,6 +15,7 @@ public class VideoConversation {
     private Long id;
 
     private Long mediaId;
+    private String sourceAgentRunId;
     private String title;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

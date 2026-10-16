@@ -40,6 +40,7 @@
 - 工作台使用统一“AI 助手”入口：Study Mode 可切换快速问答与深度学习任务，URL 视频只显示快速问答；两种方式继续使用彼此独立的执行链路和历史记录。
 - 快速问答按媒体持久化会话、消息与引用快照，支持会话切换和刷新恢复；最近 6 轮对话帮助模型理解指代，Study Mode 使用上一轮问答召回 Top 4 知识块并回源原始句级字幕，URL 视频继续使用完整平台字幕。
 - 深度学习任务异步生成结构化学习笔记；任务历史和当前阶段可在刷新后恢复，字幕与画面文字引用均可点击跳转播放器。
+- 已完成的深度学习任务可一键转入新的持久化快速问答会话；Agent 结果只辅助理解追问和改写检索，最终回答仍必须由原始字幕证据支持。
 - 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击后按来源跳转本地播放器或平台嵌入播放器。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
 
@@ -160,7 +161,7 @@ flowchart LR
 | `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
 | `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
 | `GET` | `/media/{mediaId}/conversations` | 查询媒体的问答会话 |
-| `POST` | `/media/{mediaId}/conversations` | 创建问答会话 |
+| `POST` | `/media/{mediaId}/conversations` | 创建问答会话，可选关联已完成的 Agent Run |
 | `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
 | `POST` | `/conversations/{conversationId}/messages` | 基于字幕进行带上下文的追问 |
 | `POST` | `/media/{mediaId}/agent-runs` | 创建 Study Mode 学习助手任务 |
@@ -262,7 +263,7 @@ npm test
 npm run build
 ```
 
-当前 89 个后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+当前 91 个后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 

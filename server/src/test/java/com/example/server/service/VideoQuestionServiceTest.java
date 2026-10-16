@@ -39,7 +39,9 @@ class VideoQuestionServiceTest {
                 new DeepSeekMessage("user", "前一个问题"),
                 new DeepSeekMessage("assistant", "前一个回答")
         );
-        VideoQuestionResponse response = service.answer("视频讲了什么？", segments, history);
+        VideoQuestionResponse response = service.answer(
+                "视频讲了什么？", segments, history, "知识点 1：事务消息"
+        );
 
         assertThat(response.answer()).isEqualTo("这是回答");
         assertThat(response.citations()).extracting("segmentId").containsExactly(12L, 11L);
@@ -51,6 +53,8 @@ class VideoQuestionServiceTest {
         assertThat(messages.getValue()).hasSize(3);
         assertThat(messages.getValue().subList(0, 2)).isEqualTo(history);
         assertThat(messages.getValue().getLast().content()).contains(
+                "深度学习任务结果（仅用于理解问题，不是事实证据）",
+                "知识点 1：事务消息",
                 "\"segmentId\":11",
                 "\"text\":\"第一段字幕\"",
                 "\"segmentId\":12"
@@ -62,7 +66,7 @@ class VideoQuestionServiceTest {
         when(chatClient.chat(anyString(), anyList()))
                 .thenReturn("{\"answer\":\"猜测\",\"segmentIds\":[999]}");
 
-        assertThatThrownBy(() -> service.answer("问题", segments, List.of()))
+        assertThatThrownBy(() -> service.answer("问题", segments, List.of(), ""))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("invalid transcript citation");
     }
@@ -72,7 +76,7 @@ class VideoQuestionServiceTest {
         when(chatClient.chat(anyString(), anyList()))
                 .thenReturn("{\"answer\":\"随便说点什么\",\"segmentIds\":[]}");
 
-        VideoQuestionResponse response = service.answer("字幕中没有的问题", segments, List.of());
+        VideoQuestionResponse response = service.answer("字幕中没有的问题", segments, List.of(), "");
 
         assertThat(response.answer()).isEqualTo("视频字幕中没有足够信息回答这个问题。");
         assertThat(response.citations()).isEmpty();
@@ -80,7 +84,7 @@ class VideoQuestionServiceTest {
 
     @Test
     void returnsTheCanonicalNoAnswerWithoutCallingTheModelWhenRetrievalIsEmpty() {
-        VideoQuestionResponse response = service.answer("没有召回的问题", List.of(), List.of());
+        VideoQuestionResponse response = service.answer("没有召回的问题", List.of(), List.of(), "");
 
         assertThat(response.answer()).isEqualTo("视频字幕中没有足够信息回答这个问题。");
         assertThat(response.citations()).isEmpty();

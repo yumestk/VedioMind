@@ -22,6 +22,14 @@
       </button>
     </div>
 
+    <div v-if="linkedAgentRunId" class="agent-context-banner">
+      <span>✦</span>
+      <div>
+        <strong>正在基于深度学习结果追问</strong>
+        <p>{{ linkedAgentTitle }}</p>
+      </div>
+    </div>
+
     <div v-if="loading" class="conversation-loading"><div class="spinner"></div><span>加载对话…</span></div>
     <div v-else-if="messages.length" class="conversation-history">
       <article
@@ -52,8 +60,9 @@
     </div>
     <div v-else class="conversation-intro">
       <span>?</span>
-      <h3>向这个视频提问</h3>
-      <p v-if="isStudyMode">可以连续追问。回答会先检索相关内容，并附带可点击的原文时间引用。</p>
+      <h3>{{ linkedAgentRunId ? '继续追问学习结果' : '向这个视频提问' }}</h3>
+      <p v-if="linkedAgentRunId">学习结果帮助理解指代，回答仍会检索原始字幕并提供时间引用。</p>
+      <p v-else-if="isStudyMode">可以连续追问。回答会先检索相关内容，并附带可点击的原文时间引用。</p>
       <p v-else>可以连续追问。回答基于平台字幕，并附带可点击的原文时间引用。</p>
     </div>
 
@@ -61,13 +70,13 @@
       <textarea
         v-model="question"
         maxlength="500"
-        placeholder="例如：视频提出了哪些核心观点？"
+        :placeholder="linkedAgentRunId ? '例如：第二个知识点能再展开讲讲吗？' : '例如：视频提出了哪些核心观点？'"
         :disabled="submitting"
       ></textarea>
       <div class="question-actions">
         <span v-if="error" class="question-error">{{ error }}</span>
         <span v-else class="question-hint">
-          {{ isStudyMode ? '多轮对话 · 基于长视频检索' : '多轮对话 · 基于平台字幕' }}
+          {{ linkedAgentRunId ? '关联深度任务 · 快速 RAG 问答' : isStudyMode ? '多轮对话 · 基于长视频检索' : '多轮对话 · 基于平台字幕' }}
         </span>
         <button class="primary-button compact" :disabled="submitting || !question.trim()">
           {{ submitting ? '回答中…' : '提问' }}
@@ -91,7 +100,8 @@ const props = defineProps({
   mediaId: { type: Number, required: true },
   userId: { type: Number, required: true },
   hasTranscript: { type: Boolean, default: false },
-  analysisMode: { type: String, default: '' }
+  analysisMode: { type: String, default: '' },
+  followUpRequest: { type: Object, default: null }
 })
 
 defineEmits(['seek'])
@@ -103,7 +113,15 @@ const question = ref('')
 const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
+const pendingFollowUp = ref(null)
 const isStudyMode = computed(() => props.analysisMode === 'STUDY')
+const activeConversation = computed(() => conversations.value.find(
+  conversation => conversation.id === activeConversationId.value
+))
+const linkedAgentRunId = computed(() =>
+  pendingFollowUp.value?.runId || activeConversation.value?.sourceAgentRunId || null
+)
+const linkedAgentTitle = computed(() => pendingFollowUp.value?.title || '已关联的深度学习任务')
 
 const loadMessages = async (conversationId) => {
   if (!conversationId) {
@@ -116,6 +134,7 @@ const loadMessages = async (conversationId) => {
 
 const initialize = async () => {
   if (!props.hasTranscript) return
+  pendingFollowUp.value = null
   loading.value = true
   error.value = ''
   try {
@@ -130,6 +149,7 @@ const initialize = async () => {
 }
 
 const switchConversation = async (conversationId) => {
+  pendingFollowUp.value = null
   activeConversationId.value = conversationId || null
   loading.value = true
   error.value = ''
@@ -143,6 +163,7 @@ const switchConversation = async (conversationId) => {
 }
 
 const startNewConversation = () => {
+  pendingFollowUp.value = null
   activeConversationId.value = null
   messages.value = []
   question.value = ''
@@ -156,9 +177,12 @@ const submitQuestion = async () => {
   error.value = ''
   try {
     if (!activeConversationId.value) {
-      const conversation = await createVideoConversation(props.mediaId, props.userId)
+      const conversation = await createVideoConversation(
+        props.mediaId, props.userId, linkedAgentRunId.value
+      )
       conversations.value.unshift(conversation)
       activeConversationId.value = conversation.id
+      pendingFollowUp.value = null
     }
     const turn = await sendConversationMessage(activeConversationId.value, props.userId, value)
     messages.value.push(turn.userMessage, turn.assistantMessage)
@@ -183,6 +207,14 @@ const formatTime = (milliseconds) => {
   return hours ? `${hours}:${minuteText}:${secondText}` : `${minuteText}:${secondText}`
 }
 
+watch(() => props.followUpRequest, request => {
+  if (!request?.runId) return
+  activeConversationId.value = null
+  messages.value = []
+  question.value = ''
+  error.value = ''
+  pendingFollowUp.value = request
+})
 watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { immediate: true })
 </script>
 
@@ -191,6 +223,10 @@ watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { im
 .conversation-toolbar { display: flex; gap: 10px; align-items: center; }
 .conversation-toolbar select { min-width: 0; flex: 1; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; outline: none; background: #0e1014; color: var(--text); }
 .conversation-toolbar select:focus { border-color: var(--accent); }
+.agent-context-banner { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid rgba(197, 249, 70, .28); border-radius: 10px; background: rgba(197, 249, 70, .06); }
+.agent-context-banner > span { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; background: var(--accent); color: #0b0e07; }
+.agent-context-banner strong { color: var(--text); font-size: 12px; }
+.agent-context-banner p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
 .conversation-loading { display: flex; flex: 1; align-items: center; justify-content: center; gap: 10px; color: var(--muted); }
 .conversation-history { display: grid; gap: 18px; }
 .conversation-message { display: grid; gap: 10px; }

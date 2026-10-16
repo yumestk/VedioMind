@@ -100,6 +100,10 @@
           <p class="run-kicker">EVIDENCE GAPS</p>
           <ul><li v-for="gap in activeRun.result.gaps" :key="gap">{{ gap }}</li></ul>
         </section>
+
+        <button class="primary-button follow-up-button" type="button" @click="$emit('follow-up', activeRun)">
+          基于结果继续追问
+        </button>
       </template>
 
       <footer class="run-metrics">
@@ -143,7 +147,7 @@ const props = defineProps({
   hasTranscript: { type: Boolean, default: false }
 })
 
-defineEmits(['seek'])
+defineEmits(['seek', 'follow-up'])
 
 const terminal = new Set(['SUCCEEDED', 'FAILED'])
 const runs = ref([])
@@ -288,5 +292,6 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .evidence-list button:hover { border-color: var(--border-strong); color: var(--text); }
 .evidence-list span { margin-right: 7px; color: var(--accent); font: 10px var(--mono); }
 .gaps-block ul { margin-bottom: 0; padding-left: 20px; color: var(--muted); line-height: 1.7; }
+.follow-up-button { justify-self: start; }
 .run-metrics { color: var(--muted); font: 10px var(--mono); text-align: right; }
 </style>

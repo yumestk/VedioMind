@@ -1,11 +1,14 @@
 package com.example.server.service;
 
+import com.alibaba.fastjson2.JSON;
 import com.example.server.dto.ConversationMessagesResponse;
 import com.example.server.dto.ConversationTurnResponse;
 import com.example.server.dto.MediaTranscriptResponse;
 import com.example.server.dto.TranscriptSegmentResponse;
+import com.example.server.dto.VideoAgentResult;
 import com.example.server.dto.VideoConversationResponse;
 import com.example.server.dto.VideoQuestionResponse;
+import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
@@ -33,11 +36,15 @@ public class VideoConversationService {
     static final int MAX_HISTORY_MESSAGES = 12;
     static final int MAX_HISTORY_CHARACTERS = 12_000;
     static final int MAX_RETRIEVAL_QUERY_CHARACTERS = 2_000;
+    static final int MAX_AGENT_CONTEXT_CHARACTERS = 6_000;
+    static final int MAX_AGENT_RETRIEVAL_CONTEXT_CHARACTERS = 800;
+    static final int MAX_PREVIOUS_TURN_RETRIEVAL_CHARACTERS = 600;
 
     private final VideoConversationStore store;
     private final MediaService mediaService;
     private final VideoQuestionService questionService;
     private final VideoKnowledgeRetriever knowledgeRetriever;
+    private final VideoAgentRunService agentRunService;
     private final RedissonClient redissonClient;
     private final AiRateLimitService rateLimitService;
 
@@ -46,6 +53,7 @@ public class VideoConversationService {
             MediaService mediaService,
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
+            VideoAgentRunService agentRunService,
             RedissonClient redissonClient,
             AiRateLimitService rateLimitService
     ) {
@@ -53,6 +61,7 @@ public class VideoConversationService {
         this.mediaService = mediaService;
         this.questionService = questionService;
         this.knowledgeRetriever = knowledgeRetriever;
+        this.agentRunService = agentRunService;
         this.redissonClient = redissonClient;
         this.rateLimitService = rateLimitService;
     }
@@ -62,9 +71,16 @@ public class VideoConversationService {
         return store.listByMediaId(mediaId);
     }
 
-    public VideoConversationResponse create(Long mediaId, Long userId) {
+    public VideoConversationResponse create(Long mediaId, Long userId, String sourceAgentRunId) {
         requireMediaOwnership(mediaId, userId);
-        return store.create(mediaId);
+        String normalizedRunId = normalizeRunId(sourceAgentRunId);
+        if (normalizedRunId != null) {
+            VideoAgentRun run = agentRunService.getRequired(normalizedRunId);
+            if (!mediaId.equals(run.getMediaId()) || !"SUCCEEDED".equals(run.getStatus())) {
+                throw new IllegalArgumentException("Only a completed Agent run from this video can start a follow-up conversation");
+            }
+        }
+        return store.create(mediaId, normalizedRunId);
     }
 
     public ConversationMessagesResponse messages(Long conversationId, Long userId) {
@@ -94,16 +110,19 @@ public class VideoConversationService {
             List<DeepSeekMessage> history = trimHistory(
                     store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES)
             );
+            String agentContext = linkedAgentContext(conversation);
             List<TranscriptSegmentResponse> evidence = transcript.segments();
             if (mediaService.isStudyMode(conversation.getMediaId(), userId)) {
                 evidence = retrieveEvidence(
-                        conversation.getMediaId(), normalizedQuestion, history, transcript.segments()
+                        conversation.getMediaId(), normalizedQuestion, history,
+                        agentContext, transcript.segments()
                 );
             }
             VideoQuestionResponse answer = questionService.answer(
                     normalizedQuestion,
                     evidence,
-                    history
+                    history,
+                    agentContext
             );
             return store.saveTurn(conversation, normalizedQuestion, answer);
         } catch (InterruptedException exception) {
@@ -162,11 +181,12 @@ public class VideoConversationService {
             Long mediaId,
             String question,
             List<DeepSeekMessage> history,
+            String agentContext,
             List<TranscriptSegmentResponse> transcript
     ) {
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits;
         try {
-            hits = knowledgeRetriever.search(mediaId, retrievalQuery(history, question));
+            hits = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
         } catch (VideoKnowledgeIndexService.KnowledgeIndexNotReadyException exception) {
             throw new ConversationNotReadyException(
                     "长视频知识索引尚未就绪，请重新进行 AI 分析"
@@ -193,17 +213,64 @@ public class VideoConversationService {
         return evidence;
     }
 
-    private String retrievalQuery(List<DeepSeekMessage> history, String question) {
+    private String retrievalQuery(
+            String agentContext,
+            List<DeepSeekMessage> history,
+            String question
+    ) {
         int start = Math.max(0, history.size() - 2);
         String previousTurn = history.subList(start, history.size()).stream()
                 .map(message -> ("assistant".equals(message.role()) ? "上一答：" : "上一问：")
                         + message.content())
                 .collect(Collectors.joining("\n"));
-        String query = (previousTurn.isBlank() ? "" : previousTurn + "\n")
+        previousTurn = suffix(previousTurn, MAX_PREVIOUS_TURN_RETRIEVAL_CHARACTERS);
+        String resultContext = prefix(agentContext, MAX_AGENT_RETRIEVAL_CONTEXT_CHARACTERS);
+        String query = (resultContext.isBlank() ? "" : "深度学习任务结果：\n" + resultContext + "\n")
+                + (previousTurn.isBlank() ? "" : previousTurn + "\n")
                 + "当前问题：" + question;
         return query.length() <= MAX_RETRIEVAL_QUERY_CHARACTERS
                 ? query
                 : query.substring(query.length() - MAX_RETRIEVAL_QUERY_CHARACTERS);
+    }
+
+    private String linkedAgentContext(VideoConversation conversation) {
+        if (conversation.getSourceAgentRunId() == null) return "";
+        VideoAgentRun run = agentRunService.getRequired(conversation.getSourceAgentRunId());
+        if (!conversation.getMediaId().equals(run.getMediaId())
+                || !"SUCCEEDED".equals(run.getStatus())
+                || run.getResultJson() == null) {
+            throw new ConversationNotReadyException("关联的深度学习任务结果不可用");
+        }
+        VideoAgentResult result = JSON.parseObject(run.getResultJson(), VideoAgentResult.class);
+        StringBuilder context = new StringBuilder()
+                .append("学习目标：").append(run.getGoal())
+                .append("\n结果标题：").append(result.title())
+                .append("\n核心结论：").append(result.coreConclusion());
+        for (int index = 0; index < result.knowledgePoints().size(); index++) {
+            VideoAgentResult.KnowledgePoint point = result.knowledgePoints().get(index);
+            context.append("\n知识点 ").append(index + 1).append("：")
+                    .append(point.title()).append("；").append(point.explanation());
+        }
+        for (int index = 0; index < result.quiz().size(); index++) {
+            VideoAgentResult.QuizItem item = result.quiz().get(index);
+            context.append("\n自测题 ").append(index + 1).append("：")
+                    .append(item.question()).append("；答案：").append(item.answer());
+        }
+        return prefix(context.toString(), MAX_AGENT_CONTEXT_CHARACTERS);
+    }
+
+    private String normalizeRunId(String runId) {
+        return runId == null || runId.isBlank() ? null : runId.trim();
+    }
+
+    private String prefix(String value, int limit) {
+        if (value == null || value.isBlank()) return "";
+        return value.length() <= limit ? value : value.substring(0, limit);
+    }
+
+    private String suffix(String value, int limit) {
+        if (value == null || value.isBlank()) return "";
+        return value.length() <= limit ? value : value.substring(value.length() - limit);
     }
 
     public static class ConversationBusyException extends RuntimeException {

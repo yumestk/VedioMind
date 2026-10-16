@@ -44,10 +44,15 @@ public class VideoConversationController {
     @PostMapping("/media/{mediaId}/conversations")
     public ResponseEntity<VideoConversationResponse> create(
             @PathVariable Long mediaId,
-            @RequestParam Long userId
+            @RequestParam Long userId,
+            @RequestParam(required = false) String sourceAgentRunId
     ) {
         try {
-            return ResponseEntity.status(HttpStatus.CREATED).body(conversationService.create(mediaId, userId));
+            return ResponseEntity.status(HttpStatus.CREATED).body(
+                    conversationService.create(mediaId, userId, sourceAgentRunId)
+            );
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage(), exception);
         } catch (NoSuchElementException exception) {
             throw notFound(exception);
         }
