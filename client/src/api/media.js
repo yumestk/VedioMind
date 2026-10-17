@@ -40,11 +40,6 @@ export const dispatchAssistantMessage = async (mediaId, userId, request) => {
   return response.data
 }
 
-export const listVideoAgentRuns = async (mediaId, userId) => {
-  const response = await http.get(`/media/${mediaId}/agent-runs`, { params: { userId } })
-  return response.data
-}
-
 export const getVideoAgentRun = async (runId, userId) => {
   const response = await http.get(`/agent-runs/${runId}`, { params: { userId } })
   return response.data

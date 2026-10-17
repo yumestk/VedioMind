@@ -3,9 +3,7 @@ package com.example.server.service;
 import com.example.server.dto.AssistantDispatchRequest;
 import com.example.server.dto.AssistantDispatchResponse;
 import com.example.server.dto.ConversationTurnResponse;
-import com.example.server.dto.VideoAgentRunResponse;
 import com.example.server.dto.VideoConversationResponse;
-import com.example.server.entity.VideoAgentRun;
 import com.example.server.service.ai.AiRateLimitService;
 import org.springframework.stereotype.Service;
 
@@ -41,30 +39,38 @@ public class AssistantDispatchService {
         boolean studyMode = mediaService.isStudyMode(mediaId, userId);
         rateLimitService.requireRequest(userId);
 
+        Long requestedConversationId = request.conversationId();
+        VideoConversationResponse conversation = requestedConversationId == null
+                ? null
+                : conversationService.get(mediaId, requestedConversationId, userId);
+        boolean followingAgentRun = conversation != null
+                && conversationService.hasCompletedAgentRun(conversation.id());
         AssistantModeRouter.Decision decision = modeRouter.route(
-                request.mode(), content, studyMode, hasText(request.sourceAgentRunId())
+                request.mode(), content, studyMode, followingAgentRun
         );
         if ("DEEP".equals(decision.mode())) {
             if (agentRunService.findLatestActive(mediaId).isPresent()) {
                 throw new AgentRunBusyException("当前视频已有正在执行的深度任务");
             }
-            VideoAgentRun run = agentSubmissionService.submit(mediaId, userId, content);
-            return AssistantDispatchResponse.deep(
-                    decision.routedBy(), decision.reason(), VideoAgentRunResponse.from(run)
+            if (conversation == null) {
+                conversation = conversationService.create(mediaId, userId);
+            }
+            agentSubmissionService.submit(mediaId, userId, conversation.id(), content);
+        } else {
+            if (conversation == null) {
+                conversation = conversationService.create(mediaId, userId);
+            }
+            ConversationTurnResponse turn = conversationService.ask(
+                    mediaId, conversation.id(), userId, content
             );
+            conversation = turn.conversation();
         }
 
-        Long conversationId = request.conversationId();
-        if (conversationId == null) {
-            VideoConversationResponse conversation = conversationService.create(
-                    mediaId, userId, request.sourceAgentRunId()
-            );
-            conversationId = conversation.id();
-        }
-        ConversationTurnResponse turn = conversationService.ask(
-                mediaId, conversationId, userId, content
+        conversation = conversationService.get(mediaId, conversation.id(), userId);
+        return AssistantDispatchResponse.of(
+                decision.mode(), decision.routedBy(), decision.reason(), conversation,
+                conversationService.messages(conversation.id(), userId)
         );
-        return AssistantDispatchResponse.quick(decision.routedBy(), decision.reason(), turn);
     }
 
     private String normalizeContent(String content) {
@@ -76,10 +82,6 @@ public class AssistantDispatchService {
             throw new IllegalArgumentException("Assistant message must not exceed 500 characters");
         }
         return normalized;
-    }
-
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
     }
 
     public static class AgentRunBusyException extends RuntimeException {

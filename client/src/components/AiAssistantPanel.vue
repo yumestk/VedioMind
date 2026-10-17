@@ -1,7 +1,6 @@
 <template>
   <section class="assistant-panel">
     <ConversationPanel
-      v-show="surface === 'QUICK'"
       ref="conversationPanel"
       :media-id="mediaId"
       :user-id="userId"
@@ -9,18 +8,6 @@
       :analysis-mode="analysisMode"
       :busy="submitting"
       @seek="$emit('seek', $event)"
-    />
-    <StudyAgentPanel
-      v-if="isStudyMode"
-      v-show="surface === 'DEEP'"
-      ref="agentPanel"
-      :media-id="mediaId"
-      :user-id="userId"
-      :has-transcript="hasTranscript"
-      :busy="submitting"
-      @seek="$emit('seek', $event)"
-      @follow-up="continueFromRun"
-      @run-change="activeRun = $event"
     />
 
     <form v-if="hasTranscript" class="assistant-composer" @submit.prevent="submit">
@@ -55,7 +42,6 @@ import { computed, ref, watch } from 'vue'
 import { dispatchAssistantMessage } from '../api/media'
 import { errorMessage } from '../api/http'
 import ConversationPanel from './ConversationPanel.vue'
-import StudyAgentPanel from './StudyAgentPanel.vue'
 
 const props = defineProps({
   mediaId: { type: Number, required: true },
@@ -67,11 +53,8 @@ const props = defineProps({
 defineEmits(['seek'])
 
 const conversationPanel = ref(null)
-const agentPanel = ref(null)
-const activeRun = ref(null)
 const content = ref('')
 const requestedMode = ref('AUTO')
-const surface = ref('QUICK')
 const submitting = ref(false)
 const routeInfo = ref(null)
 const error = ref('')
@@ -89,26 +72,16 @@ const submit = async () => {
   const value = content.value.trim()
   if (!value || submitting.value) return
   const conversationContext = conversationPanel.value?.dispatchContext() || {}
-  const agentContext = surface.value === 'DEEP' && activeRun.value?.status === 'SUCCEEDED'
-    ? activeRun.value.id
-    : null
   submitting.value = true
   error.value = ''
   try {
     const response = await dispatchAssistantMessage(props.mediaId, props.userId, {
       content: value,
       mode: requestedMode.value,
-      conversationId: surface.value === 'QUICK' ? conversationContext.conversationId : null,
-      sourceAgentRunId: agentContext || conversationContext.sourceAgentRunId || null
+      conversationId: conversationContext.conversationId
     })
     routeInfo.value = response
-    if (response.executionMode === 'DEEP') {
-      agentPanel.value?.acceptRun(response.agentRun)
-      surface.value = 'DEEP'
-    } else {
-      conversationPanel.value?.acceptTurn(response.conversationTurn)
-      surface.value = 'QUICK'
-    }
+    conversationPanel.value?.acceptTimeline(response.conversation, response.timeline)
     content.value = ''
   } catch (requestError) {
     error.value = errorMessage(requestError, 'AI 助手请求失败')
@@ -117,37 +90,15 @@ const submit = async () => {
   }
 }
 
-const continueFromRun = run => {
-  conversationPanel.value?.continueFromRun(run)
-  surface.value = 'QUICK'
-  requestedMode.value = 'QUICK'
-  routeInfo.value = {
-    executionMode: 'QUICK',
-    reason: '下一次提问将基于深度学习结果进行快速 RAG 检索'
-  }
-}
-
-watch(requestedMode, mode => {
-  if (mode === 'QUICK') {
-    if (surface.value === 'DEEP' && activeRun.value?.status === 'SUCCEEDED') {
-      conversationPanel.value?.continueFromRun(activeRun.value)
-    }
-    surface.value = 'QUICK'
-  }
-  if (mode === 'DEEP') surface.value = 'DEEP'
-})
 watch(() => props.mediaId, () => {
-  activeRun.value = null
   content.value = ''
   requestedMode.value = 'AUTO'
-  surface.value = 'QUICK'
   routeInfo.value = null
   error.value = ''
 })
 watch(isStudyMode, studyMode => {
   if (!studyMode) {
     requestedMode.value = 'AUTO'
-    surface.value = 'QUICK'
   }
 })
 </script>

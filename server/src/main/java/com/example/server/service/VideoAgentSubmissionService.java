@@ -34,7 +34,7 @@ public class VideoAgentSubmissionService {
         this.runService = runService;
     }
 
-    public VideoAgentRun submit(Long mediaId, Long userId, String goal) {
+    public VideoAgentRun submit(Long mediaId, Long userId, Long conversationId, String goal) {
         String normalizedGoal = normalizeGoal(goal);
         mediaService.requireOwnership(mediaId, userId);
         if (!mediaService.isStudyMode(mediaId, userId)) {
@@ -42,7 +42,8 @@ public class VideoAgentSubmissionService {
         }
         String contextVersion = indexService.requireReady(mediaId).context().version();
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                UUID.randomUUID().toString(), mediaId, normalizedGoal, contextVersion
+                UUID.randomUUID().toString(), mediaId, conversationId,
+                normalizedGoal, contextVersion
         );
         TransactionSendResult result = rocketMQTemplate.sendMessageInTransaction(
                 TOPIC,

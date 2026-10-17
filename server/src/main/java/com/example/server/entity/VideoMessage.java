@@ -15,7 +15,8 @@ public class VideoMessage {
     private Long id;
 
     private Long conversationId;
-    private String role;
+    private String messageType;
     private String content;
+    private String agentRunId;
     private LocalDateTime createdAt;
 }

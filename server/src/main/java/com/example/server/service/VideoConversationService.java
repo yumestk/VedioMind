@@ -43,7 +43,6 @@ public class VideoConversationService {
     private final MediaService mediaService;
     private final VideoQuestionService questionService;
     private final VideoKnowledgeRetriever knowledgeRetriever;
-    private final VideoAgentRunService agentRunService;
     private final RedissonClient redissonClient;
 
     public VideoConversationService(
@@ -51,14 +50,12 @@ public class VideoConversationService {
             MediaService mediaService,
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
-            VideoAgentRunService agentRunService,
             RedissonClient redissonClient
     ) {
         this.store = store;
         this.mediaService = mediaService;
         this.questionService = questionService;
         this.knowledgeRetriever = knowledgeRetriever;
-        this.agentRunService = agentRunService;
         this.redissonClient = redissonClient;
     }
 
@@ -67,16 +64,15 @@ public class VideoConversationService {
         return store.listByMediaId(mediaId);
     }
 
-    public VideoConversationResponse create(Long mediaId, Long userId, String sourceAgentRunId) {
+    public VideoConversationResponse create(Long mediaId, Long userId) {
         requireMediaOwnership(mediaId, userId);
-        String normalizedRunId = normalizeRunId(sourceAgentRunId);
-        if (normalizedRunId != null) {
-            VideoAgentRun run = agentRunService.getRequired(normalizedRunId);
-            if (!mediaId.equals(run.getMediaId()) || !"SUCCEEDED".equals(run.getStatus())) {
-                throw new IllegalArgumentException("Only a completed Agent run from this video can start a follow-up conversation");
-            }
-        }
-        return store.create(mediaId, normalizedRunId);
+        return store.create(mediaId);
+    }
+
+    public VideoConversationResponse get(Long mediaId, Long conversationId, Long userId) {
+        return VideoConversationResponse.from(
+                requireConversationForMedia(mediaId, conversationId, userId)
+        );
     }
 
     public ConversationMessagesResponse messages(Long conversationId, Long userId) {
@@ -105,7 +101,7 @@ public class VideoConversationService {
             List<DeepSeekMessage> history = trimHistory(
                     store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES)
             );
-            String agentContext = linkedAgentContext(conversation);
+            String agentContext = linkedAgentContext(conversation.getId());
             List<TranscriptSegmentResponse> evidence = transcript.segments();
             if (mediaService.isStudyMode(conversation.getMediaId(), userId)) {
                 evidence = retrieveEvidence(
@@ -178,7 +174,7 @@ public class VideoConversationService {
         }
         return selected.stream()
                 .map(message -> new DeepSeekMessage(
-                        "ASSISTANT".equals(message.getRole()) ? "assistant" : "user",
+                        "ASSISTANT".equals(message.getMessageType()) ? "assistant" : "user",
                         message.getContent()
                 ))
                 .toList();
@@ -240,14 +236,13 @@ public class VideoConversationService {
                 : query.substring(query.length() - MAX_RETRIEVAL_QUERY_CHARACTERS);
     }
 
-    private String linkedAgentContext(VideoConversation conversation) {
-        if (conversation.getSourceAgentRunId() == null) return "";
-        VideoAgentRun run = agentRunService.getRequired(conversation.getSourceAgentRunId());
-        if (!conversation.getMediaId().equals(run.getMediaId())
-                || !"SUCCEEDED".equals(run.getStatus())
-                || run.getResultJson() == null) {
-            throw new ConversationNotReadyException("关联的深度学习任务结果不可用");
-        }
+    public boolean hasCompletedAgentRun(Long conversationId) {
+        return store.findLatestSucceededAgentRun(conversationId).isPresent();
+    }
+
+    private String linkedAgentContext(Long conversationId) {
+        VideoAgentRun run = store.findLatestSucceededAgentRun(conversationId).orElse(null);
+        if (run == null || run.getResultJson() == null) return "";
         VideoAgentResult result = JSON.parseObject(run.getResultJson(), VideoAgentResult.class);
         StringBuilder context = new StringBuilder()
                 .append("学习目标：").append(run.getGoal())
@@ -264,10 +259,6 @@ public class VideoConversationService {
                     .append(item.question()).append("；答案：").append(item.answer());
         }
         return prefix(context.toString(), MAX_AGENT_CONTEXT_CHARACTERS);
-    }
-
-    private String normalizeRunId(String runId) {
-        return runId == null || runId.isBlank() ? null : runId.trim();
     }
 
     private String prefix(String value, int limit) {

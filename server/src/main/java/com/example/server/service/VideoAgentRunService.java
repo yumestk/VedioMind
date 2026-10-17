@@ -6,7 +6,6 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.example.server.dto.VideoAgentCitation;
 import com.example.server.dto.VideoAgentResult;
 import com.example.server.dto.VideoAgentRunMessage;
-import com.example.server.dto.VideoAgentRunResponse;
 import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoAgentStep;
 import com.example.server.mapper.MediaFileMapper;
@@ -30,15 +29,18 @@ public class VideoAgentRunService {
     private final VideoAgentRunMapper runMapper;
     private final VideoAgentStepMapper stepMapper;
     private final MediaFileMapper mediaFileMapper;
+    private final VideoConversationStore conversationStore;
 
     public VideoAgentRunService(
             VideoAgentRunMapper runMapper,
             VideoAgentStepMapper stepMapper,
-            MediaFileMapper mediaFileMapper
+            MediaFileMapper mediaFileMapper,
+            VideoConversationStore conversationStore
     ) {
         this.runMapper = runMapper;
         this.stepMapper = stepMapper;
         this.mediaFileMapper = mediaFileMapper;
+        this.conversationStore = conversationStore;
     }
 
     @Transactional
@@ -48,6 +50,10 @@ public class VideoAgentRunService {
         }
         if (mediaFileMapper.selectById(message.mediaId()) == null) {
             throw new IllegalArgumentException("Media does not exist: " + message.mediaId());
+        }
+        var conversation = conversationStore.getRequired(message.conversationId());
+        if (!message.mediaId().equals(conversation.getMediaId())) {
+            throw new IllegalArgumentException("Conversation does not belong to the Agent media");
         }
         LocalDateTime now = LocalDateTime.now();
         VideoAgentRun run = new VideoAgentRun();
@@ -66,6 +72,9 @@ public class VideoAgentRunService {
         run.setCreatedAt(now);
         run.setUpdatedAt(now);
         runMapper.insert(run);
+        conversationStore.appendAgentRunRequest(
+                message.conversationId(), message.runId(), message.goal(), now
+        );
     }
 
     public Optional<VideoAgentRun> findById(String runId) {
@@ -75,13 +84,6 @@ public class VideoAgentRunService {
     public VideoAgentRun getRequired(String runId) {
         return findById(runId)
                 .orElseThrow(() -> new NoSuchElementException("Agent run does not exist: " + runId));
-    }
-
-    public List<VideoAgentRunResponse> list(Long mediaId) {
-        return runMapper.selectList(new LambdaQueryWrapper<VideoAgentRun>()
-                        .eq(VideoAgentRun::getMediaId, mediaId)
-                        .orderByDesc(VideoAgentRun::getCreatedAt))
-                .stream().map(VideoAgentRunResponse::from).toList();
     }
 
     public Optional<VideoAgentRun> findLatestActive(Long mediaId) {

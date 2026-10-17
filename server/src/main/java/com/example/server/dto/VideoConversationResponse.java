@@ -7,7 +7,6 @@ import java.time.LocalDateTime;
 public record VideoConversationResponse(
         Long id,
         Long mediaId,
-        String sourceAgentRunId,
         String title,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
@@ -16,7 +15,6 @@ public record VideoConversationResponse(
         return new VideoConversationResponse(
                 conversation.getId(),
                 conversation.getMediaId(),
-                conversation.getSourceAgentRunId(),
                 conversation.getTitle(),
                 conversation.getCreatedAt(),
                 conversation.getUpdatedAt()

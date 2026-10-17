@@ -1,4 +1,10 @@
 package com.example.server.dto;
 
-public record VideoAgentRunMessage(String runId, Long mediaId, String goal, String contextVersion) {
+public record VideoAgentRunMessage(
+        String runId,
+        Long mediaId,
+        Long conversationId,
+        String goal,
+        String contextVersion
+) {
 }

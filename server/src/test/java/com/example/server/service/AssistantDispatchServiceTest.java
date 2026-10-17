@@ -2,6 +2,7 @@ package com.example.server.service;
 
 import com.example.server.dto.AssistantDispatchRequest;
 import com.example.server.dto.AssistantDispatchResponse;
+import com.example.server.dto.ConversationMessagesResponse;
 import com.example.server.dto.ConversationTurnResponse;
 import com.example.server.dto.VideoConversationResponse;
 import com.example.server.entity.VideoAgentRun;
@@ -37,30 +38,37 @@ class AssistantDispatchServiceTest {
     @Test
     void createsAConversationAndDispatchesAQuickQuestion() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                " 主讲人是谁？ ", "AUTO", null, "run-1"
+                " 主讲人是谁？ ", "AUTO", null
         );
         VideoConversationResponse conversation = mock(VideoConversationResponse.class);
         ConversationTurnResponse turn = mock(ConversationTurnResponse.class);
+        ConversationMessagesResponse timeline = mock(ConversationMessagesResponse.class);
         when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
-        when(modeRouter.route("AUTO", "主讲人是谁？", true, true)).thenReturn(
-                new AssistantModeRouter.Decision("QUICK", "CONTEXT", "普通追问")
+        when(modeRouter.route("AUTO", "主讲人是谁？", true, false)).thenReturn(
+                new AssistantModeRouter.Decision("QUICK", "RULE", "普通问题")
         );
         when(conversation.id()).thenReturn(7L);
-        when(conversationService.create(42L, 3L, "run-1")).thenReturn(conversation);
+        when(conversationService.create(42L, 3L)).thenReturn(conversation);
         when(conversationService.ask(42L, 7L, 3L, "主讲人是谁？")).thenReturn(turn);
+        when(turn.conversation()).thenReturn(conversation);
+        when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
+        when(conversationService.messages(7L, 3L)).thenReturn(timeline);
 
         AssistantDispatchResponse response = service.dispatch(42L, 3L, request);
 
         assertThat(response.executionMode()).isEqualTo("QUICK");
-        assertThat(response.conversationTurn()).isSameAs(turn);
+        assertThat(response.conversation()).isSameAs(conversation);
+        assertThat(response.timeline()).isSameAs(timeline);
         verify(rateLimitService).requireRequest(3L);
     }
 
     @Test
     void dispatchesADeepTaskToTheExistingAgentSubmissionService() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "AUTO", null, null
+                "整理整节课", "AUTO", null
         );
+        VideoConversationResponse conversation = mock(VideoConversationResponse.class);
+        ConversationMessagesResponse timeline = mock(ConversationMessagesResponse.class);
         VideoAgentRun run = new VideoAgentRun();
         run.setId("run-2");
         run.setMediaId(42L);
@@ -71,20 +79,24 @@ class AssistantDispatchServiceTest {
                 new AssistantModeRouter.Decision("DEEP", "RULE", "结构化任务")
         );
         when(agentRunService.findLatestActive(42L)).thenReturn(Optional.empty());
-        when(agentSubmissionService.submit(42L, 3L, "整理整节课")).thenReturn(run);
+        when(conversation.id()).thenReturn(7L);
+        when(conversationService.create(42L, 3L)).thenReturn(conversation);
+        when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
+        when(conversationService.messages(7L, 3L)).thenReturn(timeline);
+        when(agentSubmissionService.submit(42L, 3L, 7L, "整理整节课")).thenReturn(run);
 
         AssistantDispatchResponse response = service.dispatch(42L, 3L, request);
 
         assertThat(response.executionMode()).isEqualTo("DEEP");
-        assertThat(response.agentRun().id()).isEqualTo("run-2");
-        verify(conversationService, never()).create(42L, 3L, null);
+        assertThat(response.timeline()).isSameAs(timeline);
+        verify(agentSubmissionService).submit(42L, 3L, 7L, "整理整节课");
         verify(rateLimitService).requireRequest(3L);
     }
 
     @Test
     void rejectsAnotherDeepTaskWhileOneIsRunning() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "DEEP", null, null
+                "整理整节课", "DEEP", null
         );
         when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
         when(modeRouter.route("DEEP", "整理整节课", true, false)).thenReturn(
@@ -95,6 +107,6 @@ class AssistantDispatchServiceTest {
         assertThatThrownBy(() -> service.dispatch(42L, 3L, request))
                 .isInstanceOf(AssistantDispatchService.AgentRunBusyException.class);
 
-        verify(agentSubmissionService, never()).submit(42L, 3L, "整理整节课");
+        verify(agentSubmissionService, never()).submit(42L, 3L, 7L, "整理整节课");
     }
 }

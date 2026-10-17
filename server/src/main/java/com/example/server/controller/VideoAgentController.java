@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.List;
 import java.util.NoSuchElementException;
 
 @RestController
@@ -28,15 +27,6 @@ public class VideoAgentController {
     ) {
         this.runService = runService;
         this.mediaService = mediaService;
-    }
-
-    @GetMapping("/media/{mediaId}/agent-runs")
-    public List<VideoAgentRunResponse> list(
-            @PathVariable Long mediaId,
-            @RequestParam Long userId
-    ) {
-        requireOwnership(mediaId, userId);
-        return runService.list(mediaId);
     }
 
     @GetMapping("/agent-runs/{runId}")

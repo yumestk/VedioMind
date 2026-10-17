@@ -19,6 +19,7 @@ import org.redisson.api.RedissonClient;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +39,6 @@ class VideoConversationServiceTest {
     private final MediaService mediaService = mock(MediaService.class);
     private final VideoQuestionService questionService = mock(VideoQuestionService.class);
     private final VideoKnowledgeRetriever knowledgeRetriever = mock(VideoKnowledgeRetriever.class);
-    private final VideoAgentRunService agentRunService = mock(VideoAgentRunService.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
     private final VideoConversationService service = new VideoConversationService(
@@ -46,7 +46,6 @@ class VideoConversationServiceTest {
             mediaService,
             questionService,
             knowledgeRetriever,
-            agentRunService,
             redissonClient
     );
 
@@ -96,7 +95,6 @@ class VideoConversationServiceTest {
     @Test
     void retrievesStudyEvidenceWithThePreviousTurnBeforeAnswering() throws InterruptedException {
         VideoConversation conversation = conversation();
-        conversation.setSourceAgentRunId("run-1");
         VideoAgentRun run = completedRun();
         TranscriptSegmentResponse first = new TranscriptSegmentResponse(
                 9L, 0, 1_000L, 2_000L, "第一段字幕"
@@ -114,7 +112,7 @@ class VideoConversationServiceTest {
         );
 
         when(store.getRequired(7L)).thenReturn(conversation);
-        when(agentRunService.getRequired("run-1")).thenReturn(run);
+        when(store.findLatestSucceededAgentRun(7L)).thenReturn(Optional.of(run));
         when(redissonClient.getLock("lock:video-conversation:7")).thenReturn(lock);
         when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
         when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -201,28 +199,20 @@ class VideoConversationServiceTest {
     }
 
     @Test
-    void createsAConversationLinkedToACompletedRunFromTheSameVideo() {
-        VideoAgentRun run = completedRun();
+    void createsAConversationWithoutAgentSpecificState() {
         VideoConversationResponse created = mock(VideoConversationResponse.class);
-        when(agentRunService.getRequired("run-1")).thenReturn(run);
-        when(store.create(42L, "run-1")).thenReturn(created);
+        when(store.create(42L)).thenReturn(created);
 
-        assertThat(service.create(42L, 3L, " run-1 ")).isSameAs(created);
+        assertThat(service.create(42L, 3L)).isSameAs(created);
 
-        verify(store).create(42L, "run-1");
+        verify(store).create(42L);
     }
 
     @Test
-    void rejectsLinkingAnUnfinishedAgentRun() {
-        VideoAgentRun run = completedRun();
-        run.setStatus("CRITIQUING");
-        when(agentRunService.getRequired("run-1")).thenReturn(run);
+    void reportsWhetherTheConversationContainsACompletedAgentRun() {
+        when(store.findLatestSucceededAgentRun(7L)).thenReturn(Optional.of(completedRun()));
 
-        assertThatThrownBy(() -> service.create(42L, 3L, "run-1"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("completed Agent run");
-
-        verify(store, never()).create(any(), any());
+        assertThat(service.hasCompletedAgentRun(7L)).isTrue();
     }
 
     private VideoConversation conversation() {
@@ -237,7 +227,7 @@ class VideoConversationServiceTest {
 
     private VideoMessage message(String role, String content) {
         VideoMessage message = new VideoMessage();
-        message.setRole(role);
+        message.setMessageType(role);
         message.setContent(content);
         return message;
     }

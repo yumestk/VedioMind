@@ -7,9 +7,10 @@ import java.util.List;
 
 public record ConversationMessageResponse(
         Long id,
-        String role,
+        String messageType,
         String content,
         List<VideoQuestionCitationResponse> citations,
+        VideoAgentRunResponse agentRun,
         LocalDateTime createdAt
 ) {
     public ConversationMessageResponse {
@@ -18,13 +19,15 @@ public record ConversationMessageResponse(
 
     public static ConversationMessageResponse from(
             VideoMessage message,
-            List<VideoQuestionCitationResponse> citations
+            List<VideoQuestionCitationResponse> citations,
+            VideoAgentRunResponse agentRun
     ) {
         return new ConversationMessageResponse(
                 message.getId(),
-                message.getRole(),
+                message.getMessageType(),
                 message.getContent(),
                 citations,
+                agentRun,
                 message.getCreatedAt()
         );
     }

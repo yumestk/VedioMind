@@ -67,7 +67,7 @@ class AnalysisTransactionListenerTest {
     @Test
     void commitsAgentRunThroughTheSharedTransactionalProducer() {
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 12L, "learn", "t1-v1-p2"
+                "run-1", 12L, 7L, "learn", "t1-v1-p2"
         );
         Message<VideoAgentRunMessage> message = MessageBuilder.withPayload(command).build();
 
@@ -80,7 +80,7 @@ class AnalysisTransactionListenerTest {
     @Test
     void transactionCheckRecognizesAnAgentRunFromItsHeader() throws Exception {
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-2", 12L, "learn", "t1-v1-p2"
+                "run-2", 12L, 7L, "learn", "t1-v1-p2"
         );
         Message<byte[]> message = MessageBuilder
                 .withPayload(new ObjectMapper().writeValueAsBytes(command))

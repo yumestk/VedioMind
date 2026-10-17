@@ -4,22 +4,18 @@ public record AssistantDispatchResponse(
         String executionMode,
         String routedBy,
         String reason,
-        ConversationTurnResponse conversationTurn,
-        VideoAgentRunResponse agentRun
+        VideoConversationResponse conversation,
+        ConversationMessagesResponse timeline
 ) {
-    public static AssistantDispatchResponse quick(
+    public static AssistantDispatchResponse of(
+            String executionMode,
             String routedBy,
             String reason,
-            ConversationTurnResponse turn
+            VideoConversationResponse conversation,
+            ConversationMessagesResponse timeline
     ) {
-        return new AssistantDispatchResponse("QUICK", routedBy, reason, turn, null);
-    }
-
-    public static AssistantDispatchResponse deep(
-            String routedBy,
-            String reason,
-            VideoAgentRunResponse run
-    ) {
-        return new AssistantDispatchResponse("DEEP", routedBy, reason, null, run);
+        return new AssistantDispatchResponse(
+                executionMode, routedBy, reason, conversation, timeline
+        );
     }
 }
