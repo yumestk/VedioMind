@@ -36,17 +36,20 @@
             <span class="answer-mark">AI</span>
             <p>{{ message.content }}</p>
           </div>
-          <div v-if="message.citations?.length" class="citation-list">
-            <button
-              v-for="citation in message.citations"
-              :key="`${message.id}-${citation.segmentId}`"
-              class="citation-button"
-              @click="$emit('seek', citation.startMs)"
-            >
-              <span>{{ formatTime(citation.startMs) }}</span>
-              {{ citation.text }}
-            </button>
-          </div>
+          <details v-if="message.citations?.length" class="citation-details">
+            <summary>字幕证据 · {{ message.citations.length }} 条</summary>
+            <div class="citation-list">
+              <button
+                v-for="citation in message.citations"
+                :key="`${message.id}-${citation.segmentId}`"
+                class="citation-button"
+                @click="$emit('seek', citation.startMs)"
+              >
+                <span>{{ formatTime(citation.startMs) }}</span>
+                {{ citation.text }}
+              </button>
+            </div>
+          </details>
         </template>
         <AgentRunMessageCard
           v-else-if="message.messageType === 'AGENT_RUN' && message.agentRun"
@@ -182,7 +185,12 @@ defineExpose({ acceptTimeline, dispatchContext })
 .assistant-message { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; align-items: start; }
 .assistant-message p { margin: 2px 0 0; color: #d8dadd; line-height: 1.75; white-space: pre-wrap; }
 .answer-mark { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px; background: var(--accent); color: #0b0e07; font: 700 9px var(--mono); }
-.citation-list { display: grid; gap: 7px; padding-left: 38px; }
+.citation-details { margin-left: 38px; }
+.citation-details summary { display: flex; cursor: pointer; align-items: center; justify-content: space-between; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); font: 10px var(--mono); list-style: none; }
+.citation-details summary::-webkit-details-marker { display: none; }
+.citation-details summary::after { content: '＋'; color: var(--accent); font-size: 14px; }
+.citation-details[open] summary::after { content: '−'; }
+.citation-list { display: grid; gap: 7px; margin-top: 7px; }
 .citation-button { overflow: hidden; padding: 9px 11px; border: 1px solid var(--border); border-radius: 9px; background: #0e1014; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .citation-button:hover { border-color: var(--border-strong); color: var(--text); }
 .citation-button span { margin-right: 7px; color: var(--accent); font: 10px var(--mono); }

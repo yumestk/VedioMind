@@ -25,16 +25,22 @@
         <p class="run-kicker">CORE CONCLUSION</p>
         <h2>{{ currentRun.result.title }}</h2>
         <p>{{ currentRun.result.coreConclusion }}</p>
-        <div class="evidence-list">
-          <button
-            v-for="citation in citationsFor(currentRun.result.coreEvidenceRefs)"
-            :key="citation.ref"
-            @click="$emit('seek', citation.startMs)"
-          >
-            <span>{{ formatTime(citation.startMs) }}</span>
-            {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}
-          </button>
-        </div>
+        <details
+          v-if="citationsFor(currentRun.result.coreEvidenceRefs).length"
+          class="evidence-details"
+        >
+          <summary>参考证据 · {{ citationsFor(currentRun.result.coreEvidenceRefs).length }} 条</summary>
+          <div class="evidence-list">
+            <button
+              v-for="citation in citationsFor(currentRun.result.coreEvidenceRefs)"
+              :key="citation.ref"
+              @click="$emit('seek', citation.startMs)"
+            >
+              <span>{{ formatTime(citation.startMs) }}</span>
+              {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}
+            </button>
+          </div>
+        </details>
       </section>
 
       <section class="result-block">
@@ -46,16 +52,19 @@
         >
           <h3>{{ index + 1 }}. {{ point.title }}</h3>
           <p>{{ point.explanation }}</p>
-          <div class="evidence-list">
-            <button
-              v-for="citation in citationsFor(point.evidenceRefs)"
-              :key="citation.ref"
-              @click="$emit('seek', citation.startMs)"
-            >
-              <span>{{ formatTime(citation.startMs) }}</span>
-              {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}
-            </button>
-          </div>
+          <details v-if="citationsFor(point.evidenceRefs).length" class="evidence-details">
+            <summary>参考证据 · {{ citationsFor(point.evidenceRefs).length }} 条</summary>
+            <div class="evidence-list">
+              <button
+                v-for="citation in citationsFor(point.evidenceRefs)"
+                :key="citation.ref"
+                @click="$emit('seek', citation.startMs)"
+              >
+                <span>{{ formatTime(citation.startMs) }}</span>
+                {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}
+              </button>
+            </div>
+          </details>
         </article>
       </section>
 
@@ -171,7 +180,12 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .knowledge-point:last-child, .quiz-item:last-child { padding-bottom: 0; border-bottom: 0; }
 .knowledge-point h3 { margin: 0; font-size: 15px; }
 .quiz-item summary { cursor: pointer; color: var(--text); font-weight: 700; }
-.evidence-list { display: grid; gap: 6px; margin-top: 10px; }
+.evidence-details { margin-top: 10px; }
+.evidence-details summary { display: flex; cursor: pointer; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font: 10px var(--mono); list-style: none; }
+.evidence-details summary::-webkit-details-marker { display: none; }
+.evidence-details summary::after { content: '＋'; color: var(--accent); font-size: 14px; }
+.evidence-details[open] summary::after { content: '−'; }
+.evidence-list { display: grid; gap: 6px; margin-top: 6px; }
 .evidence-list button { overflow: hidden; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #0e1014; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-list button:hover { border-color: var(--border-strong); color: var(--text); }
 .evidence-list span { margin-right: 7px; color: var(--accent); font: 10px var(--mono); }
