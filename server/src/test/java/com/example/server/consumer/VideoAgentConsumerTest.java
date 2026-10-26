@@ -1,56 +1,50 @@
 package com.example.server.consumer;
 
-import com.example.server.service.VideoAgentRunService;
 import com.example.server.service.VideoAgentWorkflowService;
-import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.BackgroundTaskRecoveryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.function.IntConsumer;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.never;
+import static com.example.server.service.BackgroundTaskRecoveryService.TaskType.AGENT;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class VideoAgentConsumerTest {
-
-    private final VideoAgentWorkflowService workflowService = mock(VideoAgentWorkflowService.class);
-    private final VideoAgentRunService runService = mock(VideoAgentRunService.class);
-    private final VideoAgentConsumer consumer = new VideoAgentConsumer(
-            workflowService, runService, new ObjectMapper()
-    );
+    private final VideoAgentWorkflowService service = mock(VideoAgentWorkflowService.class);
+    private final BackgroundTaskRecoveryService recovery = mock(BackgroundTaskRecoveryService.class);
+    private final VideoAgentConsumer consumer = new VideoAgentConsumer(service, recovery, new ObjectMapper());
 
     @Test
-    void recordsRetryAndPropagatesWorkflowFailure() {
-        doThrow(new IllegalStateException("model unavailable"))
-                .when(workflowService).process("run-1", 0);
+    void delegatesWithDatabaseFailureCountInsteadOfBrokerRedeliveryCount() {
+        doAnswer(call -> {
+            call.getArgument(3, IntConsumer.class).accept(2);
+            return null;
+        }).when(recovery).execute(eq(AGENT), eq("task-1"), eq(0L), any());
+        MessageExt message = message();
+        message.setReconsumeTimes(99);
 
-        assertThatThrownBy(() -> consumer.onMessage(message(0)))
-                .isInstanceOf(IllegalStateException.class);
+        consumer.onMessage(message);
 
-        verify(runService).markRetrying("run-1", 1, "model unavailable");
+        verify(service).process("task-1", 2);
     }
 
     @Test
-    void acknowledgesNonRetryableProviderFailuresAfterMarkingTheRunFailed() {
-        doThrow(new AiProviderException("forbidden", null, false, 0))
-                .when(workflowService).process("run-1", 0);
+    void passesRecoveryVersionToRejectStaleDeliveries() {
+        MessageExt message = message();
+        message.putUserProperty(BackgroundTaskRecoveryService.VERSION_HEADER, "7");
 
-        consumer.onMessage(message(0));
+        consumer.onMessage(message);
 
-        verify(runService).markFailed("run-1", 0, "forbidden");
-        verify(runService, never()).markRetrying("run-1", 1, "forbidden");
+        verify(recovery).execute(eq(AGENT), eq("task-1"), eq(7L), any());
     }
 
-    private MessageExt message(int retries) {
+    private MessageExt message() {
         MessageExt message = new MessageExt();
-        message.setBody(("{\"runId\":\"run-1\",\"mediaId\":42,"
-                + "\"goal\":\"learn\",\"contextVersion\":\"v1\"}")
-                .getBytes(StandardCharsets.UTF_8));
-        message.setReconsumeTimes(retries);
+        message.setBody("{\"runId\":\"task-1\",\"mediaId\":42}".getBytes(StandardCharsets.UTF_8));
         return message;
     }
 }

@@ -73,17 +73,20 @@ public class AnalysisJobService {
     }
 
     public boolean beginAttempt(String jobId, int retryCount) {
+        AnalysisJob job = getRequired(jobId);
         LocalDateTime now = LocalDateTime.now();
         LambdaUpdateWrapper<AnalysisJob> update = new LambdaUpdateWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getId, jobId)
                 .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
                 .set(AnalysisJob::getStatus, AnalysisJobStatus.PREPARING.name())
-                .set(AnalysisJob::getProgress, 10)
+                .set(AnalysisJob::getProgress, Math.max(10, job.getProgress()))
                 .set(AnalysisJob::getRetryCount, retryCount)
                 .set(AnalysisJob::getErrorMessage, null)
                 .set(AnalysisJob::getWarningMessage, null)
-                .set(AnalysisJob::getStartedAt, now)
                 .set(AnalysisJob::getUpdatedAt, now);
+        if (job.getStartedAt() == null) {
+            update.set(AnalysisJob::getStartedAt, now);
+        }
         return analysisJobMapper.update(null, update) == 1;
     }
 
@@ -96,18 +99,6 @@ public class AnalysisJobService {
                 .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
                 .set(AnalysisJob::getStatus, status.name())
                 .set(AnalysisJob::getProgress, progress)
-                .set(AnalysisJob::getUpdatedAt, LocalDateTime.now());
-        analysisJobMapper.update(null, update);
-    }
-
-    public void markRetrying(String jobId, int retryCount, String errorMessage) {
-        LambdaUpdateWrapper<AnalysisJob> update = new LambdaUpdateWrapper<AnalysisJob>()
-                .eq(AnalysisJob::getId, jobId)
-                .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
-                .set(AnalysisJob::getStatus, AnalysisJobStatus.RETRYING.name())
-                .set(AnalysisJob::getProgress, 5)
-                .set(AnalysisJob::getRetryCount, retryCount)
-                .set(AnalysisJob::getErrorMessage, errorMessage)
                 .set(AnalysisJob::getUpdatedAt, LocalDateTime.now());
         analysisJobMapper.update(null, update);
     }
@@ -126,16 +117,4 @@ public class AnalysisJobService {
         analysisJobMapper.update(null, update);
     }
 
-    public void markFailed(String jobId, int retryCount, String errorMessage) {
-        LocalDateTime now = LocalDateTime.now();
-        LambdaUpdateWrapper<AnalysisJob> update = new LambdaUpdateWrapper<AnalysisJob>()
-                .eq(AnalysisJob::getId, jobId)
-                .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
-                .set(AnalysisJob::getStatus, AnalysisJobStatus.FAILED.name())
-                .set(AnalysisJob::getRetryCount, retryCount)
-                .set(AnalysisJob::getErrorMessage, errorMessage)
-                .set(AnalysisJob::getFinishedAt, now)
-                .set(AnalysisJob::getUpdatedAt, now);
-        analysisJobMapper.update(null, update);
-    }
 }

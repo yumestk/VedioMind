@@ -9,8 +9,6 @@ import com.example.server.dto.VideoAgentResult;
 import com.example.server.entity.VideoAgentRun;
 import com.example.server.service.ai.impl.DeepSeekChatClient;
 import com.example.server.service.ai.impl.DeepSeekMessage;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,7 +19,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class VideoAgentWorkflowService {
@@ -64,61 +61,46 @@ public class VideoAgentWorkflowService {
     private final VideoKnowledgeIndexService indexService;
     private final VideoAgentEvidenceService evidenceService;
     private final DeepSeekChatClient chatClient;
-    private final RedissonClient redissonClient;
 
     public VideoAgentWorkflowService(
             VideoAgentRunService runService,
             VideoKnowledgeIndexService indexService,
             VideoAgentEvidenceService evidenceService,
-            DeepSeekChatClient chatClient,
-            RedissonClient redissonClient
+            DeepSeekChatClient chatClient
     ) {
         this.runService = runService;
         this.indexService = indexService;
         this.evidenceService = evidenceService;
         this.chatClient = chatClient;
-        this.redissonClient = redissonClient;
     }
 
     public void process(String runId, int retryCount) {
-        RLock lock = redissonClient.getLock("lock:video-agent-run:" + runId);
-        boolean locked = false;
-        try {
-            locked = lock.tryLock(0, TimeUnit.SECONDS);
-            if (!locked || !runService.beginAttempt(runId, retryCount)) {
-                return;
-            }
-            VideoAgentRun run = runService.getRequired(runId);
-            VideoKnowledgeIndexService.IndexSnapshot index = indexService.requireReady(run.getMediaId());
-            if (!run.getContextVersion().equals(index.context().version())) {
-                throw new IllegalStateException("VideoContext changed; create a new learning task");
-            }
-
-            Plan plan = loadOrPlan(run, index);
-            List<ExecutionOutput> executions = new ArrayList<>();
-            for (int i = 0; i < plan.subtasks().size(); i++) {
-                executions.add(loadOrExecute(run, index, plan.subtasks().get(i), i + 1));
-            }
-            Map<String, VideoAgentCitation> evidence = evidenceByRef(executions);
-            Critique critique = loadOrCritique(run, executions, evidence);
-            VideoAgentResult result = critique.passed()
-                    ? critique.result()
-                    : loadOrRevise(run, critique, executions, evidence);
-            validateResult(result, evidence.keySet());
-            List<VideoAgentCitation> citations = usedCitations(result, evidence);
-            runService.markSucceeded(runId, result, citations);
-            log.info("Video Agent run {} completed: subtasks={}, evidence={}, generationCalls={}, retrievalCalls={}",
-                    runId, plan.subtasks().size(), citations.size(),
-                    runService.getRequired(runId).getGenerationCalls(),
-                    runService.getRequired(runId).getRetrievalCalls());
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("Agent run was interrupted", exception);
-        } finally {
-            if (locked && lock.isHeldByCurrentThread()) {
-                lock.unlock();
-            }
+        if (!runService.beginAttempt(runId, retryCount)) {
+            return;
         }
+        VideoAgentRun run = runService.getRequired(runId);
+        VideoKnowledgeIndexService.IndexSnapshot index = indexService.requireReady(run.getMediaId());
+        if (!run.getContextVersion().equals(index.context().version())) {
+            throw new IllegalStateException("VideoContext changed; create a new learning task");
+        }
+
+        Plan plan = loadOrPlan(run, index);
+        List<ExecutionOutput> executions = new ArrayList<>();
+        for (int i = 0; i < plan.subtasks().size(); i++) {
+            executions.add(loadOrExecute(run, index, plan.subtasks().get(i), i + 1));
+        }
+        Map<String, VideoAgentCitation> evidence = evidenceByRef(executions);
+        Critique critique = loadOrCritique(run, executions, evidence);
+        VideoAgentResult result = critique.passed()
+                ? critique.result()
+                : loadOrRevise(run, critique, executions, evidence);
+        validateResult(result, evidence.keySet());
+        List<VideoAgentCitation> citations = usedCitations(result, evidence);
+        runService.markSucceeded(runId, result, citations);
+        log.info("Video Agent run {} completed: subtasks={}, evidence={}, generationCalls={}, retrievalCalls={}",
+                runId, plan.subtasks().size(), citations.size(),
+                runService.getRequired(runId).getGenerationCalls(),
+                runService.getRequired(runId).getRetrievalCalls());
     }
 
     private Plan loadOrPlan(
@@ -149,8 +131,16 @@ public class VideoAgentWorkflowService {
             return JSON.parseObject(cached, ExecutionOutput.class);
         }
         runService.markStage(run.getId(), "RETRIEVING", 20 + position * 15);
-        runService.reserveRetrievalCall(run.getId());
-        VideoAgentEvidenceService.EvidenceBundle bundle = evidenceService.retrieve(index, subtask.query());
+        String retrievalStage = "RETRIEVAL_" + position;
+        String savedEvidence = runService.completedStep(run.getId(), retrievalStage, 0).orElse(null);
+        VideoAgentEvidenceService.EvidenceBundle bundle;
+        if (savedEvidence != null) {
+            bundle = JSON.parseObject(savedEvidence, VideoAgentEvidenceService.EvidenceBundle.class);
+        } else {
+            bundle = evidenceService.retrieve(index, subtask.query(),
+                    () -> runService.reserveRetrievalCall(run.getId()));
+            runService.saveCompletedStep(run.getId(), retrievalStage, 0, subtask.query(), bundle);
+        }
         if (bundle.evidence().isEmpty()) {
             throw new IllegalStateException("No evidence was retrieved for subtask " + subtask.id());
         }
@@ -211,10 +201,10 @@ public class VideoAgentWorkflowService {
     }
 
     private String generate(String runId, String systemPrompt, String userPrompt) {
-        runService.reserveGenerationCall(runId);
         DeepSeekChatClient.ChatResult response = chatClient.chatWithUsage(
                 systemPrompt,
-                List.of(new DeepSeekMessage("user", userPrompt))
+                List.of(new DeepSeekMessage("user", userPrompt)),
+                () -> runService.reserveGenerationCall(runId)
         );
         runService.addTokens(runId, response.inputTokens(), response.outputTokens());
         return response.content();

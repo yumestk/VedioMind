@@ -50,12 +50,18 @@ public class VideoKnowledgeRetriever {
             VideoKnowledgeIndexService.IndexSnapshot index,
             String query
     ) {
+        return searchMultimodal(index, query, () -> {});
+    }
+
+    public List<KnowledgeSearchHit> searchMultimodal(
+            VideoKnowledgeIndexService.IndexSnapshot index, String query, Runnable beforeEmbedding
+    ) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("Knowledge search query must not be empty");
         }
         long startedAt = System.nanoTime();
         String normalizedQuery = query.trim();
-        List<Double> queryVector = embeddingClient.embedQuery(query.trim());
+        List<Double> queryVector = embeddingClient.embedQuery(query.trim(), beforeEmbedding);
         CandidateSelection candidates = candidates(index, normalizedQuery, queryVector);
         List<KnowledgeSearchHit> hits = candidates.chunks().stream()
                 .map(chunk -> hit(index.context(), normalizedQuery, queryVector, chunk))

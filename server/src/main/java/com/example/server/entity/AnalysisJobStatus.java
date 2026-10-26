@@ -12,6 +12,7 @@ public enum AnalysisJobStatus {
     SUMMARIZING,
     GENERATING_CHAPTERS,
     RETRYING,
+    WAITING_FOR_QUOTA,
     SUCCEEDED,
     FAILED;
 

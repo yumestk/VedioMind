@@ -16,6 +16,9 @@ public class AnalysisJob {
     private String status;
     private Integer progress;
     private Integer retryCount;
+    private Long dispatchVersion;
+    private LocalDateTime nextAttemptAt;
+    private LocalDateTime quotaWaitStartedAt;
     private String errorMessage;
     private String warningMessage;
     private LocalDateTime createdAt;

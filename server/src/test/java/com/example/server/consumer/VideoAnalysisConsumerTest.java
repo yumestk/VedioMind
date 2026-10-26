@@ -1,86 +1,50 @@
 package com.example.server.consumer;
 
 import com.example.server.service.AiService;
-import com.example.server.service.AnalysisJobService;
-import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.BackgroundTaskRecoveryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.util.function.IntConsumer;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static com.example.server.service.BackgroundTaskRecoveryService.TaskType.ANALYSIS;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class VideoAnalysisConsumerTest {
-
-    private final AiService aiService = mock(AiService.class);
-    private final AnalysisJobService analysisJobService = mock(AnalysisJobService.class);
-    private final VideoAnalysisConsumer consumer = new VideoAnalysisConsumer(
-            aiService,
-            analysisJobService,
-            new ObjectMapper()
-    );
+    private final AiService service = mock(AiService.class);
+    private final BackgroundTaskRecoveryService recovery = mock(BackgroundTaskRecoveryService.class);
+    private final VideoAnalysisConsumer consumer = new VideoAnalysisConsumer(service, recovery, new ObjectMapper());
 
     @Test
-    void acknowledgesOnlyAfterTheJobCompletes() {
-        consumer.onMessage(message(0));
+    void delegatesWithDatabaseFailureCountInsteadOfBrokerRedeliveryCount() {
+        doAnswer(call -> {
+            call.getArgument(3, IntConsumer.class).accept(2);
+            return null;
+        }).when(recovery).execute(eq(ANALYSIS), eq("task-1"), eq(0L), any());
+        MessageExt message = message();
+        message.setReconsumeTimes(99);
 
-        verify(aiService).processAnalysisJob("job-1", 0);
-        verify(analysisJobService, never()).markRetrying("job-1", 1, "provider unavailable");
+        consumer.onMessage(message);
+
+        verify(service).processAnalysisJob("task-1", 2);
     }
 
     @Test
-    void recordsRetryStateAndPropagatesTheFailure() {
-        doThrow(new IllegalStateException("provider unavailable"))
-                .when(aiService).processAnalysisJob("job-1", 0);
+    void passesRecoveryVersionToRejectStaleDeliveries() {
+        MessageExt message = message();
+        message.putUserProperty(BackgroundTaskRecoveryService.VERSION_HEADER, "7");
 
-        assertThatThrownBy(() -> consumer.onMessage(message(0)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("provider unavailable");
+        consumer.onMessage(message);
 
-        verify(analysisJobService).markRetrying("job-1", 1, "provider unavailable");
-        verify(analysisJobService, never()).markFailed("job-1", 0, "provider unavailable");
+        verify(recovery).execute(eq(ANALYSIS), eq("task-1"), eq(7L), any());
     }
 
-    @Test
-    void recordsADeadLetterFailureAfterTheRetryLimit() {
-        doThrow(new IllegalStateException("provider unavailable"))
-                .when(aiService).processAnalysisJob("job-1", VideoAnalysisConsumer.MAX_RECONSUME_TIMES);
-
-        assertThatThrownBy(() -> consumer.onMessage(message(VideoAnalysisConsumer.MAX_RECONSUME_TIMES)))
-                .isInstanceOf(IllegalStateException.class);
-
-        verify(analysisJobService).markFailed(
-                "job-1",
-                VideoAnalysisConsumer.MAX_RECONSUME_TIMES,
-                "provider unavailable"
-        );
-        verify(analysisJobService, never()).markRetrying(
-                "job-1",
-                VideoAnalysisConsumer.MAX_RECONSUME_TIMES + 1,
-                "provider unavailable"
-        );
-    }
-
-    @Test
-    void acknowledgesNonRetryableProviderFailuresAfterMarkingTheJobFailed() {
-        doThrow(new AiProviderException("invalid api key", null, false, 0))
-                .when(aiService).processAnalysisJob("job-1", 0);
-
-        consumer.onMessage(message(0));
-
-        verify(analysisJobService).markFailed("job-1", 0, "invalid api key");
-        verify(analysisJobService, never()).markRetrying("job-1", 1, "invalid api key");
-    }
-
-    private MessageExt message(int reconsumeTimes) {
+    private MessageExt message() {
         MessageExt message = new MessageExt();
-        message.setBody("{\"jobId\":\"job-1\",\"mediaId\":42}".getBytes(StandardCharsets.UTF_8));
-        message.setReconsumeTimes(reconsumeTimes);
+        message.setBody("{\"jobId\":\"task-1\",\"mediaId\":42}".getBytes(StandardCharsets.UTF_8));
         return message;
     }
 }
