@@ -40,13 +40,21 @@ public class AliyunTextEmbeddingClient {
     }
 
     public List<Double> embedQuery(String text) {
+        return embedQuery(text, () -> {});
+    }
+
+    public List<Double> embedQuery(String text, Runnable beforeFirstAttempt) {
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("Embedding query must not be empty");
         }
-        return embed(List.of(text), TextEmbeddingParam.TextType.QUERY).vectors().get(0);
+        return embed(List.of(text), TextEmbeddingParam.TextType.QUERY, beforeFirstAttempt).vectors().get(0);
     }
 
     private EmbeddingBatch embed(List<String> texts, TextEmbeddingParam.TextType textType) {
+        return embed(texts, textType, () -> {});
+    }
+
+    private EmbeddingBatch embed(List<String> texts, TextEmbeddingParam.TextType textType, Runnable beforeFirstAttempt) {
         if (texts == null || texts.isEmpty() || texts.size() > MAX_BATCH_SIZE
                 || texts.stream().anyMatch(text -> text == null || text.isBlank())) {
             throw new IllegalArgumentException("Embedding batch must contain 1 to 10 non-empty texts");
@@ -55,7 +63,7 @@ public class AliyunTextEmbeddingClient {
             throw new IllegalStateException("ALIYUN_API_KEY is not configured");
         }
 
-        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING,
+        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING, beforeFirstAttempt,
                 () -> execute(texts, textType));
     }
 

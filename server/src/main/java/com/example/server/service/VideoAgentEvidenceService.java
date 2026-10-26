@@ -23,11 +23,10 @@ public class VideoAgentEvidenceService {
     }
 
     public EvidenceBundle retrieve(
-            VideoKnowledgeIndexService.IndexSnapshot index,
-            String query
+            VideoKnowledgeIndexService.IndexSnapshot index, String query, Runnable beforeEmbedding
     ) {
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits =
-                retriever.searchMultimodal(index, query);
+                retriever.searchMultimodal(index, query, beforeEmbedding);
         VideoContext context = index.context();
         Map<Long, VideoContext.TranscriptEvidence> transcripts = context.transcriptEvidence().stream()
                 .collect(Collectors.toMap(VideoContext.TranscriptEvidence::id, Function.identity()));

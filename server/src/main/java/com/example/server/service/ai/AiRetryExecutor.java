@@ -38,8 +38,13 @@ public class AiRetryExecutor {
     }
 
     public <T> T execute(String provider, Supplier<T> operation) {
+        return execute(provider, () -> {}, operation);
+    }
+
+    public <T> T execute(String provider, Runnable beforeFirstAttempt, Supplier<T> operation) {
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             rateLimitService.requireProviderRequest(provider);
+            if (attempt == 1) beforeFirstAttempt.run();
             try {
                 return operation.get();
             } catch (AiProviderException exception) {

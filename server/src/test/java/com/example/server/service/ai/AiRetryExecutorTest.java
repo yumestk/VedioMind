@@ -10,6 +10,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -67,6 +69,51 @@ class AiRetryExecutorTest {
         assertThat(AiProviderException.forStatus("server", null, 503, 0).isRetryable()).isTrue();
         assertThat(AiProviderException.forStatus("unauthorized", null, 401, 0).isRetryable()).isFalse();
         assertThat(AiProviderException.forStatus("bad request", null, 400, 0).isRetryable()).isFalse();
+    }
+
+    @Test
+    void quotaRejectionDoesNotReserveBudgetOrCallProvider() {
+        AtomicInteger budget = new AtomicInteger();
+        AtomicInteger calls = new AtomicInteger();
+        doThrow(new AiRateLimitService.AiRateLimitExceededException("busy", 60))
+                .when(rateLimitService).requireProviderRequest(AiRateLimitService.DEEPSEEK);
+
+        assertThatThrownBy(() -> executor.execute(AiRateLimitService.DEEPSEEK,
+                budget::incrementAndGet, calls::incrementAndGet))
+                .isInstanceOf(AiRateLimitService.AiRateLimitExceededException.class);
+
+        assertThat(budget).hasValue(0);
+        assertThat(calls).hasValue(0);
+        assertThat(delays).isEmpty();
+    }
+
+    @Test
+    void retainsBudgetForARealCallWhenTheFollowingRetryCannotGetQuota() {
+        AtomicInteger budget = new AtomicInteger();
+        AtomicInteger calls = new AtomicInteger();
+        doNothing().doThrow(new AiRateLimitService.AiRateLimitExceededException("busy", 60))
+                .when(rateLimitService).requireProviderRequest(AiRateLimitService.DEEPSEEK);
+
+        assertThatThrownBy(() -> executor.execute(AiRateLimitService.DEEPSEEK,
+                budget::incrementAndGet, () -> {
+                    calls.incrementAndGet();
+                    throw new AiProviderException("network", null, true, 0);
+                })).isInstanceOf(AiRateLimitService.AiRateLimitExceededException.class);
+
+        assertThat(budget).hasValue(1);
+        assertThat(calls).hasValue(1);
+    }
+
+    @Test
+    void reservesOneLogicalBudgetAcrossLocalProviderRetries() {
+        AtomicInteger budget = new AtomicInteger();
+        AtomicInteger calls = new AtomicInteger();
+        executor.execute(AiRateLimitService.DEEPSEEK, budget::incrementAndGet, () -> {
+            if (calls.incrementAndGet() < 3) throw new AiProviderException("network", null, true, 0);
+            return "ok";
+        });
+        assertThat(budget).hasValue(1);
+        assertThat(calls).hasValue(3);
     }
 
     @Test

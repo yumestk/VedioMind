@@ -51,6 +51,10 @@ public class DeepSeekChatClient {
     }
 
     public ChatResult chatWithUsage(String systemPrompt, List<DeepSeekMessage> conversation) {
+        return chatWithUsage(systemPrompt, conversation, () -> {});
+    }
+
+    public ChatResult chatWithUsage(String systemPrompt, List<DeepSeekMessage> conversation, Runnable beforeFirstAttempt) {
         if (systemPrompt == null || systemPrompt.isBlank() || conversation == null || conversation.isEmpty()) {
             throw new IllegalArgumentException("DeepSeek messages must not be empty");
         }
@@ -85,7 +89,7 @@ public class DeepSeekChatClient {
                 ))
                 .build();
 
-        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, () -> execute(request));
+        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, beforeFirstAttempt, () -> execute(request));
     }
 
     private ChatResult execute(Request request) {

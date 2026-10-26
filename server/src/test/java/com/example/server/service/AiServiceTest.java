@@ -16,13 +16,10 @@ import com.example.server.service.ai.VideoChapterDraft;
 import com.example.server.service.context.VideoContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import java.io.File;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -42,11 +39,9 @@ class AiServiceTest {
     private final TranscriptService transcriptService = mock(TranscriptService.class);
     private final ChapterService chapterService = mock(ChapterService.class);
     private final StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
-    private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final ObjectStorageService objectStorageService = mock(ObjectStorageService.class);
     private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
     private final VideoKnowledgeIndexService knowledgeIndexService = mock(VideoKnowledgeIndexService.class);
-    private final RLock lock = mock(RLock.class);
 
     private AiService aiService;
 
@@ -62,14 +57,10 @@ class AiServiceTest {
                 transcriptService,
                 chapterService,
                 redisTemplate,
-                redissonClient,
                 objectStorageService,
                 visualEvidenceService,
                 knowledgeIndexService
         );
-        when(redissonClient.getLock("lock:analysis-job:job-1")).thenReturn(lock);
-        when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(analysisJobService.beginAttempt("job-1", 0)).thenReturn(true);
 
         AnalysisJob job = new AnalysisJob();
@@ -193,6 +184,26 @@ class AiServiceTest {
                 "job-1",
                 "画面证据处理未完成，字幕总结、章节与问答仍可使用。"
         );
+    }
+
+    @Test
+    void quotaWaitCancelsUnfinishedVisualWorkWithoutWaitingForIt() {
+        MediaFile media = media();
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
+        when(transcriptService.listByMediaId(42L)).thenReturn(List.of());
+        when(objectStorageService.createReadUrl(any())).thenReturn("https://example.test/video");
+        File audio = mock(File.class);
+        when(audioExtractor.extract(any())).thenReturn(audio);
+        var runningVisual = new java.util.concurrent.FutureTask<Void>(() -> null);
+        when(visualEvidenceService.processAsync(any(), any())).thenReturn(runningVisual);
+        var limited = new com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException("busy", 60);
+        when(speechTranscriber.transcribe(audio)).thenThrow(limited);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> aiService.processAnalysisJob("job-1", 0))
+                .isSameAs(limited);
+
+        org.assertj.core.api.Assertions.assertThat(runningVisual.isCancelled()).isTrue();
+        verify(analysisJobService, never()).markSucceeded(any(), any());
     }
 
     private MediaFile media() {

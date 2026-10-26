@@ -14,6 +14,7 @@ public record VideoAgentRunResponse(
         String status,
         Integer progress,
         Integer retryCount,
+        LocalDateTime nextAttemptAt,
         Integer generationCalls,
         Integer retrievalCalls,
         Integer inputTokens,
@@ -35,7 +36,7 @@ public record VideoAgentRunResponse(
                 : JSON.parseArray(run.getCitationsJson(), VideoAgentCitation.class);
         return new VideoAgentRunResponse(
                 run.getId(), run.getMediaId(), run.getGoal(), run.getContextVersion(),
-                run.getStatus(), run.getProgress(), run.getRetryCount(),
+                run.getStatus(), run.getProgress(), run.getRetryCount(), run.getNextAttemptAt(),
                 run.getGenerationCalls(), run.getRetrievalCalls(), run.getInputTokens(),
                 run.getOutputTokens(), run.getTokenUsageKnown(), result, citations,
                 run.getErrorMessage(),

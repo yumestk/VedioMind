@@ -16,6 +16,7 @@
         </div>
       </div>
       <p v-if="job.status === 'RETRYING'" class="status-note">正在等待第 {{ job.retryCount }} 次重试</p>
+      <p v-if="job.status === 'WAITING_FOR_QUOTA'" class="status-note">AI 服务额度暂时不足，系统会自动继续，无需重新提交。</p>
       <p v-if="job.warningMessage" class="status-note">{{ job.warningMessage }}</p>
     </template>
 
@@ -61,6 +62,7 @@ const labels = {
   SUMMARIZING: '正在生成总结',
   GENERATING_CHAPTERS: '正在生成章节',
   RETRYING: '任务异常，准备重试',
+  WAITING_FOR_QUOTA: '等待 AI 服务额度',
   SUCCEEDED: '分析完成',
   FAILED: '分析失败'
 }

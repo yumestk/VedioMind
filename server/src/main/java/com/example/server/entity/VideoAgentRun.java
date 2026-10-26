@@ -18,6 +18,9 @@ public class VideoAgentRun {
     private String status;
     private Integer progress;
     private Integer retryCount;
+    private Long dispatchVersion;
+    private LocalDateTime nextAttemptAt;
+    private LocalDateTime quotaWaitStartedAt;
     private Integer generationCalls;
     private Integer retrievalCalls;
     private Integer inputTokens;

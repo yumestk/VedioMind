@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,7 +45,7 @@ class VideoKnowledgeRetrieverTest {
                         context, List.of(networking, database), "summaries"
                 )
         );
-        when(embeddingClient.embedQuery("network question")).thenReturn(List.of(1.0, 0.0));
+        when(embeddingClient.embedQuery(eq("network question"), any())).thenReturn(List.of(1.0, 0.0));
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
                 42L, "network question"
@@ -77,7 +79,7 @@ class VideoKnowledgeRetrieverTest {
                         context, List.of(visualOnly, transcript), "summaries"
                 )
         );
-        when(embeddingClient.embedQuery("visual question")).thenReturn(List.of(1.0, 0.0));
+        when(embeddingClient.embedQuery(eq("visual question"), any())).thenReturn(List.of(1.0, 0.0));
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
                 42L, "visual question"
@@ -109,7 +111,7 @@ class VideoKnowledgeRetrieverTest {
                         index == 12 ? "[]" : "[1.0,0.0]"
                 ))
                 .toList();
-        when(embeddingClient.embedQuery("topic")).thenReturn(List.of(1.0, 0.0));
+        when(embeddingClient.embedQuery(eq("topic"), any())).thenReturn(List.of(1.0, 0.0));
         when(qdrantIndexService.search(
                 42L, "t1-v1-p2", 1, List.of(1.0, 0.0), 12
         )).thenReturn(IntStream.rangeClosed(1, 12).mapToObj(Long::valueOf).toList());

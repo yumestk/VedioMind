@@ -1,16 +1,15 @@
 package com.example.server.consumer;
 
 import com.example.server.dto.VideoAgentRunMessage;
-import com.example.server.service.VideoAgentRunService;
 import com.example.server.service.VideoAgentWorkflowService;
-import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.BackgroundTaskRecoveryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
+import static com.example.server.service.BackgroundTaskRecoveryService.TaskType.AGENT;
 
 @Component
 @RocketMQMessageListener(
@@ -19,63 +18,31 @@ import java.nio.charset.StandardCharsets;
         consumeThreadNumber = 1,
         consumeThreadMax = 2,
         consumeTimeout = 15,
-        maxReconsumeTimes = VideoAgentConsumer.MAX_RECONSUME_TIMES
+        maxReconsumeTimes = 3
 )
 public class VideoAgentConsumer implements RocketMQListener<MessageExt> {
-
-    static final int MAX_RECONSUME_TIMES = 3;
-
-    private final VideoAgentWorkflowService workflowService;
-    private final VideoAgentRunService runService;
+    private final VideoAgentWorkflowService service;
+    private final BackgroundTaskRecoveryService recovery;
     private final ObjectMapper objectMapper;
 
-    public VideoAgentConsumer(
-            VideoAgentWorkflowService workflowService,
-            VideoAgentRunService runService,
-            ObjectMapper objectMapper
-    ) {
-        this.workflowService = workflowService;
-        this.runService = runService;
+    public VideoAgentConsumer(VideoAgentWorkflowService service, BackgroundTaskRecoveryService recovery, ObjectMapper objectMapper) {
+        this.service = service;
+        this.recovery = recovery;
         this.objectMapper = objectMapper;
     }
 
     @Override
     public void onMessage(MessageExt message) {
-        VideoAgentRunMessage command = readMessage(message);
-        int retryCount = message.getReconsumeTimes();
+        VideoAgentRunMessage command;
+        long version;
         try {
-            workflowService.process(command.runId(), retryCount);
-        } catch (RuntimeException exception) {
-            String error = concise(exception);
-            if (exception instanceof AiProviderException providerException
-                    && !providerException.isRetryable()) {
-                runService.markFailed(command.runId(), retryCount, error);
-                return;
-            }
-            if (retryCount >= MAX_RECONSUME_TIMES) {
-                runService.markFailed(command.runId(), retryCount, error);
-            } else {
-                runService.markRetrying(command.runId(), retryCount + 1, error);
-            }
-            throw exception;
-        }
-    }
-
-    private VideoAgentRunMessage readMessage(MessageExt message) {
-        try {
-            return objectMapper.readValue(message.getBody(), VideoAgentRunMessage.class);
+            command = objectMapper.readValue(message.getBody(), VideoAgentRunMessage.class);
+            String header = message.getProperty(BackgroundTaskRecoveryService.VERSION_HEADER);
+            version = header == null ? 0 : Long.parseLong(header);
         } catch (Exception exception) {
-            throw new IllegalArgumentException(
-                    "Invalid video Agent message: "
-                            + new String(message.getBody(), StandardCharsets.UTF_8),
-                    exception
-            );
+            throw new IllegalArgumentException("Invalid background task message", exception);
         }
-    }
-
-    private String concise(Throwable throwable) {
-        String message = throwable.getMessage();
-        if (message == null || message.isBlank()) message = throwable.getClass().getSimpleName();
-        return message.length() <= 2000 ? message : message.substring(0, 2000);
+        recovery.execute(AGENT, command.runId(), version,
+                retries -> service.process(command.runId(), retries));
     }
 }

@@ -136,10 +136,12 @@ const citationsFor = (refs = []) => refs
 const statusLabel = status => ({
   QUEUED: '等待执行', PLANNING: '正在规划', RETRIEVING: '查找依据', DRAFTING: '整理笔记',
   CRITIQUING: '检查结果', REVISING: '修订结果', RETRYING: '准备重试',
+  WAITING_FOR_QUOTA: '等待 AI 服务额度',
   SUCCEEDED: '已完成', FAILED: '失败'
 })[status] || status
 
 const stageDescription = status => ({
+  WAITING_FOR_QUOTA: '额度恢复后会自动继续，无需重新提交',
   QUEUED: '任务已进入队列', PLANNING: '正在拆解学习目标', RETRIEVING: '正在检索相关证据',
   DRAFTING: '正在整理知识点', CRITIQUING: '正在核对目标、事实与引用',
   REVISING: '正在按检查意见修订', RETRYING: '任务将从最近检查点恢复'

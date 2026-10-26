@@ -2,15 +2,14 @@ package com.example.server.consumer;
 
 import com.example.server.dto.AnalysisJobMessage;
 import com.example.server.service.AiService;
-import com.example.server.service.AnalysisJobService;
-import com.example.server.service.ai.AiProviderException;
+import com.example.server.service.BackgroundTaskRecoveryService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
+import static com.example.server.service.BackgroundTaskRecoveryService.TaskType.ANALYSIS;
 
 @Component
 @RocketMQMessageListener(
@@ -19,63 +18,31 @@ import java.nio.charset.StandardCharsets;
         consumeThreadNumber = 2,
         consumeThreadMax = 4,
         consumeTimeout = 120,
-        maxReconsumeTimes = VideoAnalysisConsumer.MAX_RECONSUME_TIMES
+        maxReconsumeTimes = 3
 )
 public class VideoAnalysisConsumer implements RocketMQListener<MessageExt> {
-
-    static final int MAX_RECONSUME_TIMES = 3;
-
-    private final AiService aiService;
-    private final AnalysisJobService analysisJobService;
+    private final AiService service;
+    private final BackgroundTaskRecoveryService recovery;
     private final ObjectMapper objectMapper;
 
-    public VideoAnalysisConsumer(
-            AiService aiService,
-            AnalysisJobService analysisJobService,
-            ObjectMapper objectMapper
-    ) {
-        this.aiService = aiService;
-        this.analysisJobService = analysisJobService;
+    public VideoAnalysisConsumer(AiService service, BackgroundTaskRecoveryService recovery, ObjectMapper objectMapper) {
+        this.service = service;
+        this.recovery = recovery;
         this.objectMapper = objectMapper;
     }
 
     @Override
     public void onMessage(MessageExt message) {
-        AnalysisJobMessage command = readMessage(message);
-        int retryCount = message.getReconsumeTimes();
-
+        AnalysisJobMessage command;
+        long version;
         try {
-            aiService.processAnalysisJob(command.jobId(), retryCount);
-        } catch (RuntimeException exception) {
-            String errorMessage = conciseMessage(exception);
-            if (exception instanceof AiProviderException providerException
-                    && !providerException.isRetryable()) {
-                analysisJobService.markFailed(command.jobId(), retryCount, errorMessage);
-                return;
-            }
-            if (retryCount >= MAX_RECONSUME_TIMES) {
-                analysisJobService.markFailed(command.jobId(), retryCount, errorMessage);
-            } else {
-                analysisJobService.markRetrying(command.jobId(), retryCount + 1, errorMessage);
-            }
-            throw exception;
-        }
-    }
-
-    private AnalysisJobMessage readMessage(MessageExt message) {
-        try {
-            return objectMapper.readValue(message.getBody(), AnalysisJobMessage.class);
+            command = objectMapper.readValue(message.getBody(), AnalysisJobMessage.class);
+            String header = message.getProperty(BackgroundTaskRecoveryService.VERSION_HEADER);
+            version = header == null ? 0 : Long.parseLong(header);
         } catch (Exception exception) {
-            String body = new String(message.getBody(), StandardCharsets.UTF_8);
-            throw new IllegalArgumentException("Invalid analysis message: " + body, exception);
+            throw new IllegalArgumentException("Invalid background task message", exception);
         }
-    }
-
-    private String conciseMessage(Throwable throwable) {
-        String message = throwable.getMessage();
-        if (message == null || message.isBlank()) {
-            message = throwable.getClass().getSimpleName();
-        }
-        return message.length() <= 2000 ? message : message.substring(0, 2000);
+        recovery.execute(ANALYSIS, command.jobId(), version,
+                retries -> service.processAnalysisJob(command.jobId(), retries));
     }
 }

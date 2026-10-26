@@ -8,12 +8,11 @@ import com.example.server.entity.TranscriptSegment;
 import com.example.server.entity.VideoChapter;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.ai.AudioExtractor;
+import com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException;
 import com.example.server.service.ai.ChapterGenerator;
 import com.example.server.service.ai.ContentSummarizer;
 import com.example.server.service.ai.SpeechTranscriber;
 import com.example.server.service.ai.TranscriptionResult;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -45,7 +44,6 @@ public class AiService {
     private final TranscriptService transcriptService;
     private final ChapterService chapterService;
     private final StringRedisTemplate redisTemplate;
-    private final RedissonClient redissonClient;
     private final ObjectStorageService objectStorageService;
     private final VisualEvidenceService visualEvidenceService;
     private final VideoKnowledgeIndexService knowledgeIndexService;
@@ -60,7 +58,6 @@ public class AiService {
             TranscriptService transcriptService,
             ChapterService chapterService,
             StringRedisTemplate redisTemplate,
-            RedissonClient redissonClient,
             ObjectStorageService objectStorageService,
             VisualEvidenceService visualEvidenceService,
             VideoKnowledgeIndexService knowledgeIndexService
@@ -74,22 +71,18 @@ public class AiService {
         this.transcriptService = transcriptService;
         this.chapterService = chapterService;
         this.redisTemplate = redisTemplate;
-        this.redissonClient = redissonClient;
         this.objectStorageService = objectStorageService;
         this.visualEvidenceService = visualEvidenceService;
         this.knowledgeIndexService = knowledgeIndexService;
     }
 
     public void processAnalysisJob(String jobId, int retryCount) {
-        RLock lock = redissonClient.getLock("lock:analysis-job:" + jobId);
-        boolean locked = false;
         File audioFile = null;
         Future<Void> visualEvidence = CompletableFuture.completedFuture(null);
         boolean visualEvidenceSettled = true;
 
         try {
-            locked = lock.tryLock(0, TimeUnit.SECONDS);
-            if (!locked || !analysisJobService.beginAttempt(jobId, retryCount)) {
+            if (!analysisJobService.beginAttempt(jobId, retryCount)) {
                 return;
             }
 
@@ -184,7 +177,7 @@ public class AiService {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Analysis job was interrupted", exception);
         } catch (RuntimeException exception) {
-            if (!visualEvidenceSettled) {
+            if (!visualEvidenceSettled && !(exception instanceof AiRateLimitExceededException)) {
                 try {
                     awaitVisualEvidence(visualEvidence, null);
                 } catch (InterruptedException interrupted) {
@@ -199,9 +192,6 @@ public class AiService {
             }
             if (audioFile != null && audioFile.exists()) {
                 audioFile.delete();
-            }
-            if (locked && lock.isHeldByCurrentThread()) {
-                lock.unlock();
             }
         }
     }

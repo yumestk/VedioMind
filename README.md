@@ -18,7 +18,8 @@
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 供应商瞬时故障先在客户端有限重试，耗尽后再由 RocketMQ 恢复当前任务阶段；鉴权和参数等永久错误直接标记 `FAILED`，不做无效重投。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
-- Redisson 用户级、全局和供应商级令牌桶限制 AI 请求；DeepSeek、阿里云 ASR 与 Embedding 共用轻量重试器，仅对网络错误、408、429 和 5xx 最多重试 3 次，并使用带抖动的指数退避。
+- Redis / Redisson 用户级、全局和供应商级分布式限流限制 AI 请求；DeepSeek、阿里云 ASR 与 Embedding 共用轻量重试器，仅对网络错误、408、429 和 5xx 使用带抖动的指数退避，总尝试次数最多 3 次。
+- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟，Agent 沿用首次启动后的 10 分钟总时限。
 - 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
@@ -109,9 +110,11 @@ QUEUED
   → GENERATING_CHAPTERS
   → SUCCEEDED
 
-任一处理阶段异常 → RETRYING → 下一次消费
+真实执行阶段异常 → RETRYING → 下一次消费
 超过重试上限     → FAILED
 ```
+
+本地供应商额度不足时，任务进入 `WAITING_FOR_QUOTA`，保留检查点并延迟继续；该等待不增加失败重试次数。
 
 这里选择 RocketMQ 事务消息而不是额外引入 Outbox：项目已经依赖 RocketMQ，事务消息能够以更少的组件完成当前所需的“本地任务记录 + MQ 投递”一致性。消费者侧的幂等、状态恢复和重试仍由 `AnalysisJob`、Redisson 与 RocketMQ 共同完成。
 
@@ -225,6 +228,8 @@ export FFMPEG_DIR=/path/to/ffmpeg/bin
 export TESSERACT_PATH=/path/to/tesseract
 export YTDLP_PATH=/path/to/yt-dlp
 ```
+
+后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 的 10 分钟总时限在首次启动时确定，恢复不会重置。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
 
 数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。AI 入口默认限制为单用户每分钟 5 次、全局每分钟 30 次，供应商调用额度可通过 `AI_RATE_LIMIT_*` 环境变量调整。
 

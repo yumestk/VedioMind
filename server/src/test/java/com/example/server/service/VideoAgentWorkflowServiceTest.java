@@ -7,18 +7,17 @@ import com.example.server.entity.VideoAgentRun;
 import com.example.server.service.ai.impl.DeepSeekChatClient;
 import com.example.server.service.context.VideoContext;
 import org.junit.jupiter.api.Test;
-import org.redisson.api.RLock;
-import org.redisson.api.RedissonClient;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -29,26 +28,23 @@ class VideoAgentWorkflowServiceTest {
     private final VideoKnowledgeIndexService indexService = mock(VideoKnowledgeIndexService.class);
     private final VideoAgentEvidenceService evidenceService = mock(VideoAgentEvidenceService.class);
     private final DeepSeekChatClient chatClient = mock(DeepSeekChatClient.class);
-    private final RedissonClient redissonClient = mock(RedissonClient.class);
-    private final RLock lock = mock(RLock.class);
     private final VideoAgentWorkflowService service = new VideoAgentWorkflowService(
-            runService, indexService, evidenceService, chatClient, redissonClient
+            runService, indexService, evidenceService, chatClient
     );
 
     @Test
     void runsPlannerExecutorCriticAndPersistsValidatedResult() throws InterruptedException {
         prepareRun();
         when(runService.completedStep(any(), any(), anyInt())).thenReturn(Optional.empty());
-        when(evidenceService.retrieve(any(), eq("query"))).thenReturn(bundle());
-        when(chatClient.chatWithUsage(any(), any())).thenReturn(
+        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(bundle());
+        when(chatClient.chatWithUsage(any(), any(), any())).thenReturn(
                 chat(planJson()), chat(draftJson("TRANSCRIPT:1")), chat(criticJson(true))
         );
 
         service.process("run-1", 0);
 
-        verify(evidenceService).retrieve(any(), eq("query"));
+        verify(evidenceService).retrieve(any(), eq("query"), any());
         verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
-        verify(lock).unlock();
     }
 
     @Test
@@ -69,12 +65,12 @@ class VideoAgentWorkflowServiceTest {
         when(runService.completedStep("run-1", "EXECUTOR_1", 0))
                 .thenReturn(Optional.of(JSON.toJSONString(execution)));
         when(runService.completedStep("run-1", "CRITIC", 0)).thenReturn(Optional.empty());
-        when(chatClient.chatWithUsage(any(), any())).thenReturn(chat(criticJson(true)));
+        when(chatClient.chatWithUsage(any(), any(), any())).thenReturn(chat(criticJson(true)));
 
         service.process("run-1", 1);
 
-        verify(evidenceService, never()).retrieve(any(), any());
-        verify(chatClient).chatWithUsage(any(), any());
+        verify(evidenceService, never()).retrieve(any(), any(), any());
+        verify(chatClient).chatWithUsage(any(), any(), any());
         verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
     }
 
@@ -82,8 +78,8 @@ class VideoAgentWorkflowServiceTest {
     void rejectsModelReferencesThatWereNotProvided() throws InterruptedException {
         prepareRun();
         when(runService.completedStep(any(), any(), anyInt())).thenReturn(Optional.empty());
-        when(evidenceService.retrieve(any(), eq("query"))).thenReturn(bundle());
-        when(chatClient.chatWithUsage(any(), any())).thenReturn(
+        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(bundle());
+        when(chatClient.chatWithUsage(any(), any(), any())).thenReturn(
                 chat(planJson()), chat(draftJson("OCR:999"))
         );
 
@@ -94,6 +90,30 @@ class VideoAgentWorkflowServiceTest {
         verify(runService, never()).markSucceeded(any(), any(), any());
     }
 
+    @Test
+    void resumesSavedRetrievalAfterDraftingWaitsForQuota() throws InterruptedException {
+        prepareRun();
+        var checkpoints = new java.util.HashMap<String, String>();
+        when(runService.completedStep(any(), any(), anyInt()))
+                .thenAnswer(call -> Optional.ofNullable(checkpoints.get(call.getArgument(1))));
+        doAnswer(call -> {
+            checkpoints.put(call.getArgument(1), JSON.toJSONString(call.getArgument(4)));
+            return null;
+        }).when(runService).saveCompletedStep(any(), any(), anyInt(), any(), any());
+        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(bundle());
+        when(chatClient.chatWithUsage(any(), any(), any()))
+                .thenReturn(chat(planJson()))
+                .thenThrow(new com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException("busy", 60))
+                .thenReturn(chat(draftJson("TRANSCRIPT:1")), chat(criticJson(true)));
+
+        assertThatThrownBy(() -> service.process("run-1", 0))
+                .isInstanceOf(com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException.class);
+        service.process("run-1", 0);
+
+        verify(evidenceService, times(1)).retrieve(any(), eq("query"), any());
+        verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
+    }
+
     private void prepareRun() throws InterruptedException {
         VideoAgentRun run = new VideoAgentRun();
         run.setId("run-1");
@@ -102,9 +122,6 @@ class VideoAgentWorkflowServiceTest {
         run.setContextVersion("t1-v1-p2");
         run.setGenerationCalls(3);
         run.setRetrievalCalls(1);
-        when(redissonClient.getLock("lock:video-agent-run:run-1")).thenReturn(lock);
-        when(lock.tryLock(0, TimeUnit.SECONDS)).thenReturn(true);
-        when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(runService.beginAttempt("run-1", 0)).thenReturn(true);
         when(runService.beginAttempt("run-1", 1)).thenReturn(true);
         when(runService.getRequired("run-1")).thenReturn(run);

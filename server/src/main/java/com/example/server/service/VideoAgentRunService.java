@@ -222,35 +222,6 @@ public class VideoAgentRunService {
                 .set(VideoAgentRun::getUpdatedAt, now));
     }
 
-    public void markRetrying(String runId, int retryCount, String errorMessage) {
-        updateFailure(runId, "RETRYING", retryCount, errorMessage, false);
-    }
-
-    public void markFailed(String runId, int retryCount, String errorMessage) {
-        updateFailure(runId, "FAILED", retryCount, errorMessage, true);
-    }
-
-    private void updateFailure(
-            String runId,
-            String status,
-            int retryCount,
-            String errorMessage,
-            boolean terminal
-    ) {
-        LocalDateTime now = LocalDateTime.now();
-        LambdaUpdateWrapper<VideoAgentRun> update = new LambdaUpdateWrapper<VideoAgentRun>()
-                .eq(VideoAgentRun::getId, runId)
-                .notIn(VideoAgentRun::getStatus, TERMINAL)
-                .set(VideoAgentRun::getStatus, status)
-                .set(VideoAgentRun::getRetryCount, retryCount)
-                .set(VideoAgentRun::getErrorMessage, concise(errorMessage))
-                .set(VideoAgentRun::getUpdatedAt, now);
-        if (terminal) {
-            update.set(VideoAgentRun::getFinishedAt, now);
-        }
-        runMapper.update(null, update);
-    }
-
     private void ensureWithinDeadline(String runId) {
         VideoAgentRun run = getRequired(runId);
         if (run.getDeadlineAt() != null && LocalDateTime.now().isAfter(run.getDeadlineAt())) {
@@ -262,10 +233,4 @@ public class VideoAgentRunService {
         return value == null ? 0 : Math.max(0, value);
     }
 
-    private String concise(String message) {
-        if (message == null || message.isBlank()) {
-            return "Unknown agent failure";
-        }
-        return message.length() <= 2000 ? message : message.substring(0, 2000);
-    }
 }
