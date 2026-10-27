@@ -12,6 +12,8 @@ import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
+import com.example.server.service.context.VideoContext;
+import com.example.server.dto.VideoAgentCitation;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.redisson.api.RLock;
@@ -46,7 +48,8 @@ class VideoConversationServiceTest {
             mediaService,
             questionService,
             knowledgeRetriever,
-            redissonClient
+            redissonClient,
+            new VideoEvidenceContextService(3, 30)
     );
 
     @Test
@@ -75,14 +78,14 @@ class VideoConversationServiceTest {
         when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(mediaService.getTranscript(42L, 3L)).thenReturn(new MediaTranscriptResponse(42L, segments));
         when(store.listRecentMessages(7L, 12)).thenReturn(history);
-        when(questionService.answer(eq("继续说说"), eq(segments), any(), eq(""))).thenReturn(answer);
+        when(questionService.answer(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), any(), eq(""))).thenReturn(answer);
         when(store.saveTurn(conversation, "继续说说", answer)).thenReturn(saved);
 
         assertThat(service.ask(42L, 7L, 3L, " 继续说说 ")).isSameAs(saved);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DeepSeekMessage>> context = ArgumentCaptor.forClass(List.class);
-        verify(questionService).answer(eq("继续说说"), eq(segments), context.capture(), eq(""));
+        verify(questionService).answer(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), context.capture(), eq(""));
         assertThat(context.getValue()).containsExactly(
                 new DeepSeekMessage("user", "上一问"),
                 new DeepSeekMessage("assistant", "上一答")
@@ -93,14 +96,14 @@ class VideoConversationServiceTest {
     }
 
     @Test
-    void retrievesStudyEvidenceWithThePreviousTurnBeforeAnswering() throws InterruptedException {
+    void retrievesStudyEvidenceWithThePreviousTurnAndCrossBoundaryContext() throws InterruptedException {
         VideoConversation conversation = conversation();
         VideoAgentRun run = completedRun();
         TranscriptSegmentResponse first = new TranscriptSegmentResponse(
-                9L, 0, 1_000L, 2_000L, "第一段字幕"
+                9L, 0, 298_000L, 299_000L, "第一段字幕"
         );
         TranscriptSegmentResponse second = new TranscriptSegmentResponse(
-                10L, 1, 2_000L, 3_000L, "第二段字幕"
+                10L, 1, 302_000L, 303_000L, "第二段字幕"
         );
         List<VideoMessage> history = List.of(
                 message("USER", "介绍数据库"),
@@ -126,12 +129,13 @@ class VideoConversationServiceTest {
                         && query.contains("知识点 2：PostgreSQL")
                         && query.contains("上一答：视频介绍了 MySQL 和 PostgreSQL")
                         && query.endsWith("当前问题：第二个有什么优点？")
-        ))).thenReturn(List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
-                0, 0, 300_000, "摘要", List.of("PostgreSQL"), 0.9,
-                List.of(10L, 9L, 10L), List.of()
-        )));
+        ))).thenReturn(new VideoKnowledgeRetriever.SearchResult(context(List.of(first, second)), List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
+                1, 300_000, 600_000, "摘要", List.of("PostgreSQL"), 0.9,
+                List.of(10L), List.of()
+        ))));
         when(questionService.answer(
-                eq("第二个有什么优点？"), eq(List.of(second, first)), any(),
+                eq("第二个有什么优点？"), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
+                        candidate(first).evidence(), false, 1000))), any(),
                 argThat(context -> context.contains("知识点 2：PostgreSQL"))
         )).thenReturn(answer);
         when(store.saveTurn(conversation, "第二个有什么优点？", answer)).thenReturn(saved);
@@ -139,7 +143,8 @@ class VideoConversationServiceTest {
         assertThat(service.ask(42L, 7L, 3L, "第二个有什么优点？")).isSameAs(saved);
 
         verify(questionService).answer(
-                eq("第二个有什么优点？"), eq(List.of(second, first)), any(),
+                eq("第二个有什么优点？"), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
+                        candidate(first).evidence(), false, 1000))), any(),
                 argThat(context -> context.contains("知识点 2：PostgreSQL"))
         );
         verify(store).saveTurn(conversation, "第二个有什么优点？", answer);
@@ -213,6 +218,17 @@ class VideoConversationServiceTest {
         when(store.findLatestSucceededAgentRun(7L)).thenReturn(Optional.of(completedRun()));
 
         assertThat(service.hasCompletedAgentRun(7L)).isTrue();
+    }
+
+    private VideoEvidenceContextService.Candidate candidate(TranscriptSegmentResponse segment) {
+        return new VideoEvidenceContextService.Candidate(new VideoAgentCitation("TRANSCRIPT:" + segment.id(),
+                "TRANSCRIPT", segment.id(), segment.startMs(), segment.endMs(), segment.text()), true, 0);
+    }
+
+    private VideoContext context(List<TranscriptSegmentResponse> segments) {
+        return new VideoContext(42L, "t1-v1", "ASR", null, null,
+                segments.stream().map(s -> new VideoContext.TranscriptEvidence(s.id(), s.startMs(), s.endMs(), s.text())).toList(),
+                List.of());
     }
 
     private VideoConversation conversation() {

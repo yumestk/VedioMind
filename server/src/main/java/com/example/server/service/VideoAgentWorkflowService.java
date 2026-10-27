@@ -8,6 +8,7 @@ import com.example.server.dto.VideoAgentCitation;
 import com.example.server.dto.VideoAgentResult;
 import com.example.server.entity.VideoAgentRun;
 import com.example.server.service.ai.impl.DeepSeekChatClient;
+import com.example.server.service.ai.AiPromptBudget;
 import com.example.server.service.ai.impl.DeepSeekMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,17 +62,19 @@ public class VideoAgentWorkflowService {
     private final VideoKnowledgeIndexService indexService;
     private final VideoAgentEvidenceService evidenceService;
     private final DeepSeekChatClient chatClient;
+    private final AiPromptBudget budget;
 
     public VideoAgentWorkflowService(
             VideoAgentRunService runService,
             VideoKnowledgeIndexService indexService,
             VideoAgentEvidenceService evidenceService,
-            DeepSeekChatClient chatClient
+            DeepSeekChatClient chatClient, AiPromptBudget budget
     ) {
         this.runService = runService;
         this.indexService = indexService;
         this.evidenceService = evidenceService;
         this.chatClient = chatClient;
+        this.budget = budget;
     }
 
     public void process(String runId, int retryCount) {
@@ -168,11 +171,11 @@ public class VideoAgentWorkflowService {
             return JSON.parseObject(cached, Critique.class);
         }
         runService.markStage(run.getId(), "CRITIQUING", 82);
-        String prompt = "学习目标：\n" + run.getGoal()
+        String prefix = "学习目标：\n" + run.getGoal()
                 + "\n\nExecutor 草稿：\n" + JSON.toJSONString(executions.stream()
-                .map(ExecutionOutput::draft).toList())
-                + "\n\n全部可用证据：\n" + evidencePrompt(List.copyOf(evidence.values()));
-        Critique critique = parseCritique(generate(run.getId(), CRITIC_PROMPT, prompt), evidence.keySet());
+                .map(ExecutionOutput::draft).toList());
+        ReviewInput input = reviewInput(CRITIC_PROMPT, prefix, evidence, draftRefs(executions));
+        Critique critique = parseCritique(generate(run.getId(), CRITIC_PROMPT, input.prompt()), input.refs());
         runService.saveCompletedStep(run.getId(), "CRITIC", 0, executions, critique);
         return critique;
     }
@@ -188,20 +191,62 @@ public class VideoAgentWorkflowService {
             return JSON.parseObject(cached, VideoAgentResult.class);
         }
         runService.markStage(run.getId(), "REVISING", 92);
-        String prompt = "学习目标：\n" + run.getGoal()
+        String prefix = "学习目标：\n" + run.getGoal()
                 + "\n\nCritic 意见：\n" + JSON.toJSONString(critique.feedback())
                 + "\n\n当前结果：\n" + JSON.toJSONString(critique.result())
                 + "\n\nExecutor 草稿：\n" + JSON.toJSONString(executions.stream()
-                .map(ExecutionOutput::draft).toList())
-                + "\n\n全部可用证据：\n" + evidencePrompt(List.copyOf(evidence.values()));
-        VideoAgentResult result = parseResult(generate(run.getId(), REVISION_PROMPT, prompt));
-        validateResult(result, evidence.keySet());
+                .map(ExecutionOutput::draft).toList());
+        Set<String> required = draftRefs(executions);
+        required.addAll(resultRefs(critique.result()));
+        ReviewInput input = reviewInput(REVISION_PROMPT, prefix, evidence, required);
+        VideoAgentResult result = parseResult(generate(run.getId(), REVISION_PROMPT, input.prompt()));
+        validateResult(result, input.refs());
         runService.saveCompletedStep(run.getId(), "REVISION", 1, critique.feedback(), result);
         return result;
     }
 
+    private ReviewInput reviewInput(String system, String prefix, Map<String, VideoAgentCitation> evidence,
+                                    Set<String> required) {
+        if (!evidence.keySet().containsAll(required)) {
+            throw new IllegalStateException("Review is missing evidence referenced by the draft");
+        }
+        Map<String, VideoAgentCitation> retained = new LinkedHashMap<>(evidence);
+        String prompt = reviewPrompt(prefix, retained);
+        for (String ref : new ArrayList<>(retained.keySet()).reversed()) {
+            if (budget.fits(system, List.of(new DeepSeekMessage("user", prompt)))) break;
+            if (!required.contains(ref)) {
+                retained.remove(ref);
+                prompt = reviewPrompt(prefix, retained);
+            }
+        }
+        budget.requireFits(system, List.of(new DeepSeekMessage("user", prompt)));
+        log.info("Agent review evidence={} retained={} pinned={} estimatedInputTokens={}", evidence.size(),
+                retained.size(), required.size(), budget.estimate(system, List.of(new DeepSeekMessage("user", prompt))));
+        return new ReviewInput(prompt, Set.copyOf(retained.keySet()));
+    }
+
+    private String reviewPrompt(String prefix, Map<String, VideoAgentCitation> evidence) {
+        return prefix + "\n\n全部可用证据：\n" + evidencePrompt(List.copyOf(evidence.values()));
+    }
+
+    private Set<String> draftRefs(List<ExecutionOutput> executions) {
+        Set<String> refs = new LinkedHashSet<>();
+        executions.forEach(output -> output.draft().claims().forEach(claim -> refs.addAll(claim.evidenceRefs())));
+        return refs;
+    }
+
+    private Set<String> resultRefs(VideoAgentResult result) {
+        Set<String> refs = new LinkedHashSet<>(result.coreEvidenceRefs());
+        result.knowledgePoints().forEach(point -> refs.addAll(point.evidenceRefs()));
+        result.quiz().forEach(item -> refs.addAll(item.evidenceRefs()));
+        return refs;
+    }
+
+    private record ReviewInput(String prompt, Set<String> refs) { }
+
     private String generate(String runId, String systemPrompt, String userPrompt) {
-        DeepSeekChatClient.ChatResult response = chatClient.chatWithUsage(
+        budget.requireFits(systemPrompt, List.of(new DeepSeekMessage("user", userPrompt)));
+        DeepSeekChatClient.ChatResult response = chatClient.chatWithinBudget(
                 systemPrompt,
                 List.of(new DeepSeekMessage("user", userPrompt)),
                 () -> runService.reserveGenerationCall(runId)
@@ -315,7 +360,8 @@ public class VideoAgentWorkflowService {
                 "evidenceRef", item.ref(),
                 "type", item.type(),
                 "startMs", item.startMs(),
-                "text", item.text().length() <= 800 ? item.text() : item.text().substring(0, 800)
+                "endMs", item.endMs(),
+                "text", item.text()
         )).toList());
     }
 

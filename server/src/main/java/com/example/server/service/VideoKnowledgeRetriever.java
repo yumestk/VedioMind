@@ -36,10 +36,14 @@ public class VideoKnowledgeRetriever {
         this.qdrantIndexService = qdrantIndexService;
     }
 
-    public List<KnowledgeSearchHit> search(Long mediaId, String query) {
-        return searchMultimodal(mediaId, query).stream()
-                .filter(hit -> !hit.transcriptSegmentIds().isEmpty())
-                .toList();
+    public SearchResult search(Long mediaId, String query) {
+        var index = indexService.requireReady(mediaId);
+        return new SearchResult(index.context(), searchMultimodal(index, query).stream()
+                .filter(hit -> !hit.transcriptSegmentIds().isEmpty()).toList());
+    }
+
+    public record SearchResult(VideoContext context, List<KnowledgeSearchHit> hits) {
+        public SearchResult { hits = List.copyOf(hits); }
     }
 
     public List<KnowledgeSearchHit> searchMultimodal(Long mediaId, String query) {

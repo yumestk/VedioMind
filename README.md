@@ -9,7 +9,7 @@
 - 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
 - Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
 - Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块将摘要、关键词和阿里云 `text-embedding-v4` 向量持久化到 MySQL，并将就绪向量同步到可重建的 Qdrant 检索索引；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
-- Study Mode 问答使用当前问题与上一轮对话从 Qdrant 召回 Chunk 候选，并结合 MySQL 关键词和原始向量精排，再回到句级字幕生成带引用回答；Qdrant 缺失或不可用时自动退回 MySQL 精确扫描，Quick Insight 继续直接使用平台字幕。
+- Study Mode 问答使用当前问题与上一轮对话从 Qdrant 召回 Chunk 候选，并结合 MySQL 关键词和原始向量精排，合并命中时间区间后补充外侧相邻字幕，再生成带引用回答；Qdrant 缺失或不可用时自动退回 MySQL 精确扫描，Quick Insight 继续直接使用平台字幕。
 - Study Mode 提供持久化学习助手：Planner 将目标拆成最多 3 个子任务，Executor 按任务检索字幕与 OCR，Critic 校验证据并生成核心结论、知识点和 3 道自测题；最多修订一次，所有引用由后端校验。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
@@ -136,6 +136,27 @@ flowchart LR
 ```
 
 每次模型与检索调用前先持久化预算消耗；成功阶段立即写入 `video_agent_steps`，RocketMQ 重投时从最近成功阶段继续，不重复执行已经完成的 Executor。单任务最多 3 个子任务、9 次生成调用、6 次检索调用和 10 分钟执行时间。
+
+### 检索后的相邻上下文与预算
+
+保留现有 5 分钟 Chunk、Embedding 和 Qdrant 索引。检索使用同一版本的 VideoContext 回源，将相邻或重叠的命中区间合并，只在合并区间两端补充上下文。默认每侧最多 3 条字幕，距离边界不超过 30 秒；跨边界的完整字幕也保留。快速问答只使用字幕，Agent 另外补充每侧最多 3 条成功且非空的 OCR。使用 `TRANSCRIPT:id` / `OCR:id` 去重，避免两类证据同号冲突；原始 ID、时间戳和文本保持完整。
+
+核心证据按命中排序轮流选取，之后再取距离较近的补充证据。快速问答的完整输入预算包含系统提示、问题、对话历史、Agent 辅助结果和证据 JSON；超预算时先移除较远的补充证据，再移除旧对话、辅助结果，最后按优先级保留能完整放入的核心证据。模型只可引用最终输入中保留的 ID。Quick Insight 的平台字幕问答同样受输入预算约束。
+
+Agent 每个检索子任务最多使用输入预算的六分之一，最多 3 个子任务合计预留一半给证据，余量留给草稿和审查提示。扩展、去重和选择完成后才保存检索 Checkpoint，额度等待后复用该结果，不重复生成查询向量。Executor 保留完整证据文本；Critic / Revision 裁剪未引用的证据时，必须保留草稿以及当前结果引用的证据。每次发送前重新检查完整请求；必要证据仍放不下或输出触及上限时明确失败，不通过失败重试重复付费。
+
+配置位于 `server/src/main/resources/application.example.properties`：
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `ai.context.neighbor-segments` | `3` | 每侧每类补充证据的数量上限，`0` 关闭扩展 |
+| `ai.context.neighbor-seconds` | `30` | 区间两端的邻域时间范围 |
+| `ai.context.max-estimated-context-tokens` | `32000` | 估算输入、输出预留和安全余量的总预算 |
+| `ai.context.max-output-tokens` | `8192` | 输出预留，同时作为供应商请求的 `max_tokens` |
+
+沿用现有模型和供应商思考模式设置，输出预算需给思考及最终 JSON 留出空间；触及上限时可按错误提示调整预算。另保留 512 的安全余量。当前用 UTF-8 字节数及消息格式开销作保守 Token 估算，**不是精确的模型 Token 计数，也不承诺任意 tokenizer 的严格上界**；调整配置时应结合实际模型上下文限制。扩展日志记录核心/补充/重复数量和耗时，选择日志记录裁剪数量，调用日志分别记录估算输入与供应商返回的实际输入/输出 Token。
+
+边界回归样例可运行 `./mvnw -Dtest=VideoEvidenceContextServiceTest,VideoQuestionServiceTest,VideoAgentWorkflowServiceTest test`。样例对照固定分块与扩展后的证据覆盖，包含边界前提/结论、OCR、相邻区间合并、静默和预算裁剪；这是确定性证据验证，尚未进行真实模型的回答质量、延迟和费用对照评测。
 
 ## 技术栈
 
@@ -265,7 +286,7 @@ npm test
 npm run build
 ```
 
-当前 100 个后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、助手模式识别与分发、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、助手模式识别与分发、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 

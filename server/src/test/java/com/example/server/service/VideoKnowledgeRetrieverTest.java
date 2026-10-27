@@ -49,7 +49,7 @@ class VideoKnowledgeRetrieverTest {
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
                 42L, "network question"
-        );
+        ).hits();
 
         assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
                 .containsExactly(0, 1);
@@ -83,7 +83,7 @@ class VideoKnowledgeRetrieverTest {
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
                 42L, "visual question"
-        );
+        ).hits();
 
         assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
                 .containsExactly(1);

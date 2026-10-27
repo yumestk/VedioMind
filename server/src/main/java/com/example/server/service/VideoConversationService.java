@@ -4,34 +4,27 @@ import com.alibaba.fastjson2.JSON;
 import com.example.server.dto.ConversationMessagesResponse;
 import com.example.server.dto.ConversationTurnResponse;
 import com.example.server.dto.MediaTranscriptResponse;
-import com.example.server.dto.TranscriptSegmentResponse;
 import com.example.server.dto.VideoAgentResult;
+import com.example.server.dto.VideoAgentCitation;
 import com.example.server.dto.VideoConversationResponse;
 import com.example.server.dto.VideoQuestionResponse;
 import com.example.server.entity.VideoAgentRun;
 import com.example.server.entity.VideoConversation;
 import com.example.server.entity.VideoMessage;
 import com.example.server.service.ai.impl.DeepSeekMessage;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
 public class VideoConversationService {
 
-    private static final Logger log = LoggerFactory.getLogger(VideoConversationService.class);
     static final int MAX_HISTORY_MESSAGES = 12;
     static final int MAX_HISTORY_CHARACTERS = 12_000;
     static final int MAX_RETRIEVAL_QUERY_CHARACTERS = 2_000;
@@ -44,19 +37,22 @@ public class VideoConversationService {
     private final VideoQuestionService questionService;
     private final VideoKnowledgeRetriever knowledgeRetriever;
     private final RedissonClient redissonClient;
+    private final VideoEvidenceContextService evidenceContextService;
 
     public VideoConversationService(
             VideoConversationStore store,
             MediaService mediaService,
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
-            RedissonClient redissonClient
+            RedissonClient redissonClient,
+            VideoEvidenceContextService evidenceContextService
     ) {
         this.store = store;
         this.mediaService = mediaService;
         this.questionService = questionService;
         this.knowledgeRetriever = knowledgeRetriever;
         this.redissonClient = redissonClient;
+        this.evidenceContextService = evidenceContextService;
     }
 
     public List<VideoConversationResponse> list(Long mediaId, Long userId) {
@@ -102,11 +98,14 @@ public class VideoConversationService {
                     store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES)
             );
             String agentContext = linkedAgentContext(conversation.getId());
-            List<TranscriptSegmentResponse> evidence = transcript.segments();
+            List<VideoEvidenceContextService.Candidate> evidence = transcript.segments().stream()
+                    .map(segment -> new VideoEvidenceContextService.Candidate(new VideoAgentCitation(
+                            "TRANSCRIPT:" + segment.id(), "TRANSCRIPT", segment.id(),
+                            segment.startMs(), segment.endMs(), segment.text()), true, 0)).toList();
             if (mediaService.isStudyMode(conversation.getMediaId(), userId)) {
                 evidence = retrieveEvidence(
                         conversation.getMediaId(), normalizedQuestion, history,
-                        agentContext, transcript.segments()
+                        agentContext
                 );
             }
             VideoQuestionResponse answer = questionService.answer(
@@ -180,40 +179,15 @@ public class VideoConversationService {
                 .toList();
     }
 
-    private List<TranscriptSegmentResponse> retrieveEvidence(
-            Long mediaId,
-            String question,
-            List<DeepSeekMessage> history,
-            String agentContext,
-            List<TranscriptSegmentResponse> transcript
-    ) {
-        List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits;
+    private List<VideoEvidenceContextService.Candidate> retrieveEvidence(
+            Long mediaId, String question, List<DeepSeekMessage> history,
+            String agentContext) {
         try {
-            hits = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
+            var result = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
+            return evidenceContextService.expand(result.context(), result.hits(), false);
         } catch (VideoKnowledgeIndexService.KnowledgeIndexNotReadyException exception) {
-            throw new ConversationNotReadyException(
-                    "长视频知识索引尚未就绪，请重新进行 AI 分析"
-            );
+            throw new ConversationNotReadyException("长视频知识索引尚未就绪，请重新进行 AI 分析");
         }
-
-        Map<Long, TranscriptSegmentResponse> byId = transcript.stream()
-                .collect(Collectors.toMap(
-                        TranscriptSegmentResponse::id,
-                        Function.identity()
-                ));
-        LinkedHashSet<Long> selectedIds = hits.stream()
-                .flatMap(hit -> hit.transcriptSegmentIds().stream())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-        List<TranscriptSegmentResponse> evidence = selectedIds.stream()
-                .map(byId::get)
-                .filter(Objects::nonNull)
-                .toList();
-        log.info("RAG evidence selected for media {}: chunks={}, segments={}, characters={}",
-                mediaId,
-                hits.stream().map(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex).toList(),
-                evidence.size(),
-                evidence.stream().mapToInt(segment -> segment.text().length()).sum());
-        return evidence;
     }
 
     private String retrievalQuery(

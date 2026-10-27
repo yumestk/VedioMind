@@ -4,13 +4,18 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONException;
 import com.alibaba.fastjson2.JSONObject;
-import com.example.server.dto.TranscriptSegmentResponse;
+import com.example.server.dto.VideoAgentCitation;
+import com.example.server.service.ai.AiPromptBudget;
 import com.example.server.dto.VideoQuestionCitationResponse;
 import com.example.server.dto.VideoQuestionResponse;
 import com.example.server.service.ai.impl.DeepSeekChatClient;
 import com.example.server.service.ai.impl.DeepSeekMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -33,15 +38,18 @@ public class VideoQuestionService {
             {"answer":"回答内容","segmentIds":[字幕 Segment 的数字 ID]}
             """;
 
+    private static final Logger log = LoggerFactory.getLogger(VideoQuestionService.class);
     private final DeepSeekChatClient chatClient;
+    private final AiPromptBudget budget;
 
-    public VideoQuestionService(DeepSeekChatClient chatClient) {
+    public VideoQuestionService(DeepSeekChatClient chatClient, AiPromptBudget budget) {
         this.chatClient = chatClient;
+        this.budget = budget;
     }
 
     public VideoQuestionResponse answer(
             String question,
-            List<TranscriptSegmentResponse> segments,
+            List<VideoEvidenceContextService.Candidate> candidates,
             List<DeepSeekMessage> history,
             String agentContext
     ) {
@@ -51,29 +59,60 @@ public class VideoQuestionService {
         if (question.trim().length() > 500) {
             throw new IllegalArgumentException("Question must not exceed 500 characters");
         }
-        if (segments == null) {
+        if (candidates == null) {
             throw new IllegalArgumentException("Transcript segments must not be null");
         }
-        if (segments.isEmpty()) {
+        if (candidates.isEmpty()) {
             return new VideoQuestionResponse(NO_ANSWER, List.of());
         }
 
-        Map<Long, TranscriptSegmentResponse> segmentsById = segments.stream()
-                .collect(Collectors.toMap(TranscriptSegmentResponse::id, Function.identity()));
-        JSONArray transcriptContext = new JSONArray();
-        segments.forEach(segment -> transcriptContext.add(JSONObject.of(
-                "segmentId", segment.id(),
-                "text", segment.text()
-        )));
-        String userPrompt = (agentContext == null || agentContext.isBlank()
-                ? ""
-                : "深度学习任务结果（仅用于理解问题，不是事实证据）：\n" + agentContext + "\n\n")
-                + "问题：\n" + question.trim()
-                + "\n\n字幕 JSON 数据：\n" + transcriptContext;
-
-        List<DeepSeekMessage> messages = new java.util.ArrayList<>(history == null ? List.of() : history);
-        messages.add(new DeepSeekMessage("user", userPrompt));
-        JSONObject response = parseResponse(chatClient.chat(SYSTEM_PROMPT, messages));
+        Map<Long, VideoEvidenceContextService.Candidate> unique = new LinkedHashMap<>();
+        for (var candidate : candidates) {
+            if (!"TRANSCRIPT".equals(candidate.evidence().type())) {
+                throw new IllegalArgumentException("Quick answers accept transcript evidence only");
+            }
+            unique.putIfAbsent(candidate.evidence().sourceId(), candidate);
+        }
+        List<VideoEvidenceContextService.Candidate> selected = new ArrayList<>(unique.values());
+        List<DeepSeekMessage> retainedHistory = new ArrayList<>(history == null ? List.of() : history);
+        String retainedAgentContext = agentContext == null ? "" : agentContext;
+        List<DeepSeekMessage> messages = messages(question, selected, retainedHistory, retainedAgentContext);
+        while (!budget.fits(SYSTEM_PROMPT, messages)) {
+            if (selected.stream().anyMatch(value -> !value.core())) {
+                var farthest = selected.stream().filter(value -> !value.core())
+                        .max(java.util.Comparator.comparingLong(VideoEvidenceContextService.Candidate::distanceMs))
+                        .orElseThrow();
+                selected.remove(farthest);
+            } else if (!retainedHistory.isEmpty()) {
+                retainedHistory.removeFirst();
+                if (!retainedHistory.isEmpty() && "assistant".equals(retainedHistory.getFirst().role())) {
+                    retainedHistory.removeFirst();
+                }
+            } else if (!retainedAgentContext.isEmpty()) {
+                retainedAgentContext = "";
+            } else if (!selected.isEmpty()) {
+                List<VideoEvidenceContextService.Candidate> packed = new ArrayList<>();
+                for (var candidate : selected) {
+                    packed.add(candidate);
+                    if (!budget.fits(SYSTEM_PROMPT, messages(question, packed, retainedHistory, retainedAgentContext))) {
+                        packed.removeLast();
+                    }
+                }
+                selected = packed;
+            } else {
+                budget.requireFits(SYSTEM_PROMPT, messages);
+            }
+            messages = messages(question, selected, retainedHistory, retainedAgentContext);
+        }
+        if (selected.isEmpty()) {
+            throw new AiPromptBudget.PromptBudgetExceededException("No complete question evidence fits the input budget");
+        }
+        Map<Long, VideoAgentCitation> segmentsById = selected.stream()
+                .map(VideoEvidenceContextService.Candidate::evidence)
+                .collect(Collectors.toMap(VideoAgentCitation::sourceId, Function.identity()));
+        log.info("Question evidence candidates={} retained={} trimmed={} estimatedInputTokens={}",
+                candidates.size(), selected.size(), candidates.size() - selected.size(), budget.estimate(SYSTEM_PROMPT, messages));
+        JSONObject response = parseResponse(chatClient.chatWithinBudget(SYSTEM_PROMPT, messages, () -> {}).content());
         String answer = response.getString("answer");
         if (answer == null || answer.isBlank()) {
             throw new IllegalStateException("Language model returned an empty video answer");
@@ -104,9 +143,25 @@ public class VideoQuestionService {
         List<VideoQuestionCitationResponse> citations = uniqueIds.stream()
                 .limit(5)
                 .map(segmentsById::get)
-                .map(VideoQuestionCitationResponse::from)
+                .map(value -> new VideoQuestionCitationResponse(value.sourceId(), value.startMs(), value.endMs(), value.text()))
                 .toList();
         return new VideoQuestionResponse(answer.trim(), citations);
+    }
+
+    private List<DeepSeekMessage> messages(String question, List<VideoEvidenceContextService.Candidate> evidence,
+                                          List<DeepSeekMessage> history, String agentContext) {
+        JSONArray transcriptContext = new JSONArray();
+        evidence.stream().map(VideoEvidenceContextService.Candidate::evidence)
+                .sorted(java.util.Comparator.comparingLong(VideoAgentCitation::startMs))
+                .forEach(value -> transcriptContext.add(JSONObject.of(
+                        "segmentId", value.sourceId(), "startMs", value.startMs(),
+                        "endMs", value.endMs(), "text", value.text())));
+        String prompt = (agentContext.isBlank() ? "" :
+                "深度学习任务结果（仅用于理解问题，不是事实证据）：\n" + agentContext + "\n\n")
+                + "问题：\n" + question.trim() + "\n\n字幕 JSON 数据：\n" + transcriptContext;
+        List<DeepSeekMessage> messages = new ArrayList<>(history);
+        messages.add(new DeepSeekMessage("user", prompt));
+        return messages;
     }
 
     private JSONObject parseResponse(String content) {

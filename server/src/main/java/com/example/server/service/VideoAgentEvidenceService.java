@@ -1,74 +1,37 @@
 package com.example.server.service;
 
 import com.example.server.dto.VideoAgentCitation;
-import com.example.server.service.context.VideoContext;
+import com.example.server.service.ai.AiPromptBudget;
 import org.springframework.stereotype.Service;
-
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 @Service
 public class VideoAgentEvidenceService {
-
-    private static final int MAX_TRANSCRIPT_EVIDENCE = 80;
-    private static final int MAX_VISUAL_EVIDENCE = 20;
-
     private final VideoKnowledgeRetriever retriever;
+    private final VideoEvidenceContextService contextService;
+    private final AiPromptBudget budget;
 
-    public VideoAgentEvidenceService(VideoKnowledgeRetriever retriever) {
+    public VideoAgentEvidenceService(VideoKnowledgeRetriever retriever,
+                                     VideoEvidenceContextService contextService, AiPromptBudget budget) {
         this.retriever = retriever;
+        this.contextService = contextService;
+        this.budget = budget;
     }
 
-    public EvidenceBundle retrieve(
-            VideoKnowledgeIndexService.IndexSnapshot index, String query, Runnable beforeEmbedding
-    ) {
-        List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits =
-                retriever.searchMultimodal(index, query, beforeEmbedding);
-        VideoContext context = index.context();
-        Map<Long, VideoContext.TranscriptEvidence> transcripts = context.transcriptEvidence().stream()
-                .collect(Collectors.toMap(VideoContext.TranscriptEvidence::id, Function.identity()));
-        Map<Long, VideoContext.VisualEvidence> visuals = context.visualEvidence().stream()
-                .collect(Collectors.toMap(VideoContext.VisualEvidence::id, Function.identity()));
-        LinkedHashMap<String, VideoAgentCitation> evidence = new LinkedHashMap<>();
-        int transcriptCount = 0;
-        int visualCount = 0;
-        for (VideoKnowledgeRetriever.KnowledgeSearchHit hit : hits) {
-            for (Long id : hit.transcriptSegmentIds()) {
-                if (transcriptCount >= MAX_TRANSCRIPT_EVIDENCE) break;
-                VideoContext.TranscriptEvidence segment = transcripts.get(id);
-                if (segment != null) {
-                    String ref = "TRANSCRIPT:" + id;
-                    if (!evidence.containsKey(ref)) transcriptCount++;
-                    evidence.putIfAbsent(ref, new VideoAgentCitation(
-                            ref, "TRANSCRIPT", id, segment.startMs(), segment.endMs(), segment.text()
-                    ));
-                }
-            }
-            for (Long id : hit.visualEvidenceIds()) {
-                if (visualCount >= MAX_VISUAL_EVIDENCE) break;
-                VideoContext.VisualEvidence frame = visuals.get(id);
-                if (frame != null && frame.ocrText() != null && !frame.ocrText().isBlank()) {
-                    String ref = "OCR:" + id;
-                    if (!evidence.containsKey(ref)) visualCount++;
-                    evidence.putIfAbsent(ref, new VideoAgentCitation(
-                            ref, "OCR", id, frame.timestampMs(), frame.timestampMs(), frame.ocrText()
-                    ));
-                }
-            }
+    public EvidenceBundle retrieve(VideoKnowledgeIndexService.IndexSnapshot index,
+                                   String query, Runnable beforeEmbedding) {
+        var hits = retriever.searchMultimodal(index, query, beforeEmbedding);
+        var candidates = contextService.expand(index.context(), hits, true);
+        // Three subtasks share at most half the input budget; the rest is for drafts and review instructions.
+        var evidence = contextService.select(candidates, budget.inputLimit() / 6, 80, 20);
+        if (!candidates.isEmpty() && evidence.isEmpty()) {
+            throw new AiPromptBudget.PromptBudgetExceededException("No complete Agent evidence fits the input budget");
         }
-        return new EvidenceBundle(hits, List.copyOf(evidence.values()));
+        return new EvidenceBundle(hits, evidence);
     }
 
-    public record EvidenceBundle(
-            List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits,
-            List<VideoAgentCitation> evidence
-    ) {
-        public EvidenceBundle {
-            hits = List.copyOf(hits);
-            evidence = List.copyOf(evidence);
-        }
+    public record EvidenceBundle(List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits,
+                                 List<VideoAgentCitation> evidence) {
+        public EvidenceBundle { hits = List.copyOf(hits); evidence = List.copyOf(evidence); }
     }
 }

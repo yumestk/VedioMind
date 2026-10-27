@@ -127,6 +127,18 @@ class BackgroundTaskRecoveryServiceTest {
     }
 
     @Test
+    void promptBudgetErrorsAreTerminalAndDoNotSchedulePaidFailureRetries() {
+        insert(AGENT);
+        service.execute(AGENT, "task-1", 0, failures -> {
+            throw new com.example.server.service.ai.AiPromptBudget.PromptBudgetExceededException("input too large");
+        });
+        assertThat(value(AGENT, "status")).isEqualTo("FAILED");
+        assertThat(value(AGENT, "retry_count")).isEqualTo(0);
+        assertThat(value(AGENT, "error_message")).isEqualTo("input too large");
+        verifyNoInteractions(messages);
+    }
+
+    @Test
     void permanentProviderErrorsFailImmediatelyButRedisOutagesAreFailures() {
         insert(AGENT);
         service.execute(AGENT, "task-1", 0, failures -> {

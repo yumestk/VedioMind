@@ -5,6 +5,9 @@ import com.alibaba.fastjson2.JSONObject;
 import com.example.server.service.ai.AiProviderException;
 import com.example.server.service.ai.AiRateLimitService;
 import com.example.server.service.ai.AiRetryExecutor;
+import com.example.server.service.ai.AiPromptBudget;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -25,6 +28,8 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class DeepSeekChatClient {
 
+    private static final Logger log = LoggerFactory.getLogger(DeepSeekChatClient.class);
+
     private static final OkHttpClient CLIENT = new OkHttpClient.Builder()
             .connectTimeout(60, TimeUnit.SECONDS)
             .readTimeout(300, TimeUnit.SECONDS)
@@ -35,15 +40,17 @@ public class DeepSeekChatClient {
     private final String apiKey;
     private final String baseUrl;
     private final AiRetryExecutor retryExecutor;
+    private final AiPromptBudget promptBudget;
 
     public DeepSeekChatClient(
             @Value("${ai.deepseek.api-key}") String apiKey,
             @Value("${ai.deepseek.base-url}") String baseUrl,
-            AiRetryExecutor retryExecutor
+            AiRetryExecutor retryExecutor, AiPromptBudget promptBudget
     ) {
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
         this.retryExecutor = retryExecutor;
+        this.promptBudget = promptBudget;
     }
 
     public String chat(String systemPrompt, List<DeepSeekMessage> conversation) {
@@ -54,7 +61,22 @@ public class DeepSeekChatClient {
         return chatWithUsage(systemPrompt, conversation, () -> {});
     }
 
+    public ChatResult chatWithinBudget(String systemPrompt, List<DeepSeekMessage> conversation,
+                                       Runnable beforeFirstAttempt) {
+        promptBudget.requireFits(systemPrompt, conversation);
+        long estimated = promptBudget.estimate(systemPrompt, conversation);
+        ChatResult result = send(systemPrompt, conversation, beforeFirstAttempt, promptBudget.outputTokens());
+        log.info("AI context budget estimatedInputTokens={} actualInputTokens={} actualOutputTokens={}",
+                estimated, result.inputTokens(), result.outputTokens());
+        return result;
+    }
+
     public ChatResult chatWithUsage(String systemPrompt, List<DeepSeekMessage> conversation, Runnable beforeFirstAttempt) {
+        return send(systemPrompt, conversation, beforeFirstAttempt, null);
+    }
+
+    private ChatResult send(String systemPrompt, List<DeepSeekMessage> conversation,
+                            Runnable beforeFirstAttempt, Integer maxOutputTokens) {
         if (systemPrompt == null || systemPrompt.isBlank() || conversation == null || conversation.isEmpty()) {
             throw new IllegalArgumentException("DeepSeek messages must not be empty");
         }
@@ -65,6 +87,7 @@ public class DeepSeekChatClient {
         JSONObject bodyJson = new JSONObject();
         bodyJson.put("model", "deepseek-v4-flash");
         bodyJson.put("stream", false);
+        if (maxOutputTokens != null) bodyJson.put("max_tokens", maxOutputTokens);
 
         JSONArray messages = new JSONArray();
         messages.add(JSONObject.of("role", "system", "content", systemPrompt));
@@ -89,10 +112,10 @@ public class DeepSeekChatClient {
                 ))
                 .build();
 
-        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, beforeFirstAttempt, () -> execute(request));
+        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, beforeFirstAttempt, () -> execute(request, maxOutputTokens != null));
     }
 
-    private ChatResult execute(Request request) {
+    private ChatResult execute(Request request, boolean boundedOutput) {
         try (Response response = CLIENT.newCall(request).execute()) {
             String responseBody = response.body() == null ? "" : response.body().string();
             if (!response.isSuccessful()) {
@@ -106,10 +129,16 @@ public class DeepSeekChatClient {
 
             try {
                 JSONObject responseJson = JSONObject.parseObject(responseBody);
-                String content = responseJson.getJSONArray("choices")
-                        .getJSONObject(0)
-                        .getJSONObject("message")
-                        .getString("content");
+                JSONObject choice = responseJson.getJSONArray("choices").getJSONObject(0);
+                if (boundedOutput && "length".equals(choice.getString("finish_reason"))) {
+                    JSONObject usage = responseJson.getJSONObject("usage");
+                    log.warn("AI output truncated actualInputTokens={} actualOutputTokens={}",
+                            usage == null ? null : usage.getInteger("prompt_tokens"),
+                            usage == null ? null : usage.getInteger("completion_tokens"));
+                    throw new AiPromptBudget.PromptBudgetExceededException(
+                            "AI output reached max-output-tokens; increase the output budget or reduce the task");
+                }
+                String content = choice.getJSONObject("message").getString("content");
                 if (content == null || content.isBlank()) {
                     throw new IllegalStateException("Language model returned an empty response");
                 }
@@ -119,6 +148,8 @@ public class DeepSeekChatClient {
                         usage == null ? null : usage.getInteger("prompt_tokens"),
                         usage == null ? null : usage.getInteger("completion_tokens")
                 );
+            } catch (AiPromptBudget.PromptBudgetExceededException exception) {
+                throw exception;
             } catch (RuntimeException exception) {
                 throw new AiProviderException(
                         "Language model returned an invalid response",
