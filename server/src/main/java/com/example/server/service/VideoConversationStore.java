@@ -122,7 +122,7 @@ public class VideoConversationStore {
                         .map(message -> ConversationMessageResponse.from(
                                 message,
                                 citationsByMessage.getOrDefault(message.getId(), List.of()),
-                                runsById.get(message.getAgentRunId())
+                                message.getAgentRunId() == null ? null : runsById.get(message.getAgentRunId())
                         ))
                         .toList()
         );

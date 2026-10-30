@@ -18,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class VideoConversationStoreTest {
@@ -29,6 +30,22 @@ class VideoConversationStoreTest {
     private final VideoConversationStore store = new VideoConversationStore(
             conversationMapper, messageMapper, citationMapper, runMapper
     );
+
+    @Test
+    void loadsQuickChatMessagesWithoutAgentRuns() {
+        VideoMessage user = message(1L, "USER", null);
+        VideoMessage assistant = message(2L, "ASSISTANT", null);
+        when(messageMapper.selectList(any())).thenReturn(List.of(user, assistant));
+        when(citationMapper.selectList(any())).thenReturn(List.of());
+
+        ConversationMessagesResponse timeline = store.listMessages(7L);
+
+        assertThat(timeline.conversationId()).isEqualTo(7L);
+        assertThat(timeline.messages()).extracting(message -> message.messageType())
+                .containsExactly("USER", "ASSISTANT");
+        assertThat(timeline.messages()).allSatisfy(message -> assertThat(message.agentRun()).isNull());
+        verifyNoInteractions(runMapper);
+    }
 
     @Test
     void hydratesAnAgentRunMessageWithoutChangingChatMessages() {
