@@ -102,7 +102,7 @@ const loadMessages = async (conversationId) => {
     messages.value = []
     return
   }
-  const result = await getConversationMessages(conversationId, props.userId)
+  const result = await getConversationMessages(conversationId)
   messages.value = result.messages || []
 }
 
@@ -111,7 +111,7 @@ const initialize = async () => {
   loading.value = true
   error.value = ''
   try {
-    conversations.value = await listVideoConversations(props.mediaId, props.userId)
+    conversations.value = await listVideoConversations(props.mediaId)
     activeConversationId.value = conversations.value[0]?.id || null
     await loadMessages(activeConversationId.value)
   } catch (requestError) {

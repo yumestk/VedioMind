@@ -84,6 +84,15 @@ public class VideoContextService {
         );
     }
 
+    /** Version checks must not reload every subtitle before each paid indexing call. */
+    public String currentVersion(Long mediaId) {
+        MediaFile media = mediaFileMapper.selectById(mediaId);
+        if (media == null) throw new IllegalArgumentException("Media does not exist: " + mediaId);
+        MediaVisualEvidence manifest = "EXTERNAL_URL".equals(media.getSourceType())
+                ? null : visualEvidenceMapper.selectById(mediaId);
+        return version(value(media.getTranscriptRevision()), media, manifest);
+    }
+
     private VideoContext.Modality visualModality(MediaFile media, MediaVisualEvidence evidence) {
         if ("EXTERNAL_URL".equals(media.getSourceType())) {
             return new VideoContext.Modality("NOT_APPLICABLE", 0, 0, 0, null);

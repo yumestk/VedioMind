@@ -32,6 +32,7 @@ public class VideoConversationService {
     static final int MAX_AGENT_RETRIEVAL_CONTEXT_CHARACTERS = 800;
     static final int MAX_PREVIOUS_TURN_RETRIEVAL_CHARACTERS = 600;
 
+    private final KnowledgeIndexPreparationService indexPreparation;
     private final VideoConversationStore store;
     private final MediaService mediaService;
     private final VideoQuestionService questionService;
@@ -45,8 +46,10 @@ public class VideoConversationService {
             VideoQuestionService questionService,
             VideoKnowledgeRetriever knowledgeRetriever,
             RedissonClient redissonClient,
-            VideoEvidenceContextService evidenceContextService
+            VideoEvidenceContextService evidenceContextService,
+            KnowledgeIndexPreparationService indexPreparation
     ) {
+        this.indexPreparation = indexPreparation;
         this.store = store;
         this.mediaService = mediaService;
         this.questionService = questionService;
@@ -102,13 +105,21 @@ public class VideoConversationService {
                     .map(segment -> new VideoEvidenceContextService.Candidate(new VideoAgentCitation(
                             "TRANSCRIPT:" + segment.id(), "TRANSCRIPT", segment.id(),
                             segment.startMs(), segment.endMs(), segment.text()), true, 0)).toList();
-            if (mediaService.isStudyMode(conversation.getMediaId(), userId)) {
+            boolean full = questionService.fitsFull(normalizedQuestion, evidence, history, agentContext);
+            if (!full) {
+                if (List.of("总结整段", "总结整个", "全片总结", "整段视频的核心观点", "视频提出了哪些核心观点", "整节课总结")
+                        .stream().anyMatch(normalizedQuestion::contains)) {
+                    throw new ConversationNotReadyException(mediaService.isStudyMode(conversation.getMediaId(), userId)
+                            ? "此问题需要覆盖全片，请使用深度分析，或按具体主题提问。"
+                            : "此视频字幕较长，快速问答暂不能保证全片总结完整，请按具体主题提问。");
+                }
                 evidence = retrieveEvidence(
                         conversation.getMediaId(), normalizedQuestion, history,
-                        agentContext
+                        agentContext, userId
                 );
             }
-            VideoQuestionResponse answer = questionService.answer(
+            VideoQuestionResponse answer = full ? questionService.answerFull(
+                    normalizedQuestion, evidence, history, agentContext) : questionService.answer(
                     normalizedQuestion,
                     evidence,
                     history,
@@ -181,12 +192,13 @@ public class VideoConversationService {
 
     private List<VideoEvidenceContextService.Candidate> retrieveEvidence(
             Long mediaId, String question, List<DeepSeekMessage> history,
-            String agentContext) {
+            String agentContext, Long userId) {
         try {
             var result = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
-            return evidenceContextService.expand(result.context(), result.hits(), false);
+            return evidenceContextService.rankForQuestion(question, evidenceContextService.expand(result.context(), result.hits(), false));
         } catch (VideoKnowledgeIndexService.KnowledgeIndexNotReadyException exception) {
-            throw new ConversationNotReadyException("长视频知识索引尚未就绪，请重新进行 AI 分析");
+            throw new KnowledgeIndexPreparationService.IndexPreparationException(
+                    indexPreparation.prepare(mediaId, userId, false));
         }
     }
 

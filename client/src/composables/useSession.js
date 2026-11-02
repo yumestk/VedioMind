@@ -1,34 +1,8 @@
 import { ref } from 'vue'
-
-const readSavedUser = () => {
-  try {
-    return JSON.parse(localStorage.getItem('user'))
-  } catch {
-    localStorage.removeItem('user')
-    return null
-  }
-}
-
-const currentUser = ref(readSavedUser())
+import { currentUser, logout, sessionStatus, restoreSession } from '../api/session'
 const authOpen = ref(false)
-
-export const useSession = () => {
-  const setUser = (user) => {
-    currentUser.value = user
-    localStorage.setItem('user', JSON.stringify(user))
-  }
-
-  const logout = () => {
-    currentUser.value = null
-    localStorage.removeItem('user')
-  }
-
-  return {
-    currentUser,
-    authOpen,
-    openAuth: () => { authOpen.value = true },
-    closeAuth: () => { authOpen.value = false },
-    setUser,
-    logout
-  }
-}
+export const useSession = () => ({
+  currentUser, authOpen, logout, sessionStatus, restoreSession,
+  openAuth: () => { authOpen.value = true },
+  closeAuth: () => { authOpen.value = false }
+})

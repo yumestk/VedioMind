@@ -19,6 +19,7 @@
       </div>
     </header>
 
+    <p v-if="sessionStatus === 'unavailable'" class="session-warning">登录服务暂时不可用，请稍后重试。<button class="text-button" @click="retrySession">重试恢复</button></p>
     <router-view />
 
     <AuthDialog v-if="authOpen" @close="closeAuth" />
@@ -32,20 +33,27 @@
 import { useRouter } from 'vue-router'
 import AuthDialog from './components/AuthDialog.vue'
 import { useSession } from './composables/useSession'
+import { errorMessage } from './api/http'
 import { useToast } from './composables/useToast'
 
 const router = useRouter()
-const { currentUser, authOpen, openAuth, closeAuth, logout } = useSession()
+const { currentUser, authOpen, openAuth, closeAuth, logout, sessionStatus, restoreSession } = useSession()
 const { toast, showToast } = useToast()
 
 const handleLogout = async () => {
-  logout()
-  await router.push('/')
-  showToast('已退出登录')
+  try {
+    await logout()
+    await router.push('/')
+    showToast('已退出登录')
+  } catch (error) { showToast(errorMessage(error, '退出失败，请重试'), 'error') }
+}
+const retrySession = async () => {
+  try { await restoreSession() } catch (error) { showToast(errorMessage(error), 'error') }
 }
 </script>
 
 <style scoped>
+.session-warning { padding: 12px 24px; margin: 0; background: #33290f; color: #ffe1a8; }
 .app-shell { position: relative; min-height: 100vh; }
 .ambient-grid { position: fixed; inset: 0; z-index: -1; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px), radial-gradient(circle at 18% 0%, rgba(197,249,70,.08), transparent 28%); background-size: 42px 42px, 42px 42px, auto; mask-image: linear-gradient(to bottom, black, transparent 80%); }
 .site-header { position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(10, 11, 14, .82); backdrop-filter: blur(18px); }

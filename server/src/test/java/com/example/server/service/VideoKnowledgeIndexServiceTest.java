@@ -29,9 +29,41 @@ class VideoKnowledgeIndexServiceTest {
     private final VideoChunkSummarizer summarizer = mock(VideoChunkSummarizer.class);
     private final AliyunTextEmbeddingClient embeddingClient = mock(AliyunTextEmbeddingClient.class);
     private final QdrantKnowledgeIndexService qdrantIndexService = mock(QdrantKnowledgeIndexService.class);
+    private final org.redisson.api.RedissonClient redisson = mock(org.redisson.api.RedissonClient.class);
+    private final org.redisson.api.RLock buildLock = mock(org.redisson.api.RLock.class);
+    @org.junit.jupiter.api.BeforeEach
+    void lockBuild() throws InterruptedException {
+        when(contextService.currentVersion(any())).thenAnswer(call -> contextService.build(call.getArgument(0)).version());
+        when(redisson.getLock(any())).thenReturn(buildLock);
+        when(buildLock.tryLock(0, java.util.concurrent.TimeUnit.SECONDS)).thenReturn(true);
+        when(buildLock.isHeldByCurrentThread()).thenReturn(true);
+    }
+
     private final VideoKnowledgeIndexService service = new VideoKnowledgeIndexService(
-            chunkMapper, contextService, summarizer, embeddingClient, qdrantIndexService
+            chunkMapper, contextService, summarizer, embeddingClient, qdrantIndexService, redisson
     );
+
+    @Test
+    void refusesStaleIndexTasksBeforeAnyPaidWork() {
+        when(contextService.build(42L)).thenReturn(context("t2-v1", List.of(transcript(1L, 0, "new")), List.of()));
+        assertThatThrownBy(() -> service.build(42L, "t1-v1"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("已更新");
+        org.mockito.Mockito.verifyNoInteractions(summarizer, embeddingClient, chunkMapper);
+        verify(buildLock).unlock();
+    }
+
+    @Test
+    void doesNotPersistAnOutdatedSummaryWhenEvidenceChangesDuringGeneration() {
+        when(contextService.build(42L)).thenReturn(
+                context("old", List.of(transcript(1L, 0, "old")), List.of()),
+                context("old", List.of(transcript(1L, 0, "old")), List.of()),
+                context("new", List.of(transcript(2L, 0, "new")), List.of()));
+        when(chunkMapper.selectList(any())).thenReturn(List.of());
+        when(summarizer.summarize(any())).thenReturn(new VideoChunkSummarizer.ChunkSummary("summary", List.of("key")));
+        assertThatThrownBy(() -> service.build(42L, "old")).isInstanceOf(IllegalArgumentException.class);
+        verify(chunkMapper, never()).insert(any(VideoKnowledgeChunk.class));
+        org.mockito.Mockito.verifyNoInteractions(embeddingClient, qdrantIndexService);
+    }
 
     @Test
     void assignsBoundaryEvidenceToTheNextFiveMinuteChunk() {

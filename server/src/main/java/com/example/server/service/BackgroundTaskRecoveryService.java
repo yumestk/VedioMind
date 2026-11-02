@@ -157,8 +157,10 @@ public class BackgroundTaskRecoveryService {
     public void recoverDueTasks() {
         LocalDateTime cutoff = now().minusSeconds(30);
         for (TaskType type : TaskType.values()) {
-            for (Task task : jdbc.query(select(type) + " WHERE status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
-                    + "AND next_attempt_at <= ? AND updated_at <= ? ORDER BY next_attempt_at LIMIT 100",
+            for (Task task : jdbc.query(select(type) + " WHERE (status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
+                    + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
+                    ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : "")
+                    + ") AND updated_at <= ? ORDER BY updated_at LIMIT 100",
                     (rs, row) -> task(rs), cutoff, cutoff)) {
                 recover(type, task);
             }
@@ -178,8 +180,10 @@ public class BackgroundTaskRecoveryService {
             if (expire(type, task, now)) return;
             // Claim only publication; keep the due time so an immediate delivery can run.
             int claimed = jdbc.update("UPDATE " + type.table + " SET updated_at = ? WHERE id = ? "
-                            + "AND dispatch_version = ? AND status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
-                            + "AND next_attempt_at <= ? AND updated_at <= ?",
+                            + "AND dispatch_version = ? AND (status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
+                            + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
+                            ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : "")
+                            + ") AND updated_at <= ?",
                     now, task.id, task.version, now.minusSeconds(30), now.minusSeconds(30));
             if (claimed == 1) wakeup = task;
         } catch (InterruptedException exception) {

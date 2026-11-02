@@ -1,5 +1,7 @@
 package com.example.server.controller;
 
+import com.example.server.security.CurrentUserId;
+
 import com.example.server.dto.CompleteMediaUploadRequest;
 import com.example.server.dto.InitiateMediaUploadRequest;
 import com.example.server.dto.InitiateMediaUploadResponse;
@@ -15,7 +17,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -32,7 +33,7 @@ public class MediaUploadController {
     @PostMapping
     public ResponseEntity<InitiateMediaUploadResponse> initiate(
             @RequestBody InitiateMediaUploadRequest request,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return ResponseEntity.status(HttpStatus.CREATED).body(uploadService.initiate(request, userId));
@@ -44,7 +45,7 @@ public class MediaUploadController {
     @GetMapping("/{sessionId}")
     public MediaUploadSessionResponse get(
             @PathVariable String sessionId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return uploadService.get(sessionId, userId);
@@ -57,7 +58,7 @@ public class MediaUploadController {
     public UploadPartUrlResponse createPartUrl(
             @PathVariable String sessionId,
             @PathVariable int partNumber,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return uploadService.createPartUrl(sessionId, partNumber, userId);
@@ -72,7 +73,7 @@ public class MediaUploadController {
     public MediaListItemResponse complete(
             @PathVariable String sessionId,
             @RequestBody CompleteMediaUploadRequest request,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return uploadService.complete(sessionId, request, userId);
@@ -86,7 +87,7 @@ public class MediaUploadController {
     @DeleteMapping("/{sessionId}")
     public ResponseEntity<Void> abort(
             @PathVariable String sessionId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             uploadService.abort(sessionId, userId);
@@ -96,6 +97,11 @@ public class MediaUploadController {
         } catch (IllegalStateException exception) {
             throw conflict(exception);
         }
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(java.util.NoSuchElementException.class)
+    public org.springframework.http.ProblemDetail notFound(java.util.NoSuchElementException exception) {
+        return org.springframework.http.ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, "Upload session not found");
     }
 
     private ResponseStatusException badRequest(RuntimeException exception) {

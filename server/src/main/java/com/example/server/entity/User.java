@@ -14,6 +14,8 @@ public class User {
 
     private String username;
 
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @lombok.ToString.Exclude
     private String password;
 
     private String nickname;

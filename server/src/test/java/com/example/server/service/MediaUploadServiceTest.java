@@ -50,6 +50,17 @@ class MediaUploadServiceTest {
     }
 
     @Test
+    void rejectsOtherUsersBeforeStorageOrRedisSideEffects() {
+        MediaUploadSession other = new MediaUploadSession();other.setId("other");other.setUserId(99L);
+        when(sessionMapper.selectById("other")).thenReturn(other);
+        assertThatThrownBy(() -> uploadService.get("other", 7L)).isInstanceOf(java.util.NoSuchElementException.class);
+        assertThatThrownBy(() -> uploadService.createPartUrl("other", 1, 7L)).isInstanceOf(java.util.NoSuchElementException.class);
+        assertThatThrownBy(() -> uploadService.complete("other", new CompleteMediaUploadRequest(List.of()), 7L)).isInstanceOf(java.util.NoSuchElementException.class);
+        assertThatThrownBy(() -> uploadService.abort("other", 7L)).isInstanceOf(java.util.NoSuchElementException.class);
+        org.mockito.Mockito.verifyNoInteractions(objectStorageService, mediaService, redissonClient);
+    }
+
+    @Test
     void initiatesADirectMultipartUploadForVideoFiles() {
         when(objectStorageService.resolveContentType("video/mp4", "lesson.mp4")).thenReturn("video/mp4");
         when(objectStorageService.createObjectKey("lesson.mp4")).thenReturn("media/random.mp4");

@@ -28,6 +28,15 @@ class VideoContextServiceTest {
     );
 
     @Test
+    void versionChecksDoNotReloadSubtitleOrKeyframeContent() {
+        MediaFile media = media("EXTERNAL_URL");
+        media.setTranscriptRevision(3);
+        when(mediaMapper.selectById(42L)).thenReturn(media);
+        assertThat(service.currentVersion(42L)).isEqualTo("t3-vna");
+        org.mockito.Mockito.verifyNoInteractions(transcriptService, evidenceMapper, keyframeMapper);
+    }
+
+    @Test
     void assemblesVersionedTranscriptAndUsableOcrEvidence() {
         MediaFile media = media("LOCAL_UPLOAD");
         media.setTranscriptRevision(2);

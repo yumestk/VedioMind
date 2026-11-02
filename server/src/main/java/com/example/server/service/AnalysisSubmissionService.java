@@ -42,9 +42,9 @@ public class AnalysisSubmissionService {
         this.rateLimitService = rateLimitService;
     }
 
-    public AnalysisJob submit(Long mediaId) {
+    public AnalysisJob submit(Long mediaId, Long userId) {
         MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null) {
+        if (mediaFile == null || !java.util.Objects.equals(userId, mediaFile.getUserId())) {
             throw new IllegalArgumentException("Media does not exist: " + mediaId);
         }
 

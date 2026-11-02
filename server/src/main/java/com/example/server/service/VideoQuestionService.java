@@ -47,12 +47,45 @@ public class VideoQuestionService {
         this.budget = budget;
     }
 
+    public boolean fitsFull(String question, List<VideoEvidenceContextService.Candidate> evidence,
+                            List<DeepSeekMessage> history, String agentContext) {
+        var context = fullContext(question, evidence, history, agentContext);
+        return budget.fits(SYSTEM_PROMPT, messages(question, evidence, context.history(), context.agentContext()));
+    }
+
+    private AuxiliaryContext fullContext(String question, List<VideoEvidenceContextService.Candidate> evidence,
+                                         List<DeepSeekMessage> history, String agentContext) {
+        List<DeepSeekMessage> retained = new ArrayList<>(history == null ? List.of() : history);
+        String agent = agentContext == null ? "" : agentContext;
+        while (!budget.fits(SYSTEM_PROMPT, messages(question, evidence, retained, agent)) && retained.size() > 2) {
+            retained.removeFirst();
+            if (!retained.isEmpty() && "assistant".equals(retained.getFirst().role())) retained.removeFirst();
+        }
+        if (!budget.fits(SYSTEM_PROMPT, messages(question, evidence, retained, agent))) agent = "";
+        // Keep the latest turn: pronouns in a follow-up need their referent even when switching to RAG.
+        return new AuxiliaryContext(retained, agent);
+    }
+
+    private record AuxiliaryContext(List<DeepSeekMessage> history, String agentContext) {}
+
+    public VideoQuestionResponse answerFull(String question, List<VideoEvidenceContextService.Candidate> evidence,
+                                            List<DeepSeekMessage> history, String agentContext) {
+        var context = fullContext(question, evidence, history, agentContext);
+        budget.requireFits(SYSTEM_PROMPT, messages(question, evidence, context.history(), context.agentContext()));
+        return answer(question, evidence, context.history(), context.agentContext(), false);
+    }
+
     public VideoQuestionResponse answer(
             String question,
             List<VideoEvidenceContextService.Candidate> candidates,
             List<DeepSeekMessage> history,
             String agentContext
     ) {
+        return answer(question, candidates, history, agentContext, true);
+    }
+
+    private VideoQuestionResponse answer(String question, List<VideoEvidenceContextService.Candidate> candidates,
+                                         List<DeepSeekMessage> history, String agentContext, boolean retrieval) {
         if (question == null || question.isBlank()) {
             throw new IllegalArgumentException("Question must not be empty");
         }
@@ -83,14 +116,17 @@ public class VideoQuestionService {
                         .max(java.util.Comparator.comparingLong(VideoEvidenceContextService.Candidate::distanceMs))
                         .orElseThrow();
                 selected.remove(farthest);
-            } else if (!retainedHistory.isEmpty()) {
+            } else if (retainedHistory.size() > 2) {
                 retainedHistory.removeFirst();
                 if (!retainedHistory.isEmpty() && "assistant".equals(retainedHistory.getFirst().role())) {
                     retainedHistory.removeFirst();
                 }
             } else if (!retainedAgentContext.isEmpty()) {
                 retainedAgentContext = "";
-            } else if (!selected.isEmpty()) {
+            } else if (!retainedHistory.isEmpty()
+                    && !budget.fits(SYSTEM_PROMPT, messages(question, List.of(), retainedHistory, ""))) {
+                retainedHistory.clear();
+            } else if (!selected.isEmpty() && retrieval) {
                 List<VideoEvidenceContextService.Candidate> packed = new ArrayList<>();
                 for (var candidate : selected) {
                     packed.add(candidate);
@@ -98,7 +134,11 @@ public class VideoQuestionService {
                         packed.removeLast();
                     }
                 }
-                selected = packed;
+                if (packed.isEmpty() && !retainedHistory.isEmpty()) {
+                    retainedHistory.clear();
+                } else {
+                    selected = packed;
+                }
             } else {
                 budget.requireFits(SYSTEM_PROMPT, messages);
             }
@@ -110,8 +150,11 @@ public class VideoQuestionService {
         Map<Long, VideoAgentCitation> segmentsById = selected.stream()
                 .map(VideoEvidenceContextService.Candidate::evidence)
                 .collect(Collectors.toMap(VideoAgentCitation::sourceId, Function.identity()));
-        log.info("Question evidence candidates={} retained={} trimmed={} estimatedInputTokens={}",
-                candidates.size(), selected.size(), candidates.size() - selected.size(), budget.estimate(SYSTEM_PROMPT, messages));
+        log.info("Question contextStrategy={} candidates={} retained={} trimmed={} estimatedInputTokens={}",
+                retrieval ? "RAG" : "FULL", candidates.size(), selected.size(), candidates.size() - selected.size(), budget.estimate(SYSTEM_PROMPT, messages));
+        log.info("Question evidence coverage startMs={} endMs={}",
+                selected.stream().mapToLong(value -> value.evidence().startMs()).min().orElse(0),
+                selected.stream().mapToLong(value -> value.evidence().endMs()).max().orElse(0));
         JSONObject response = parseResponse(chatClient.chatWithinBudget(SYSTEM_PROMPT, messages, () -> {}).content());
         String answer = response.getString("answer");
         if (answer == null || answer.isBlank()) {
@@ -153,12 +196,11 @@ public class VideoQuestionService {
         JSONArray transcriptContext = new JSONArray();
         evidence.stream().map(VideoEvidenceContextService.Candidate::evidence)
                 .sorted(java.util.Comparator.comparingLong(VideoAgentCitation::startMs))
-                .forEach(value -> transcriptContext.add(JSONObject.of(
-                        "segmentId", value.sourceId(), "startMs", value.startMs(),
-                        "endMs", value.endMs(), "text", value.text())));
+                .forEach(value -> transcriptContext.add(JSONArray.of(
+                        value.sourceId(), value.startMs(), value.endMs(), value.text())));
         String prompt = (agentContext.isBlank() ? "" :
                 "深度学习任务结果（仅用于理解问题，不是事实证据）：\n" + agentContext + "\n\n")
-                + "问题：\n" + question.trim() + "\n\n字幕 JSON 数据：\n" + transcriptContext;
+                + "问题：\n" + question.trim() + "\n\n字幕 JSON 行数组（每行依次为 segmentId、startMs、endMs、text；时间单位为毫秒）：\n" + transcriptContext;
         List<DeepSeekMessage> messages = new ArrayList<>(history);
         messages.add(new DeepSeekMessage("user", prompt));
         return messages;

@@ -9,16 +9,17 @@
       <form @submit.prevent="submit">
         <label>
           <span>用户名</span>
-          <input v-model.trim="form.username" autocomplete="username" required />
+          <input v-model.trim="form.username" autocomplete="username" maxlength="100" required />
         </label>
         <label>
           <span>密码</span>
-          <input v-model="form.password" type="password" autocomplete="current-password" required />
+          <input v-model="form.password" type="password" :autocomplete="mode === 'register' ? 'new-password' : 'current-password'" :minlength="mode === 'register' ? 12 : undefined" maxlength="128" required />
         </label>
         <label v-if="mode === 'register'">
           <span>昵称</span>
           <input v-model.trim="form.nickname" autocomplete="nickname" />
         </label>
+        <p v-if="mode === 'register'" class="dialog-subtitle">用户名为 3–100 位字母、数字或下划线，密码至少 12 位。</p>
         <p v-if="error" class="form-error">{{ error }}</p>
         <button class="primary-button full-button" :disabled="loading">
           {{ loading ? '请求处理中…' : mode === 'login' ? '登录' : '注册' }}
@@ -45,7 +46,7 @@ const mode = ref('login')
 const loading = ref(false)
 const error = ref('')
 const form = reactive({ username: '', password: '', nickname: '' })
-const { setUser, closeAuth } = useSession()
+const { closeAuth } = useSession()
 const { showToast } = useToast()
 
 const switchMode = () => {
@@ -58,7 +59,6 @@ const submit = async () => {
   error.value = ''
   try {
     const result = mode.value === 'login' ? await login(form) : await register(form)
-    if (result.code !== 200) throw new Error(result.msg || '操作失败')
 
     if (mode.value === 'register') {
       mode.value = 'login'
@@ -67,7 +67,6 @@ const submit = async () => {
       return
     }
 
-    setUser(result.userInfo)
     closeAuth()
     showToast(`欢迎回来，${result.userInfo.nickname || result.userInfo.username}`)
   } catch (requestError) {

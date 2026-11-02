@@ -57,9 +57,8 @@ class VideoQuestionServiceTest {
         assertThat(messages.getValue().getLast().content()).contains(
                 "深度学习任务结果（仅用于理解问题，不是事实证据）",
                 "知识点 1：事务消息",
-                "\"segmentId\":11",
-                "\"text\":\"第一段字幕\"",
-                "\"segmentId\":12"
+                "[11,1000,3000,\"第一段字幕\"]",
+                "[12,3000,6000,\"第二段字幕\"]"
         );
     }
 
@@ -140,6 +139,45 @@ class VideoQuestionServiceTest {
         assertThatThrownBy(() -> bounded.answer("问题", List.of(candidate(11L, "巨长".repeat(3000), true, 0)),
                 List.of(), "")).isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
         verify(chatClient, never()).chatWithinBudget(any(), any(), any());
+    }
+
+    @Test
+    void fullInputContainsLateEvidenceAndDoesNotSilentlyPackThePrefix() {
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var evidence = List.of(candidate(11L, "开头".repeat(2000), true, 0),
+                candidate(12L, "后半段就业信息", true, 0));
+        assertThat(bounded.fitsFull("就业", evidence, List.of(), "")).isFalse();
+        assertThatThrownBy(() -> bounded.answerFull("就业", evidence, List.of(), ""))
+                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+        verify(chatClient, never()).chatWithinBudget(any(), any(), any());
+    }
+
+    @Test
+    void fullInputUsesTheSameBudgetAndKeepsEveryCitationIncludingTheEnd() {
+        when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
+            List<DeepSeekMessage> messages = call.getArgument(1);
+            assertThat(messages.getLast().content()).contains("第一段字幕", "第二段字幕");
+            return chat("{\"answer\":\"末尾事实\",\"segmentIds\":[12]}");
+        });
+        assertThat(service.fitsFull("末尾是什么", segments, List.of(), "")).isTrue();
+        assertThat(service.answerFull("末尾是什么", segments, List.of(), "").citations())
+                .extracting("segmentId").containsExactly(12L);
+    }
+
+    @Test
+    void preservesTheLatestTurnWhenPackingRetrievedEvidenceForAPronounFollowUp() {
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var evidence = new java.util.ArrayList<VideoEvidenceContextService.Candidate>();
+        for (int i = 11; i < 30; i++) evidence.add(candidate(i, "完整相关字幕".repeat(30), true, 0));
+        var history = List.of(new DeepSeekMessage("user", "有哪些方向？"),
+                new DeepSeekMessage("assistant", "第一个是部署工程师，第二个是解决方案架构师。"));
+        when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
+            List<DeepSeekMessage> sent = call.getArgument(1);
+            assertThat(sent.subList(0, 2)).isEqualTo(history);
+            assertThat(new AiPromptBudget(4000, 512).fits(call.getArgument(0), sent)).isTrue();
+            return chat("{\"answer\":\"第二个方向的解释\",\"segmentIds\":[11]}");
+        });
+        bounded.answer("第二个具体是什么意思？", evidence, history, "");
     }
 
     private VideoEvidenceContextService.Candidate candidate(long id, String text, boolean core, long distance) {

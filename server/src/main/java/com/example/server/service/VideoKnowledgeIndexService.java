@@ -1,5 +1,8 @@
 package com.example.server.service;
 
+import com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException;
+import java.util.concurrent.TimeUnit;
+import org.redisson.api.RedissonClient;
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.server.entity.VideoKnowledgeChunk;
@@ -29,6 +32,7 @@ public class VideoKnowledgeIndexService {
     private static final String READY = "READY";
     private static final int MAX_EMBEDDING_TEXT_CHARS = 6_000;
 
+    private final RedissonClient redisson;
     private final VideoKnowledgeChunkMapper chunkMapper;
     private final VideoContextService contextService;
     private final VideoChunkSummarizer chunkSummarizer;
@@ -40,8 +44,9 @@ public class VideoKnowledgeIndexService {
             VideoContextService contextService,
             VideoChunkSummarizer chunkSummarizer,
             AliyunTextEmbeddingClient embeddingClient,
-            QdrantKnowledgeIndexService qdrantIndexService
+            QdrantKnowledgeIndexService qdrantIndexService, RedissonClient redisson
     ) {
+        this.redisson = redisson;
         this.chunkMapper = chunkMapper;
         this.contextService = contextService;
         this.chunkSummarizer = chunkSummarizer;
@@ -49,8 +54,36 @@ public class VideoKnowledgeIndexService {
         this.qdrantIndexService = qdrantIndexService;
     }
 
-    public IndexSnapshot build(Long mediaId) {
-        VideoContext context = contextService.build(mediaId);
+    public IndexSnapshot build(Long mediaId) { return build(mediaId, null); }
+
+    public IndexSnapshot build(Long mediaId, String expectedVersion) {
+        var lock = redisson.getLock("lock:knowledge-build:" + mediaId);
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(0, TimeUnit.SECONDS);
+            if (!locked) throw new AiRateLimitExceededException(
+                    "视频问答资料正在由其他任务准备", 5);
+            VideoContext context = contextService.build(mediaId);
+            if (expectedVersion != null && !expectedVersion.equals(context.version())) {
+                throw new IllegalArgumentException("字幕或画面证据已更新，请重新准备问答资料");
+            }
+            return buildCurrent(context);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while locking knowledge index", exception);
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) lock.unlock();
+        }
+    }
+
+    private void requireCurrent(VideoContext context) {
+        if (!context.version().equals(contextService.currentVersion(context.mediaId()))) {
+            throw new IllegalArgumentException("字幕或画面证据已更新，请重新准备问答资料");
+        }
+    }
+
+    private IndexSnapshot buildCurrent(VideoContext context) {
+        Long mediaId = context.mediaId();
         if (!"AVAILABLE".equals(context.transcript().state())) {
             throw new IllegalStateException("Transcript must be available before building the knowledge index");
         }
@@ -72,7 +105,9 @@ public class VideoKnowledgeIndexService {
             if (chunk != null && (SUMMARIZED.equals(chunk.getStatus()) || READY.equals(chunk.getStatus()))) {
                 continue;
             }
+            requireCurrent(context);
             VideoChunkSummarizer.ChunkSummary summary = chunkSummarizer.summarize(plan);
+            requireCurrent(context);
             chunk = saveSummary(mediaId, context.version(), plan, summary, chunk);
             existing.put(plan.chunkIndex(), chunk);
             generatedSummaries++;
@@ -90,6 +125,7 @@ public class VideoKnowledgeIndexService {
         int embeddingTokens = 0;
         for (int offset = 0; offset < pendingEmbeddings.size();
              offset += AliyunTextEmbeddingClient.MAX_BATCH_SIZE) {
+            requireCurrent(context);
             List<VideoKnowledgeChunk> batch = pendingEmbeddings.subList(
                     offset,
                     Math.min(offset + AliyunTextEmbeddingClient.MAX_BATCH_SIZE, pendingEmbeddings.size())
@@ -98,6 +134,7 @@ public class VideoKnowledgeIndexService {
                     .map(chunk -> embeddingText(chunk, plansByIndex.get(chunk.getChunkIndex())))
                     .toList();
             AliyunTextEmbeddingClient.EmbeddingBatch embeddings = embeddingClient.embedDocuments(texts);
+            requireCurrent(context);
             embeddingTokens += embeddings.totalTokens();
             for (int index = 0; index < batch.size(); index++) {
                 VideoKnowledgeChunk chunk = batch.get(index);
@@ -115,12 +152,14 @@ public class VideoKnowledgeIndexService {
         if (ready.size() != plans.size()) {
             throw new IllegalStateException("Knowledge index is incomplete");
         }
+        requireCurrent(context);
         try {
             qdrantIndexService.replaceMediaIndex(ready);
         } catch (QdrantKnowledgeIndexService.QdrantUnavailableException exception) {
             log.warn("Qdrant index unavailable for media {}; MySQL index remains usable: {}",
                     mediaId, exception.getMessage());
         }
+        requireCurrent(context);
         cleanupStale(mediaId, context.version());
         log.info("Knowledge index ready for media {}: {} chunks, {} new summaries, {} embedding tokens",
                 mediaId, ready.size(), generatedSummaries, embeddingTokens);

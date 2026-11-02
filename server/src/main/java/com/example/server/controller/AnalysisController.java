@@ -1,6 +1,8 @@
 package com.example.server.controller;
 
 import com.example.server.dto.AnalysisJobResponse;
+import com.example.server.security.CurrentUserId;
+import com.example.server.service.MediaService;
 import com.example.server.entity.AnalysisJob;
 import com.example.server.service.AnalysisJobService;
 import com.example.server.service.AnalysisSubmissionService;
@@ -24,19 +26,22 @@ public class AnalysisController {
 
     private final AnalysisSubmissionService submissionService;
     private final AnalysisJobService analysisJobService;
+    private final MediaService mediaService;
 
     public AnalysisController(
             AnalysisSubmissionService submissionService,
-            AnalysisJobService analysisJobService
+            AnalysisJobService analysisJobService,
+            MediaService mediaService
     ) {
         this.submissionService = submissionService;
         this.analysisJobService = analysisJobService;
+        this.mediaService = mediaService;
     }
 
     @PostMapping("/media/{mediaId}")
-    public ResponseEntity<AnalysisJobResponse> submit(@PathVariable Long mediaId) {
+    public ResponseEntity<AnalysisJobResponse> submit(@PathVariable Long mediaId, @CurrentUserId Long userId) {
         try {
-            AnalysisJob job = submissionService.submit(mediaId);
+            AnalysisJob job = submissionService.submit(mediaId, userId);
             return ResponseEntity.status(HttpStatus.ACCEPTED).body(AnalysisJobResponse.from(job));
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
@@ -46,17 +51,23 @@ public class AnalysisController {
     }
 
     @GetMapping("/jobs/{jobId}")
-    public AnalysisJobResponse getJob(@PathVariable String jobId) {
+    public AnalysisJobResponse getJob(@PathVariable String jobId, @CurrentUserId Long userId) {
         return analysisJobService.findById(jobId)
-                .map(AnalysisJobResponse::from)
+                .map(job -> { requireOwner(job.getMediaId(), userId); return AnalysisJobResponse.from(job); })
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Analysis job not found"));
     }
 
     @GetMapping("/media/{mediaId}/active-job")
-    public ResponseEntity<AnalysisJobResponse> getActiveJob(@PathVariable Long mediaId) {
+    public ResponseEntity<AnalysisJobResponse> getActiveJob(@PathVariable Long mediaId, @CurrentUserId Long userId) {
+        requireOwner(mediaId, userId);
         return analysisJobService.findLatestActive(mediaId)
                 .map(job -> ResponseEntity.ok(AnalysisJobResponse.from(job)))
                 .orElseGet(() -> ResponseEntity.noContent().build());
+    }
+
+    private void requireOwner(Long mediaId, Long userId) {
+        try { mediaService.requireOwnership(mediaId, userId); }
+        catch (IllegalArgumentException exception) { throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Media not found"); }
     }
 
     @ExceptionHandler(MessagingException.class)

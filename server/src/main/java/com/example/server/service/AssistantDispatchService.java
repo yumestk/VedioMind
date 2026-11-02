@@ -35,7 +35,8 @@ public class AssistantDispatchService {
 
     public AssistantDispatchResponse dispatch(Long mediaId, Long userId, AssistantDispatchRequest request) {
         String content = normalizeContent(request == null ? null : request.content());
-        mediaService.requireOwnership(mediaId, userId);
+        try { mediaService.requireOwnership(mediaId, userId); }
+        catch (IllegalArgumentException exception) { throw new java.util.NoSuchElementException("Media not found"); }
         boolean studyMode = mediaService.isStudyMode(mediaId, userId);
         rateLimitService.requireRequest(userId);
 

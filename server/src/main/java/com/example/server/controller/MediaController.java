@@ -1,5 +1,7 @@
 package com.example.server.controller;
 
+import com.example.server.security.CurrentUserId;
+
 import com.example.server.dto.MediaDetailResponse;
 import com.example.server.dto.MediaChaptersResponse;
 import com.example.server.dto.ExternalVideoImportRequest;
@@ -17,7 +19,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -36,7 +37,7 @@ public class MediaController {
     @PostMapping("/import-url")
     public ResponseEntity<MediaListItemResponse> importUrl(
             @RequestBody ExternalVideoImportRequest request,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             String url = request == null ? null : request.url();
@@ -55,14 +56,14 @@ public class MediaController {
     }
 
     @GetMapping
-    public List<MediaListItemResponse> list(@RequestParam Long userId) {
+    public List<MediaListItemResponse> list(@CurrentUserId Long userId) {
         return mediaService.list(userId);
     }
 
     @GetMapping("/{mediaId}")
     public MediaDetailResponse getDetail(
             @PathVariable Long mediaId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return mediaService.getDetail(mediaId, userId);
@@ -74,7 +75,7 @@ public class MediaController {
     @DeleteMapping("/{mediaId}")
     public ResponseEntity<Void> delete(
             @PathVariable Long mediaId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             mediaService.delete(mediaId, userId);
@@ -87,7 +88,7 @@ public class MediaController {
     @GetMapping("/{mediaId}/transcript")
     public MediaTranscriptResponse getTranscript(
             @PathVariable Long mediaId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return mediaService.getTranscript(mediaId, userId);
@@ -99,7 +100,7 @@ public class MediaController {
     @GetMapping("/{mediaId}/chapters")
     public MediaChaptersResponse getChapters(
             @PathVariable Long mediaId,
-            @RequestParam Long userId
+            @CurrentUserId Long userId
     ) {
         try {
             return mediaService.getChapters(mediaId, userId);

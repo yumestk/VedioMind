@@ -45,6 +45,16 @@ class MediaServiceTest {
     );
 
     @Test
+    void rejectsForeignMediaBeforeReadsDeletesAndStorageSigning() {
+        when(mediaFileMapper.selectOne(any())).thenReturn(null);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getDetail(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getTranscript(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getChapters(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.delete(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
+        org.mockito.Mockito.verifyNoInteractions(objectStorageService, transcriptService, chapterService, visualEvidenceService, redissonClient, qdrantIndexService);
+    }
+
+    @Test
     void completedMultipartUploadRegistersAStudyMedia() {
         doAnswer(invocation -> {
             MediaFile media = invocation.getArgument(0);

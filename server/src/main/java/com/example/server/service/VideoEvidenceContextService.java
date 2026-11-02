@@ -113,6 +113,41 @@ public class VideoEvidenceContextService {
         return result;
     }
 
+    /** Local lexical reranking of subtitle neighborhoods; vectors already selected the semantic chunks. */
+    public List<Candidate> rankForQuestion(String question, List<Candidate> candidates) {
+        String query = question.toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", "");
+        Set<String> terms = new LinkedHashSet<>();
+        for (int size = 2; size <= 3; size++) {
+            for (int i = 0; i + size <= query.length(); i++) terms.add(query.substring(i, i + size));
+        }
+        List<Candidate> chronological = candidates.stream().filter(Candidate::core)
+                .sorted(Comparator.comparingLong(value -> value.evidence().startMs())).toList();
+        Map<Long, Double> scores = new HashMap<>();
+        List<String> windows = new ArrayList<>();
+        for (int i = 0; i < chronological.size(); i++) {
+            StringBuilder text = new StringBuilder();
+            for (int j = Math.max(0, i - 3); j <= Math.min(chronological.size() - 1, i + 3); j++) {
+                if (Math.abs(chronological.get(i).evidence().startMs() - chronological.get(j).evidence().startMs()) <= 30_000) {
+                    text.append(chronological.get(j).evidence().text());
+                }
+            }
+            windows.add(text.toString().toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", ""));
+        }
+        Map<String, Long> frequencies = new HashMap<>();
+        for (String term : terms) frequencies.put(term, windows.stream().filter(text -> text.contains(term)).count());
+        for (int i = 0; i < chronological.size(); i++) {
+            double score = 0;
+            for (String term : terms) if (windows.get(i).contains(term)) {
+                score += term.length() * Math.log(1.0 + windows.size() / (1.0 + frequencies.get(term)));
+            }
+            scores.put(chronological.get(i).evidence().sourceId(), score);
+        }
+        // Stable ties retain the cross-chunk round-robin order from expand().
+        return candidates.stream().sorted(Comparator.comparing(Candidate::core).reversed()
+                .thenComparing(Comparator.comparingDouble((Candidate value) ->
+                        scores.getOrDefault(value.evidence().sourceId(), 0.0)).reversed())).toList();
+    }
+
     public List<VideoAgentCitation> select(List<Candidate> candidates, long estimatedTokens,
                                           int maxTranscript, int maxVisual) {
         List<VideoAgentCitation> selected = new ArrayList<>();

@@ -120,7 +120,7 @@ const schedulePoll = () => {
 const refresh = async () => {
   if (!currentRun.value) return
   try {
-    currentRun.value = await getVideoAgentRun(currentRun.value.id, props.userId)
+    currentRun.value = await getVideoAgentRun(currentRun.value.id)
     emit('run-change', currentRun.value)
   } catch (error) {
     console.warn('Agent run polling failed', error)

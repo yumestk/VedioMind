@@ -20,6 +20,19 @@ class VideoEvidenceContextServiceTest {
     private final VideoEvidenceContextService service = new VideoEvidenceContextService(3, 30);
 
     @Test
+    void promotesRelevantEvidenceAtTheEndOfAChunkBeforeBudgetPacking() {
+        var transcripts = new java.util.ArrayList<VideoContext.TranscriptEvidence>();
+        for (int i = 0; i < 80; i++) transcripts.add(transcript(i + 1, i * 3000, "前面讨论其他事情"));
+        transcripts.add(transcript(81, 280_000, "AI对就业的冲击集中在初级岗位"));
+        transcripts.add(transcript(82, 282_000, "软件工程师可以结合客户沟通与技术开发"));
+        var candidates = service.expand(context(transcripts, List.of()),
+                List.of(hit(0, 300_000, transcripts.stream().map(VideoContext.TranscriptEvidence::id).toList(), List.of())), false);
+        var ranked = service.rankForQuestion("AI对就业的冲击体现在哪", candidates);
+        assertThat(ranked.getFirst().evidence().sourceId()).isIn(81L, 82L);
+        assertThat(service.select(ranked, 900, 4, 0)).extracting(VideoAgentCitation::sourceId).contains(81L);
+    }
+
+    @Test
     void restoresTheConditionAcrossTheFiveMinuteBoundaryWithoutChangingTheHit() {
         var context = context(List.of(
                 transcript(1, 298_000, "只有消息已经提交，"),

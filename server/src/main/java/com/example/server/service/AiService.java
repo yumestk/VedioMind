@@ -92,6 +92,13 @@ public class AiService {
                 throw new IllegalArgumentException("Media does not exist: " + job.getMediaId());
             }
 
+            if ("KNOWLEDGE_INDEX".equals(job.getJobType())) {
+                analysisJobService.markStage(jobId, AnalysisJobStatus.BUILDING_KNOWLEDGE_INDEX, 20);
+                knowledgeIndexService.build(mediaFile.getId(), job.getContextVersion());
+                analysisJobService.markSucceeded(jobId, null);
+                return;
+            }
+
             String videoUrl = null;
             if (isLocalStudyMedia(mediaFile)) {
                 videoUrl = objectStorageService.createReadUrl(mediaFile.getObjectKey());

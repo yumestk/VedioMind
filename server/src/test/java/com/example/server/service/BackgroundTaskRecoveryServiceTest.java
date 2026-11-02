@@ -63,7 +63,8 @@ class BackgroundTaskRecoveryServiceTest {
                     + "error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP)");
         }
         new ResourceDatabasePopulator(new ClassPathResource(
-                "db/migration/V16__separate_quota_wait_from_failure_retries.sql")).execute(source);
+                "db/migration/V16__separate_quota_wait_from_failure_retries.sql"), new ClassPathResource(
+                "db/migration/V17__add_knowledge_index_jobs.sql")).execute(source);
         when(clock.getZone()).thenReturn(ZoneOffset.UTC);
         when(clock.instant()).thenAnswer(call -> instant.get());
         var locks = new ConcurrentHashMap<String, RLock>();
@@ -100,6 +101,17 @@ class BackgroundTaskRecoveryServiceTest {
         service.execute(type, "task-1", 6, failures -> succeed(type));
         assertThat(value(type, "status")).isEqualTo("SUCCEEDED");
         assertThat(value(type, "retry_count")).isEqualTo(0);
+    }
+
+    @Test
+    void dispatchesCommittedIndexIntentsAndThrottlesDuplicateScans() {
+        insert(ANALYSIS);
+        jdbc.update("UPDATE analysis_jobs SET job_type='KNOWLEDGE_INDEX', updated_at=? WHERE id='task-1'", now().minusMinutes(1));
+        jdbc.update("INSERT INTO analysis_jobs (id, media_id, status, updated_at) VALUES ('ordinary',42,'QUEUED',?)", now().minusMinutes(1));
+        service.recoverDueTasks();
+        service.recoverDueTasks();
+        verify(messages, times(1)).syncSend(eq("video-analysis-topic"), any(Message.class), eq(5000L), eq(0));
+        assertThat(value(ANALYSIS, "retry_count")).isEqualTo(0);
     }
 
     @Test

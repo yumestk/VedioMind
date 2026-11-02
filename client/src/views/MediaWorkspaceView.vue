@@ -123,9 +123,9 @@ const loadDetail = async () => {
   loadError.value = ''
   try {
     const [detail, transcript, chapterResult] = await Promise.all([
-      getMediaDetail(numericMediaId, currentUser.value.id),
-      getMediaTranscript(numericMediaId, currentUser.value.id),
-      getMediaChapters(numericMediaId, currentUser.value.id)
+      getMediaDetail(numericMediaId),
+      getMediaTranscript(numericMediaId),
+      getMediaChapters(numericMediaId)
     ])
     media.value = detail
     transcriptSegments.value = transcript.segments
@@ -164,7 +164,12 @@ const startAnalysis = async () => {
 }
 
 watch(currentUser, (user, previous) => {
-  if (user && !previous) initialize()
+  if (user && user.id !== previous?.id) {
+    media.value = null
+    transcriptSegments.value = []
+    chapters.value = []
+    initialize()
+  }
   if (!user) {
     media.value = null
     transcriptSegments.value = []

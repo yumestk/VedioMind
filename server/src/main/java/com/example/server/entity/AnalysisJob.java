@@ -14,6 +14,8 @@ public class AnalysisJob {
     private String id;
     private Long mediaId;
     private String status;
+    private String jobType;
+    private String contextVersion;
     private Integer progress;
     private Integer retryCount;
     private Long dispatchVersion;

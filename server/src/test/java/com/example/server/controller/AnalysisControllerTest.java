@@ -21,13 +21,17 @@ class AnalysisControllerTest {
     private final AnalysisSubmissionService submissionService = mock(AnalysisSubmissionService.class);
     private final AnalysisJobService jobService = mock(AnalysisJobService.class);
     private final MockMvc mockMvc = MockMvcBuilders
-            .standaloneSetup(new AnalysisController(submissionService, jobService))
+            .standaloneSetup(new AnalysisController(submissionService, jobService, mock(com.example.server.service.MediaService.class)))
+             .setCustomArgumentResolvers(new org.springframework.web.method.support.HandlerMethodArgumentResolver() {
+                public boolean supportsParameter(org.springframework.core.MethodParameter p) { return p.hasParameterAnnotation(com.example.server.security.CurrentUserId.class); }
+                public Object resolveArgument(org.springframework.core.MethodParameter p, org.springframework.web.method.support.ModelAndViewContainer m, org.springframework.web.context.request.NativeWebRequest w, org.springframework.web.bind.support.WebDataBinderFactory b) { return 7L; }
+            })
             .setControllerAdvice(new AiRateLimitExceptionHandler())
             .build();
 
     @Test
     void returnsActionableServiceUnavailableResponseWhenRocketMqCannotAcceptTheJob() throws Exception {
-        when(submissionService.submit(13L))
+        when(submissionService.submit(13L, 7L))
                 .thenThrow(new MessagingException("No route info for video-analysis-topic"));
 
         mockMvc.perform(post("/analysis/media/13"))
@@ -40,7 +44,7 @@ class AnalysisControllerTest {
 
     @Test
     void returnsTooManyRequestsWithRetryAfterWhenAiQuotaIsExhausted() throws Exception {
-        when(submissionService.submit(13L)).thenThrow(
+        when(submissionService.submit(13L, 7L)).thenThrow(
                 new AiRateLimitService.AiRateLimitExceededException("请稍后重试", 60)
         );
 

@@ -15,6 +15,10 @@
         <span>{{ routeInfo.executionMode === 'DEEP' ? '✦ 深度任务' : '? 快速回答' }}</span>
         {{ routeInfo.reason }}
       </div>
+      <div v-if="indexJob" class="route-info" role="status">
+        {{ indexStatusText(indexJob) }}
+        <button v-if="indexJob.status === 'FAILED'" type="button" @click="retryIndex" :disabled="submitting">重试准备</button>
+      </div>
       <textarea
         v-model="content"
         maxlength="500"
@@ -38,7 +42,9 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
+import { prepareKnowledgeIndex, getKnowledgeIndexJob, getLatestKnowledgeIndexJob } from '../api/analysis'
+import { isIndexRunning, indexStatusText } from '../utils/knowledgeIndexStatus'
 import { dispatchAssistantMessage } from '../api/media'
 import { errorMessage } from '../api/http'
 import ConversationPanel from './ConversationPanel.vue'
@@ -58,44 +64,101 @@ const requestedMode = ref('AUTO')
 const submitting = ref(false)
 const routeInfo = ref(null)
 const error = ref('')
+const indexJob = ref(null)
+let indexTimer = null
+let indexPolling = false
+const stopIndexPolling = () => { clearInterval(indexTimer); indexTimer = null }
+const followIndexJob = job => {
+  stopIndexPolling()
+  indexJob.value = job
+  const mediaId = props.mediaId
+  const userId = props.userId
+  if (!isIndexRunning(job)) return
+  indexTimer = setInterval(async () => {
+    if (indexPolling) return
+    indexPolling = true
+    try {
+      const next = await getKnowledgeIndexJob(mediaId, job.id)
+      if (mediaId !== props.mediaId || indexJob.value?.id !== job.id) return
+      indexJob.value = next
+      if (!isIndexRunning(next)) stopIndexPolling()
+    } catch (requestError) {
+      if (mediaId === props.mediaId) {
+        error.value = errorMessage(requestError, '问答资料状态查询失败')
+        if ([403, 404].includes(requestError?.response?.status)) stopIndexPolling()
+      }
+    } finally { indexPolling = false }
+  }, 2000)
+}
+const retryIndex = async () => {
+  submitting.value = true
+  error.value = ''
+  const mediaId = props.mediaId
+  try {
+    const job = await prepareKnowledgeIndex(mediaId)
+    if (mediaId === props.mediaId) {
+      followIndexJob(job || { status: 'SUCCEEDED' })
+    }
+  } catch (requestError) {
+    error.value = errorMessage(requestError, '问答资料准备失败')
+  } finally { submitting.value = false }
+}
+onUnmounted(stopIndexPolling)
 const isStudyMode = computed(() => props.analysisMode === 'STUDY')
 const placeholder = computed(() => isStudyMode.value
   ? '向视频提问，或让我整理整节课并生成自测题'
-  : '例如：视频提出了哪些核心观点？')
+  : '例如：视频如何解释这个问题？有哪些具体建议？')
 const modeHint = computed(() => ({
   AUTO: '自动判断快速回答或深度任务',
-  QUICK: '低延迟 RAG 问答与时间引用',
+  QUICK: '基于视频字幕回答，并提供时间引用',
   DEEP: '规划、检索、校验并生成学习产物'
 })[requestedMode.value])
 
 const submit = async () => {
   const value = content.value.trim()
   if (!value || submitting.value) return
+  const mediaId = props.mediaId
   const conversationContext = conversationPanel.value?.dispatchContext() || {}
   submitting.value = true
   error.value = ''
   try {
-    const response = await dispatchAssistantMessage(props.mediaId, props.userId, {
+    const response = await dispatchAssistantMessage(props.mediaId, {
       content: value,
       mode: requestedMode.value,
       conversationId: conversationContext.conversationId
     })
+    if (mediaId !== props.mediaId) return
+    followIndexJob(null)
     routeInfo.value = response
     conversationPanel.value?.acceptTimeline(response.conversation, response.timeline)
     content.value = ''
   } catch (requestError) {
-    error.value = errorMessage(requestError, 'AI 助手请求失败')
+    if (mediaId !== props.mediaId) return
+    const data = requestError?.response?.data
+    if (['KNOWLEDGE_INDEX_PREPARING', 'KNOWLEDGE_INDEX_FAILED'].includes(data?.code)) {
+      followIndexJob(data.job)
+    } else {
+      error.value = errorMessage(requestError, 'AI 助手请求失败')
+    }
   } finally {
     submitting.value = false
   }
 }
 
-watch(() => props.mediaId, () => {
+watch(() => props.mediaId, async mediaId => {
+  stopIndexPolling()
+  indexJob.value = null
   content.value = ''
   requestedMode.value = 'AUTO'
   routeInfo.value = null
   error.value = ''
-})
+  try {
+    const job = await getLatestKnowledgeIndexJob(mediaId)
+    if (props.mediaId === mediaId && job && job.status !== 'SUCCEEDED') followIndexJob(job)
+  } catch (requestError) {
+    // The composer remains usable; a request requiring retrieval reports preparation explicitly.
+  }
+}, { immediate: true })
 watch(isStudyMode, studyMode => {
   if (!studyMode) {
     requestedMode.value = 'AUTO'

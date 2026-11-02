@@ -1,5 +1,8 @@
 package com.example.server.controller;
 
+import com.example.server.security.CurrentUserId;
+
+import com.example.server.service.KnowledgeIndexPreparationService.IndexPreparationException;
 import com.example.server.dto.AssistantDispatchRequest;
 import com.example.server.dto.AssistantDispatchResponse;
 import com.example.server.service.AssistantDispatchService;
@@ -14,7 +17,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -34,7 +36,7 @@ public class AssistantController {
     @PostMapping("/media/{mediaId}/assistant/dispatch")
     public AssistantDispatchResponse dispatch(
             @PathVariable Long mediaId,
-            @RequestParam Long userId,
+            @CurrentUserId Long userId,
             @RequestBody AssistantDispatchRequest request
     ) {
         try {
@@ -52,6 +54,15 @@ public class AssistantController {
         } catch (IllegalStateException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, exception.getMessage(), exception);
         }
+    }
+
+    @ExceptionHandler(IndexPreparationException.class)
+    public ProblemDetail handleIndexPreparation(IndexPreparationException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
+        problem.setProperty("code", "FAILED".equals(exception.job().status())
+                ? "KNOWLEDGE_INDEX_FAILED" : "KNOWLEDGE_INDEX_PREPARING");
+        problem.setProperty("job", exception.job());
+        return problem;
     }
 
     @ExceptionHandler(MessagingException.class)

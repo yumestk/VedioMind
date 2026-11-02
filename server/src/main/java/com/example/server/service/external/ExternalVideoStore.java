@@ -1,5 +1,6 @@
 package com.example.server.service.external;
 
+import com.example.server.service.KnowledgeIndexPreparationService;
 import com.example.server.entity.MediaFile;
 import com.example.server.mapper.MediaFileMapper;
 import com.example.server.service.TranscriptService;
@@ -11,10 +12,13 @@ import java.time.LocalDateTime;
 @Service
 public class ExternalVideoStore {
 
+    private final KnowledgeIndexPreparationService preparation;
     private final MediaFileMapper mediaFileMapper;
     private final TranscriptService transcriptService;
 
-    public ExternalVideoStore(MediaFileMapper mediaFileMapper, TranscriptService transcriptService) {
+    public ExternalVideoStore(MediaFileMapper mediaFileMapper, TranscriptService transcriptService,
+                              KnowledgeIndexPreparationService preparation) {
+        this.preparation = preparation;
         this.mediaFileMapper = mediaFileMapper;
         this.transcriptService = transcriptService;
     }
@@ -37,6 +41,7 @@ public class ExternalVideoStore {
         media.setUploadTime(LocalDateTime.now());
         mediaFileMapper.insert(media);
         transcriptService.replace(media.getId(), resolved.segments(), resolved.transcriptSource());
+        preparation.prepareIfNeeded(media.getId(), userId);
         return media;
     }
 

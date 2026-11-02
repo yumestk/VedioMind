@@ -1,3 +1,4 @@
+import { currentUser } from '../api/session'
 import {
   abortMediaUpload,
   completeMediaUpload,
@@ -37,7 +38,12 @@ export class MultipartUploader {
     this.initialUploadedBytes = 0
   }
 
+  requireOwner() {
+    if (currentUser.value?.id !== this.userId) throw new Error('登录账号已变更，请重新选择文件')
+  }
+
   async start() {
+    this.requireOwner()
     this.paused = false
     this.cancelled = false
     const completedMedia = await this.restoreOrInitiate()
@@ -70,7 +76,8 @@ export class MultipartUploader {
       .sort((left, right) => left.partNumber - right.partNumber)
       .map(({ partNumber, etag }) => ({ partNumber, etag }))
     this.emitProgress({ phase: 'finalizing' })
-    const media = await completeMediaUpload(this.sessionId, this.userId, parts)
+    this.requireOwner()
+    const media = await completeMediaUpload(this.sessionId, parts)
     this.clearStoredSession()
     this.onProgress?.({ percent: 100, speed: 0, eta: 0 })
     return media
@@ -82,17 +89,19 @@ export class MultipartUploader {
   }
 
   async cancel() {
+    this.requireOwner()
     this.cancelled = true
     this.abortActiveRequests()
-    if (this.sessionId) await abortMediaUpload(this.sessionId, this.userId)
+    if (this.sessionId) await abortMediaUpload(this.sessionId)
     this.clearStoredSession()
   }
 
   async restoreOrInitiate() {
+    this.requireOwner()
     const stored = this.readStoredSession()
     if (stored?.userId === this.userId && stored.fingerprint === fileFingerprint(this.file)) {
       try {
-        const session = await getMediaUpload(stored.sessionId, this.userId)
+        const session = await getMediaUpload(stored.sessionId)
         if (session.status === 'UPLOADING') {
           this.applySession(session)
           return
@@ -110,7 +119,8 @@ export class MultipartUploader {
       }
     }
 
-    const created = await initiateMediaUpload(this.file, this.userId)
+    this.requireOwner()
+    const created = await initiateMediaUpload(this.file)
     this.sessionId = created.sessionId
     this.partSize = created.partSize
     this.storeSession()
@@ -134,7 +144,8 @@ export class MultipartUploader {
       this.controllers.add(controller)
       this.activeBytes.set(partNumber, 0)
       try {
-        const { url } = await getMediaUploadPartUrl(this.sessionId, partNumber, this.userId)
+        this.requireOwner()
+        const { url } = await getMediaUploadPartUrl(this.sessionId, partNumber)
         const etag = await putMediaUploadPart(url, blob, controller.signal, loaded => {
           this.activeBytes.set(partNumber, loaded)
           this.emitProgress()

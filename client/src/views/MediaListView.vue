@@ -132,7 +132,7 @@ const loadMedia = async () => {
   }
   loading.value = true
   try {
-    mediaList.value = await listMedia(currentUser.value.id)
+    mediaList.value = await listMedia()
   } catch (error) {
     showToast(errorMessage(error, '媒体列表加载失败'), 'error')
   } finally {
@@ -140,7 +140,15 @@ const loadMedia = async () => {
   }
 }
 
-watch(currentUser, loadMedia, { immediate: true })
+watch(currentUser, (user, previous) => {
+  if (user?.id !== previous?.id && multipartUploader) {
+    multipartUploader.pause()
+    multipartUploader = null
+    uploading.value = false
+    activeUploadKind.value = null
+  }
+  loadMedia()
+}, { immediate: true })
 
 const requireUser = () => {
   if (currentUser.value) return true
@@ -250,7 +258,7 @@ const uploadUrl = async () => {
   uploadProgress.value = 0
   uploadLabel.value = '正在解析平台字幕'
   try {
-    const media = await importMediaUrl(videoUrl.value, currentUser.value.id)
+    const media = await importMediaUrl(videoUrl.value)
     videoUrl.value = ''
     try {
       await submitAnalysis(media.id)
@@ -269,7 +277,7 @@ const uploadUrl = async () => {
 const removeMedia = async (media) => {
   if (!confirm(`确认删除“${media.filename}”吗？`)) return
   try {
-    await deleteMedia(media.id, currentUser.value.id)
+    await deleteMedia(media.id)
     mediaList.value = mediaList.value.filter(item => item.id !== media.id)
     showToast('视频已删除')
   } catch (error) {

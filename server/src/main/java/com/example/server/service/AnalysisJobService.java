@@ -47,6 +47,7 @@ public class AnalysisJobService {
         job.setId(message.jobId());
         job.setMediaId(message.mediaId());
         job.setStatus(AnalysisJobStatus.QUEUED.name());
+        job.setJobType("ANALYSIS");
         job.setProgress(0);
         job.setRetryCount(0);
         job.setCreatedAt(now);
@@ -66,6 +67,7 @@ public class AnalysisJobService {
     public Optional<AnalysisJob> findLatestActive(Long mediaId) {
         LambdaQueryWrapper<AnalysisJob> query = new LambdaQueryWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getMediaId, mediaId)
+                .eq(AnalysisJob::getJobType, "ANALYSIS")
                 .notIn(AnalysisJob::getStatus, TERMINAL_STATUSES)
                 .orderByDesc(AnalysisJob::getCreatedAt)
                 .last("LIMIT 1");

@@ -73,6 +73,22 @@ class AiServiceTest {
     }
 
     @Test
+    void indexOnlyTaskDoesNotRunTranscriptionOcrSummaryOrChapters() {
+        var job = new AnalysisJob();
+        job.setId("job-1");
+        job.setMediaId(42L);
+        job.setJobType("KNOWLEDGE_INDEX");
+        job.setContextVersion("t1-v1");
+        when(analysisJobService.getRequired("job-1")).thenReturn(job);
+        when(mediaFileMapper.selectById(42L)).thenReturn(media());
+        aiService.processAnalysisJob("job-1", 0);
+        verify(knowledgeIndexService).build(42L, "t1-v1");
+        verify(analysisJobService).markSucceeded("job-1", null);
+        org.mockito.Mockito.verifyNoInteractions(audioExtractor, speechTranscriber, visualEvidenceService,
+                contentSummarizer, chapterGenerator, transcriptService);
+    }
+
+    @Test
     void transcribesOncePersistsSegmentsAndSummarizesTheirText() {
         MediaFile media = media();
         File audioFile = mock(File.class);

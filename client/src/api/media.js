@@ -1,69 +1,69 @@
 import axios from 'axios'
 import http from './http'
 
-export const listMedia = async (userId) => {
-  const response = await http.get('/media', { params: { userId } })
+export const listMedia = async () => {
+  const response = await http.get('/media')
   return response.data
 }
 
-export const getMediaDetail = async (mediaId, userId) => {
-  const response = await http.get(`/media/${mediaId}`, { params: { userId } })
+export const getMediaDetail = async (mediaId) => {
+  const response = await http.get(`/media/${mediaId}`)
   return response.data
 }
 
-export const getMediaTranscript = async (mediaId, userId) => {
-  const response = await http.get(`/media/${mediaId}/transcript`, { params: { userId } })
+export const getMediaTranscript = async (mediaId) => {
+  const response = await http.get(`/media/${mediaId}/transcript`)
   return response.data
 }
 
-export const getMediaChapters = async (mediaId, userId) => {
-  const response = await http.get(`/media/${mediaId}/chapters`, { params: { userId } })
+export const getMediaChapters = async (mediaId) => {
+  const response = await http.get(`/media/${mediaId}/chapters`)
   return response.data
 }
 
-export const listVideoConversations = async (mediaId, userId) => {
-  const response = await http.get(`/media/${mediaId}/conversations`, { params: { userId } })
+export const listVideoConversations = async (mediaId) => {
+  const response = await http.get(`/media/${mediaId}/conversations`)
   return response.data
 }
 
-export const getConversationMessages = async (conversationId, userId) => {
-  const response = await http.get(`/conversations/${conversationId}/messages`, { params: { userId } })
+export const getConversationMessages = async (conversationId) => {
+  const response = await http.get(`/conversations/${conversationId}/messages`)
   return response.data
 }
 
-export const dispatchAssistantMessage = async (mediaId, userId, request) => {
+export const dispatchAssistantMessage = async (mediaId, request) => {
   const response = await http.post(
     `/media/${mediaId}/assistant/dispatch`,
     request,
-    { params: { userId }, timeout: 5 * 60_000 }
+    { timeout: 5 * 60_000 }
   )
   return response.data
 }
 
-export const getVideoAgentRun = async (runId, userId) => {
-  const response = await http.get(`/agent-runs/${runId}`, { params: { userId } })
+export const getVideoAgentRun = async (runId) => {
+  const response = await http.get(`/agent-runs/${runId}`, { sessionActivity: false })
   return response.data
 }
 
-export const initiateMediaUpload = async (file, userId) => {
+export const initiateMediaUpload = async (file) => {
   const response = await http.post('/media/uploads', {
     filename: file.name,
     mimeType: file.type || 'application/octet-stream',
     fileSize: file.size
-  }, { params: { userId } })
+  })
   return response.data
 }
 
-export const getMediaUpload = async (sessionId, userId) => {
-  const response = await http.get(`/media/uploads/${sessionId}`, { params: { userId } })
+export const getMediaUpload = async (sessionId) => {
+  const response = await http.get(`/media/uploads/${sessionId}`)
   return response.data
 }
 
-export const getMediaUploadPartUrl = async (sessionId, partNumber, userId) => {
+export const getMediaUploadPartUrl = async (sessionId, partNumber) => {
   const response = await http.post(
     `/media/uploads/${sessionId}/parts/${partNumber}/url`,
     null,
-    { params: { userId } }
+    {}
   )
   return response.data
 }
@@ -79,27 +79,26 @@ export const putMediaUploadPart = async (url, part, signal, onProgress) => {
   return etag
 }
 
-export const completeMediaUpload = async (sessionId, userId, parts) => {
+export const completeMediaUpload = async (sessionId, parts) => {
   const response = await http.post(
     `/media/uploads/${sessionId}/complete`,
     { parts },
-    { params: { userId }, timeout: 2 * 60_000 }
+    { timeout: 2 * 60_000 }
   )
   return response.data
 }
 
-export const abortMediaUpload = async (sessionId, userId) => {
-  await http.delete(`/media/uploads/${sessionId}`, { params: { userId } })
+export const abortMediaUpload = async (sessionId) => {
+  await http.delete(`/media/uploads/${sessionId}`)
 }
 
-export const importMediaUrl = async (url, userId) => {
+export const importMediaUrl = async (url) => {
   const response = await http.post('/media/import-url', { url }, {
-    params: { userId },
     timeout: 2 * 60_000
   })
   return response.data
 }
 
-export const deleteMedia = async (mediaId, userId) => {
-  await http.delete(`/media/${mediaId}`, { params: { userId } })
+export const deleteMedia = async (mediaId) => {
+  await http.delete(`/media/${mediaId}`)
 }

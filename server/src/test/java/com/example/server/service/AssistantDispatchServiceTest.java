@@ -36,6 +36,14 @@ class AssistantDispatchServiceTest {
     );
 
     @Test
+    void rejectsForeignMediaBeforeQuotaRoutingConversationOrPaidWork() {
+        org.mockito.Mockito.doThrow(new IllegalArgumentException("not found")).when(mediaService).requireOwnership(42L, 3L);
+        assertThatThrownBy(() -> service.dispatch(42L, 3L, new AssistantDispatchRequest("hello", "AUTO", null)))
+            .isInstanceOf(java.util.NoSuchElementException.class);
+        org.mockito.Mockito.verifyNoInteractions(modeRouter, conversationService, agentSubmissionService, agentRunService, rateLimitService);
+    }
+
+    @Test
     void createsAConversationAndDispatchesAQuickQuestion() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
                 " 主讲人是谁？ ", "AUTO", null

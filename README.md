@@ -163,17 +163,27 @@ Agent 每个检索子任务最多使用输入预算的六分之一，最多 3 �
 | 层次 | 技术 |
 | --- | --- |
 | 前端 | Vue 3、Vue Router、Axios、Vite、Marked、DOMPurify |
-| 后端 | Java 21、Spring Boot 3、MyBatis-Plus、Undertow |
+| 后端 | Java 21、Spring Boot 3、Spring Security、MyBatis-Plus、Undertow |
 | 异步任务 | RocketMQ 4.9.4、Redisson |
 | 数据 | MySQL 8、Redis、Qdrant、Flyway |
 | 对象存储 | MinIO |
 | 媒体处理 | FFmpeg、Tesseract OCR、yt-dlp |
 | AI | 阿里云 Paraformer ASR、text-embedding-v4、DeepSeek |
 
+## 认证与资源隔离
+
+支持公开注册、密码登录、退出和页面重开后的登录恢复。使用短期 JWT 与 MySQL 持久续期会话，用户主动使用时延长 30 天，后台轮询不保活。后端从已验证凭据取得用户 ID，视频及其关联资源均校验归属。认证故障、退出窗口、配置和旧账号转换见 [AUTHENTICATION.md](AUTHENTICATION.md)。
+
 ## 主要接口
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
+| `GET` | `/user/csrf` | 获取 CSRF Token |
+| `POST` | `/user/register` | 公开注册 |
+| `POST` | `/user/login` | 密码登录并签发访问凭据 |
+| `POST` | `/user/refresh` | 轮换续期凭据并恢复访问 |
+| `POST` | `/user/logout` | 撤销长期会话 |
+| `GET` | `/user/me` | 获取当前用户安全信息 |
 | `POST` | `/media/uploads` | 创建本地视频 Multipart 上传会话 |
 | `GET` | `/media/uploads/{sessionId}` | 查询上传会话与已上传分片 |
 | `POST` | `/media/uploads/{sessionId}/parts/{partNumber}/url` | 获取分片预签名上传地址 |
@@ -258,9 +268,11 @@ export YTDLP_PATH=/path/to/yt-dlp
 
 ### 4. 启动后端
 
+先在项目根目录运行 `./scripts/auth-admin.sh init-key`，初始化外部持久认证密钥；旧库需先备份并转换密码，详见 [认证与迁移说明](AUTHENTICATION.md)。MinIO 视频桶必须关闭匿名访问，启动会检查。
+
 ```bash
 cd server
-./mvnw spring-boot:run
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
 后端默认监听 `http://localhost:9090`。首次启动时 Flyway 会创建所需表；对于已有但尚未由 Flyway 管理的数据库，会从基线版本 `0` 接管。
@@ -273,7 +285,7 @@ npm install
 npm run dev
 ```
 
-前端默认访问 `http://localhost:5173`。
+前端默认访问 `http://localhost:5173`，API 经同源 `/api` 代理；访问凭据只保存在内存，长期登录使用 HttpOnly Cookie。生产环境使用 HTTPS，并保持默认 Secure Cookie。
 
 ## 验证
 
@@ -290,7 +302,6 @@ npm run build
 
 ## Roadmap
 
-- Spring Security、密码哈希、资源所有权校验与统一错误响应。
 - 建立中英文长视频问答集，评测 Chunk Recall@4、无答案拒答率、引用准确率和上下文压缩比例。
 - 建立学习助手评测集，对比单次生成与 Agent 的目标覆盖率、事实支持率、引用准确率、耗时和 Token 成本。
 - 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。

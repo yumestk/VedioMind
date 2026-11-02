@@ -43,13 +43,14 @@ class VideoConversationServiceTest {
     private final VideoKnowledgeRetriever knowledgeRetriever = mock(VideoKnowledgeRetriever.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
+    private final KnowledgeIndexPreparationService indexPreparation = mock(KnowledgeIndexPreparationService.class);
     private final VideoConversationService service = new VideoConversationService(
             store,
             mediaService,
             questionService,
             knowledgeRetriever,
             redissonClient,
-            new VideoEvidenceContextService(3, 30)
+            new VideoEvidenceContextService(3, 30), indexPreparation
     );
 
     @Test
@@ -78,14 +79,15 @@ class VideoConversationServiceTest {
         when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(mediaService.getTranscript(42L, 3L)).thenReturn(new MediaTranscriptResponse(42L, segments));
         when(store.listRecentMessages(7L, 12)).thenReturn(history);
-        when(questionService.answer(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), any(), eq(""))).thenReturn(answer);
+        when(questionService.fitsFull(any(), any(), any(), any())).thenReturn(true);
+        when(questionService.answerFull(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), any(), eq(""))).thenReturn(answer);
         when(store.saveTurn(conversation, "继续说说", answer)).thenReturn(saved);
 
         assertThat(service.ask(42L, 7L, 3L, " 继续说说 ")).isSameAs(saved);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DeepSeekMessage>> context = ArgumentCaptor.forClass(List.class);
-        verify(questionService).answer(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), context.capture(), eq(""));
+        verify(questionService).answerFull(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), context.capture(), eq(""));
         assertThat(context.getValue()).containsExactly(
                 new DeepSeekMessage("user", "上一问"),
                 new DeepSeekMessage("assistant", "上一答")
@@ -170,9 +172,13 @@ class VideoConversationServiceTest {
                 new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready")
         );
 
+        var job = new com.example.server.entity.AnalysisJob();
+        job.setId("index-job");
+        job.setStatus("QUEUED");
+        when(indexPreparation.prepare(42L, 3L, false)).thenReturn(job);
         assertThatThrownBy(() -> service.ask(42L, 7L, 3L, "问题"))
-                .isInstanceOf(VideoConversationService.ConversationNotReadyException.class)
-                .hasMessageContaining("重新进行 AI 分析");
+                .isInstanceOf(KnowledgeIndexPreparationService.IndexPreparationException.class)
+                .hasMessageContaining("正在准备");
 
         verify(questionService, never()).answer(any(), any(), any(), anyString());
         verify(store, never()).saveTurn(any(), any(), any());

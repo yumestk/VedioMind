@@ -119,6 +119,7 @@ public class MediaUploadService {
             CompleteMediaUploadRequest request,
             Long userId
     ) {
+        getOwnedSession(sessionId, userId);
         RLock lock = redissonClient.getLock("lock:media-upload:" + sessionId);
         lock.lock();
         try {
@@ -333,7 +334,7 @@ public class MediaUploadService {
         }
         MediaUploadSession session = sessionMapper.selectById(sessionId);
         if (session == null || !userId.equals(session.getUserId())) {
-            throw new IllegalArgumentException("Upload session does not exist");
+            throw new java.util.NoSuchElementException("Upload session does not exist");
         }
         return session;
     }

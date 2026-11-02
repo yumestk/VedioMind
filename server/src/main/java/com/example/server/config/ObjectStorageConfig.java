@@ -3,6 +3,7 @@ package com.example.server.config;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.checksums.RequestChecksumCalculation;
@@ -28,19 +29,20 @@ public class ObjectStorageConfig {
             @Value("${minio.endpoint}") String endpoint,
             @Value("${minio.accessKey}") String accessKey,
             @Value("${minio.secretKey}") String secretKey,
-            @Value("${minio.bucketName}") String bucketName
-    ) {
-        S3Client client = S3Client.builder()
-                .endpointOverride(URI.create(endpoint))
-                .credentialsProvider(credentials(accessKey, secretKey))
-                .region(SIGNING_REGION)
-                .serviceConfiguration(s3Configuration())
-                .requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
-                .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED)
-                .httpClientBuilder(UrlConnectionHttpClient.builder())
-                .build();
+            @Value("${minio.bucketName}") String bucketName) {
+        S3Client client =
+                S3Client.builder()
+                        .endpointOverride(URI.create(endpoint))
+                        .credentialsProvider(credentials(accessKey, secretKey))
+                        .region(SIGNING_REGION)
+                        .serviceConfiguration(s3Configuration())
+                        .requestChecksumCalculation(RequestChecksumCalculation.WHEN_REQUIRED)
+                        .responseChecksumValidation(ResponseChecksumValidation.WHEN_REQUIRED)
+                        .httpClientBuilder(UrlConnectionHttpClient.builder())
+                        .build();
 
         ensureBucket(client, bucketName);
+        ensurePrivateBucket(client, bucketName);
         return client;
     }
 
@@ -48,8 +50,7 @@ public class ObjectStorageConfig {
     public S3Presigner s3Presigner(
             @Value("${minio.publicEndpoint:${minio.endpoint}}") String publicEndpoint,
             @Value("${minio.accessKey}") String accessKey,
-            @Value("${minio.secretKey}") String secretKey
-    ) {
+            @Value("${minio.secretKey}") String secretKey) {
         return S3Presigner.builder()
                 .endpointOverride(URI.create(publicEndpoint))
                 .credentialsProvider(credentials(accessKey, secretKey))
@@ -66,6 +67,47 @@ public class ObjectStorageConfig {
         return S3Configuration.builder().pathStyleAccessEnabled(true).build();
     }
 
+    // Application media is private: reads are authorized before issuing a presigned URL.
+    void ensurePrivateBucket(S3Client client, String bucketName) {
+        String policy;
+        try {
+            policy = client.getBucketPolicy(request -> request.bucket(bucketName)).policy();
+        } catch (S3Exception exception) {
+            if (exception.awsErrorDetails() != null
+                    && "NoSuchBucketPolicy".equals(exception.awsErrorDetails().errorCode())) return;
+            throw exception;
+        }
+        try {
+            var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var statements = mapper.readTree(policy).path("Statement");
+            var entries =
+                    statements.isArray()
+                            ? statements
+                            : new com.fasterxml.jackson.databind.ObjectMapper()
+                                    .createArrayNode()
+                                    .add(statements);
+            for (var statement : entries) {
+                if (!"Allow".equals(statement.path("Effect").asText())) continue;
+                var principal = statement.path("Principal");
+                if (statement.has("NotPrincipal") || anonymous(principal))
+                    throw new IllegalStateException(
+                            "Media bucket allows anonymous access; remove its public policy before"
+                                    + " startup");
+            }
+        } catch (java.io.IOException exception) {
+            throw new IllegalStateException("Cannot validate media bucket privacy", exception);
+        }
+    }
+
+    private boolean anonymous(com.fasterxml.jackson.databind.JsonNode principal) {
+        if (principal.isTextual()) return "*".equals(principal.asText());
+        if (principal.isArray()) {
+            for (var item : principal) if (anonymous(item)) return true;
+        }
+        if (principal.isObject()) return anonymous(principal.path("AWS"));
+        return false;
+    }
+
     private void ensureBucket(S3Client client, String bucketName) {
         try {
             client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build());
@@ -76,5 +118,4 @@ public class ObjectStorageConfig {
             client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
         }
     }
-
 }
