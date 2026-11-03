@@ -95,8 +95,8 @@ public class BackgroundTaskRecoveryService {
                     || (task.nextAttempt != null && task.nextAttempt.isAfter(now))) return;
             if (expire(type, task, now)) return;
             int claimed = jdbc.update("UPDATE " + type.table + " SET status = ?, next_attempt_at = NULL, updated_at = ? "
-                            + "WHERE id = ? AND dispatch_version = ? AND status NOT IN ('SUCCEEDED', 'FAILED')",
-                    type == TaskType.ANALYSIS ? "PREPARING" : "PLANNING", now, id, version);
+                            + "WHERE id = ? AND dispatch_version = ? AND status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED')",
+                    type == TaskType.ANALYSIS ? "PREPARING" : "RETRIEVING", now, id, version);
             if (claimed != 1) return;
             try {
                 operation.accept(task.retries);
@@ -133,6 +133,8 @@ public class BackgroundTaskRecoveryService {
     }
 
     private void defer(TaskType type, Task task, RuntimeException error, boolean quotaWait, boolean pendingOnly) {
+        task = load(type, task.id);
+        if (task == null || task.terminal()) return;
         LocalDateTime now = now();
         LocalDateTime waitStarted = quotaWait && task.waitStarted == null ? now : task.waitStarted;
         Task waiting = new Task(task.id, task.mediaId, quotaWait ? "WAITING_FOR_QUOTA" : "RETRYING",
@@ -145,7 +147,7 @@ public class BackgroundTaskRecoveryService {
         int changed = jdbc.update("UPDATE " + type.table + " SET status = ?, retry_count = ?, "
                         + "dispatch_version = dispatch_version + 1, next_attempt_at = ?, quota_wait_started_at = ?, "
                         + "error_message = ?, updated_at = ? WHERE id = ? AND dispatch_version = ? "
-                        + "AND status NOT IN ('SUCCEEDED', 'FAILED')"
+                        + "AND status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED')"
                         + (pendingOnly ? " AND status IN ('QUEUED', 'WAITING_FOR_QUOTA', 'RETRYING')" : ""),
                 waiting.status, retries, nextAttempt, waitStarted,
                 quotaWait ? null : concise(error.getMessage()), now, task.id, task.version);
@@ -156,6 +158,10 @@ public class BackgroundTaskRecoveryService {
     @Scheduled(fixedDelayString = "${ai.task-recovery.scan-interval-ms:10000}")
     public void recoverDueTasks() {
         LocalDateTime cutoff = now().minusSeconds(30);
+        jdbc.update("UPDATE video_agent_runs SET status = CASE WHEN result_json IS NOT NULL THEN 'PARTIAL' ELSE 'FAILED' END, "
+                        + "error_message = 'Agent run exceeded its 120 second deadline', next_attempt_at = NULL, "
+                        + "finished_at = ?, updated_at = ? WHERE deadline_at <= ? AND status NOT IN ('SUCCEEDED','PARTIAL','FAILED')",
+                now(), now(), now());
         for (TaskType type : TaskType.values()) {
             for (Task task : jdbc.query(select(type) + " WHERE (status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
                     + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
@@ -220,16 +226,18 @@ public class BackgroundTaskRecoveryService {
                 ? !now.isBefore(task.waitStarted.plusMinutes(analysisWaitMinutes))
                 : task.deadline != null && !now.isBefore(task.deadline));
         if (quotaExpired || task.deadline != null && !now.isBefore(task.deadline)) {
-            fail(type, task, quotaExpired ? "等待 AI 服务额度超时，请稍后重新提交" : "Agent run exceeded its 10 minute deadline", false);
+            fail(type, task, quotaExpired ? "等待 AI 服务额度超时，请稍后重新提交" : "Agent run exceeded its 120 second deadline", false);
             return true;
         }
         return false;
     }
 
     private void fail(TaskType type, Task task, String message, boolean pendingOnly) {
-        jdbc.update("UPDATE " + type.table + " SET status = 'FAILED', error_message = ?, "
+        String stoppedStatus = type == TaskType.AGENT
+                ? "CASE WHEN result_json IS NOT NULL THEN 'PARTIAL' ELSE 'FAILED' END" : "'FAILED'";
+        jdbc.update("UPDATE " + type.table + " SET status = " + stoppedStatus + ", error_message = ?, "
                         + "next_attempt_at = NULL, finished_at = ?, updated_at = ? "
-                        + "WHERE id = ? AND dispatch_version = ? AND status NOT IN ('SUCCEEDED', 'FAILED')"
+                        + "WHERE id = ? AND dispatch_version = ? AND status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED')"
                         + (pendingOnly ? " AND status IN ('QUEUED', 'WAITING_FOR_QUOTA', 'RETRYING')" : ""),
                 concise(message), now(), now(), task.id, task.version);
     }
@@ -262,7 +270,7 @@ public class BackgroundTaskRecoveryService {
 
     private record Task(String id, long mediaId, String status, int retries, long version,
                         LocalDateTime nextAttempt, LocalDateTime waitStarted, LocalDateTime deadline) {
-        boolean terminal() { return "SUCCEEDED".equals(status) || "FAILED".equals(status); }
+        boolean terminal() { return "SUCCEEDED".equals(status) || "PARTIAL".equals(status) || "FAILED".equals(status); }
         boolean pending() { return "QUEUED".equals(status) || "WAITING_FOR_QUOTA".equals(status) || "RETRYING".equals(status); }
     }
 }

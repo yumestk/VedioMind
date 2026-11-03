@@ -105,15 +105,27 @@ class AiRetryExecutorTest {
     }
 
     @Test
-    void reservesOneLogicalBudgetAcrossLocalProviderRetries() {
+    void countsEveryHttpAttemptAcrossLocalProviderRetries() {
         AtomicInteger budget = new AtomicInteger();
         AtomicInteger calls = new AtomicInteger();
         executor.execute(AiRateLimitService.DEEPSEEK, budget::incrementAndGet, () -> {
             if (calls.incrementAndGet() < 3) throw new AiProviderException("network", null, true, 0);
             return "ok";
         });
-        assertThat(budget).hasValue(1);
+        assertThat(budget).hasValue(3);
         assertThat(calls).hasValue(3);
+    }
+
+    @Test
+    void deadlinePreventsAnotherAttemptOrAnOverlongBackoff() {
+        AtomicInteger calls = new AtomicInteger();
+        assertThatThrownBy(() -> executor.execute(AiRateLimitService.DEEPSEEK, () -> {}, () -> {
+            calls.incrementAndGet();
+            throw new AiProviderException("limited", null, true, 60_000);
+        }, java.time.Instant.now().plusMillis(100)))
+                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+        assertThat(calls).hasValue(1);
+        assertThat(delays).isEmpty();
     }
 
     @Test

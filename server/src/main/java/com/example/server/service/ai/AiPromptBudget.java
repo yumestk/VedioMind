@@ -16,7 +16,7 @@ public class AiPromptBudget {
     private static final int SAFETY_TOKENS = 512;
 
     public AiPromptBudget(
-            @Value("${ai.context.max-estimated-context-tokens:32000}") int contextTokens,
+            @Value("${ai.context.max-estimated-context-tokens:64000}") int contextTokens,
             @Value("${ai.context.max-output-tokens:8192}") int outputTokens) {
         if (outputTokens <= 0 || contextTokens - (long) outputTokens - SAFETY_TOKENS < 1024) {
             throw new IllegalArgumentException("AI context budget must leave at least 1024 estimated input tokens");

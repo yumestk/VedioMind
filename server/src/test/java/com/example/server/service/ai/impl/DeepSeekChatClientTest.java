@@ -80,13 +80,47 @@ class DeepSeekChatClientTest {
         verifyNoMoreInteractions(rates);
     }
 
+    @Test
+    void truncatedResponsePreservesRawReasoningUsageAndFinishReason() throws Exception {
+        var client = client("length");
+        var observed = new AtomicReference<DeepSeekChatClient.ChatAttempt>();
+        assertThatThrownBy(() -> client.chatWithinBudget("system", List.of(new DeepSeekMessage("user","q")),
+                () -> {}, Instant.now().plusSeconds(1), observed::set))
+                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+        assertThat(observed.get().rawResponse()).contains("reasoning_content");
+        assertThat(observed.get().reasoningContent()).isEqualTo("reasoning");
+        assertThat(observed.get().finishReason()).isEqualTo("length");
+        assertThat(observed.get().outputTokens()).isEqualTo(20);
+    }
+
+    @Test
+    void httpCallCannotOverrunTheSharedDeadlineOrStartAnotherAttempt() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/chat/completions", exchange -> {
+            requests.incrementAndGet();
+            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            exchange.close();
+        });
+        server.start();
+        var client = new DeepSeekChatClient("test-key","http://127.0.0.1:"+server.getAddress().getPort(),
+                new AiRetryExecutor(rates),new AiPromptBudget(4000,512));
+        var observed = new AtomicReference<DeepSeekChatClient.ChatAttempt>();
+        long start=System.nanoTime();
+        assertThatThrownBy(() -> client.chatWithinBudget("system",List.of(new DeepSeekMessage("user","q")),
+                () -> {},Instant.now().plusMillis(100),observed::set))
+                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+        assertThat((System.nanoTime()-start)/1_000_000).isLessThan(450);
+        assertThat(requests).hasValue(1);
+        assertThat(observed.get().inputTokens()).isNull();
+    }
+
     private DeepSeekChatClient client(String finishReason) throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/chat/completions", exchange -> {
             requests.incrementAndGet();
             sent.set(JSONObject.parseObject(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
             byte[] body = ("{\"choices\":[{\"finish_reason\":\"" + finishReason + "\","
-                    + "\"message\":{\"content\":\"answer\"}}],\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":20}}")
+                    + "\"message\":{\"content\":\"answer\",\"reasoning_content\":\"reasoning\"}}],\"usage\":{\"prompt_tokens\":123,\"completion_tokens\":20}}")
                     .getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);

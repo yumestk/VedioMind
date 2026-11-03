@@ -22,6 +22,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -77,6 +78,18 @@ public class DeepSeekChatClient {
 
     private ChatResult send(String systemPrompt, List<DeepSeekMessage> conversation,
                             Runnable beforeFirstAttempt, Integer maxOutputTokens) {
+        return send(systemPrompt, conversation, beforeFirstAttempt, maxOutputTokens, null, attempt -> {});
+    }
+
+    public ChatResult chatWithinBudget(String systemPrompt, List<DeepSeekMessage> conversation,
+                                       Runnable beforeAttempt, Instant deadline, Consumer<ChatAttempt> observer) {
+        promptBudget.requireFits(systemPrompt, conversation);
+        return send(systemPrompt, conversation, beforeAttempt, promptBudget.outputTokens(), deadline, observer);
+    }
+
+    private ChatResult send(String systemPrompt, List<DeepSeekMessage> conversation,
+                            Runnable beforeAttempt, Integer maxOutputTokens, Instant deadline,
+                            Consumer<ChatAttempt> observer) {
         if (systemPrompt == null || systemPrompt.isBlank() || conversation == null || conversation.isEmpty()) {
             throw new IllegalArgumentException("DeepSeek messages must not be empty");
         }
@@ -112,56 +125,56 @@ public class DeepSeekChatClient {
                 ))
                 .build();
 
-        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, beforeFirstAttempt, () -> execute(request, maxOutputTokens != null));
+        return retryExecutor.execute(AiRateLimitService.DEEPSEEK, beforeAttempt,
+                () -> execute(request, maxOutputTokens != null, deadline, observer), deadline);
     }
 
-    private ChatResult execute(Request request, boolean boundedOutput) {
-        try (Response response = CLIENT.newCall(request).execute()) {
-            String responseBody = response.body() == null ? "" : response.body().string();
-            if (!response.isSuccessful()) {
-                throw AiProviderException.forStatus(
-                        "Language model request failed: " + response.code() + " - " + responseBody,
-                        null,
-                        response.code(),
-                        parseRetryAfterMillis(response.header("Retry-After"), Instant.now())
-                );
-            }
-
-            try {
-                JSONObject responseJson = JSONObject.parseObject(responseBody);
-                JSONObject choice = responseJson.getJSONArray("choices").getJSONObject(0);
-                if (boundedOutput && "length".equals(choice.getString("finish_reason"))) {
-                    JSONObject usage = responseJson.getJSONObject("usage");
-                    log.warn("AI output truncated actualInputTokens={} actualOutputTokens={}",
-                            usage == null ? null : usage.getInteger("prompt_tokens"),
-                            usage == null ? null : usage.getInteger("completion_tokens"));
-                    throw new AiPromptBudget.PromptBudgetExceededException(
-                            "AI output reached max-output-tokens; increase the output budget or reduce the task");
+    private ChatResult execute(Request request, boolean boundedOutput, Instant deadline, Consumer<ChatAttempt> observer) {
+        long started = System.nanoTime();
+        String raw = null, content = null, reasoning = null, finish = null, error = null;
+        Integer input = null, output = null, status = null;
+        try {
+            var call = CLIENT.newCall(request);
+            call.timeout().timeout(AiRetryExecutor.remainingMillis(deadline), TimeUnit.MILLISECONDS);
+            try (Response response = call.execute()) {
+                status = response.code();
+                raw = response.body() == null ? "" : response.body().string();
+                if (!response.isSuccessful()) {
+                    throw AiProviderException.forStatus("Language model request failed: " + status,
+                            null, status, parseRetryAfterMillis(response.header("Retry-After"), Instant.now()));
                 }
-                String content = choice.getJSONObject("message").getString("content");
+                JSONObject json = JSONObject.parseObject(raw);
+                JSONObject usage = json.getJSONObject("usage");
+                input = usage == null ? null : usage.getInteger("prompt_tokens");
+                output = usage == null ? null : usage.getInteger("completion_tokens");
+                JSONObject choice = json.getJSONArray("choices").getJSONObject(0);
+                finish = choice.getString("finish_reason");
+                content = choice.getJSONObject("message").getString("content");
+                reasoning = choice.getJSONObject("message").getString("reasoning_content");
+                if (boundedOutput && "length".equals(finish)) {
+                    throw new AiPromptBudget.PromptBudgetExceededException("AI output reached max-output-tokens");
+                }
                 if (content == null || content.isBlank()) {
-                    throw new IllegalStateException("Language model returned an empty response");
+                    throw new AiProviderException("Language model returned an empty response", null, false, 0);
                 }
-                JSONObject usage = responseJson.getJSONObject("usage");
-                return new ChatResult(
-                        content,
-                        usage == null ? null : usage.getInteger("prompt_tokens"),
-                        usage == null ? null : usage.getInteger("completion_tokens")
-                );
-            } catch (AiPromptBudget.PromptBudgetExceededException exception) {
-                throw exception;
-            } catch (RuntimeException exception) {
-                throw new AiProviderException(
-                        "Language model returned an invalid response",
-                        exception,
-                        false,
-                        0
-                );
+                return new ChatResult(content, input, output);
             }
         } catch (IOException exception) {
-            throw new AiProviderException("Language model connection failed", exception, true, 0);
+            error = "Language model connection failed: " + exception.getClass().getSimpleName();
+            throw new AiProviderException(error, exception, true, 0);
+        } catch (RuntimeException exception) {
+            error = exception.getMessage();
+            if (exception instanceof AiProviderException || exception instanceof AiPromptBudget.PromptBudgetExceededException) throw exception;
+            throw new AiProviderException("Language model returned an invalid response", exception, false, 0);
+        } finally {
+            observer.accept(new ChatAttempt(raw, content, reasoning, finish, input, output, status,
+                    error, (System.nanoTime() - started) / 1_000_000));
         }
     }
+
+    public record ChatAttempt(String rawResponse, String content, String reasoningContent, String finishReason,
+                              Integer inputTokens, Integer outputTokens, Integer httpStatus, String error,
+                              long elapsedMs) { }
 
     static long parseRetryAfterMillis(String value, Instant now) {
         if (value == null || value.isBlank()) return 0;

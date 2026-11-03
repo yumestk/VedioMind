@@ -124,7 +124,7 @@ class VideoEvidenceContextServiceTest {
                 .thenReturn(List.of(hit(300_000, 600_000, List.of(2L), List.of())));
         var evidenceService = new VideoAgentEvidenceService(retriever, service, new AiPromptBudget(32000, 8192));
         assertThat(evidenceService.retrieve(index, "查询", reserve).evidence()).extracting(VideoAgentCitation::ref)
-                .containsExactly("TRANSCRIPT:2", "OCR:1", "TRANSCRIPT:1");
+                .containsExactly("TRANSCRIPT:1", "TRANSCRIPT:2", "OCR:1");
         verify(retriever).searchMultimodal(index, "查询", reserve);
         verifyNoMoreInteractions(retriever);
 
@@ -134,6 +134,82 @@ class VideoEvidenceContextServiceTest {
                 .thenReturn(List.of(hit(300_000, 600_000, List.of(2L), List.of())));
         assertThatThrownBy(() -> evidenceService.retrieve(hugeIndex, "查询", reserve))
                 .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+    }
+
+    @Test
+    void learningRetrievalKeepsEvidenceFromEveryHitBeforeReusingSharedSpace() {
+        var transcripts = new java.util.ArrayList<VideoContext.TranscriptEvidence>();
+        var firstIds = new java.util.ArrayList<Long>();
+        for (long i=1;i<=8;i++) {
+            transcripts.add(transcript(i,i*35_000,"English paragraph ".repeat(100)));
+            firstIds.add(i);
+        }
+        transcripts.add(transcript(99,310_000,"Complete qualifying condition, not a proven theorem."));
+        var index = new VideoKnowledgeIndexService.IndexSnapshot(context(transcripts,List.of()),List.of(),"navigation");
+        var retriever = mock(VideoKnowledgeRetriever.class);
+        when(retriever.searchMultimodal(eq(index),anyString(),any()))
+                .thenReturn(List.of(hit(0,300_000,firstIds,List.of()),hit(300_000,600_000,List.of(99L),List.of())));
+        var selected = new VideoAgentEvidenceService(retriever,service,new AiPromptBudget(32000,8192))
+                .retrieve(index,"中文学习主题",()->{}).evidence();
+        assertThat(selected).extracting(VideoAgentCitation::ref).contains("TRANSCRIPT:1","TRANSCRIPT:99");
+        assertThat(selected.stream().filter(v->v.ref().equals("TRANSCRIPT:99")).findFirst().orElseThrow().text())
+                .isEqualTo("Complete qualifying condition, not a proven theorem.");
+        assertThat(AiPromptBudget.estimateText(VideoEvidenceContextService.formatEvidence(selected)))
+                .isLessThanOrEqualTo(23296-2048);
+    }
+
+    @Test
+    void aCompleteShortSubtitleArgumentIsNotDroppedByAnArbitraryItemCount() {
+        var paragraphs = new java.util.ArrayList<List<VideoAgentCitation>>();
+        for(int i=0;i<120;i++) paragraphs.add(List.of(new VideoAgentCitation("TRANSCRIPT:"+i,"TRANSCRIPT",(long)i,i*1000L,i*1000L+1000,
+                i==119 ? "最后一句给出了结论的适用条件" : "同一论证中的短字幕")));
+        var selected = service.allocate(List.of(paragraphs),54000,List.of(values->true)).getFirst();
+        assertThat(selected).hasSize(120).extracting(VideoAgentCitation::ref).contains("TRANSCRIPT:119");
+        assertThat(AiPromptBudget.estimateText(VideoEvidenceContextService.formatEvidence(selected))).isLessThanOrEqualTo(54000);
+    }
+
+    @Test
+    void sharedBudgetReusesDuplicateSpaceAndPacksWholeWindowsForEveryTask() {
+        var a = new VideoAgentCitation("TRANSCRIPT:1", "TRANSCRIPT", 1L, 0, 1, "共同条件");
+        var b = new VideoAgentCitation("TRANSCRIPT:2", "TRANSCRIPT", 2L, 1, 2, "共同结论");
+        var c = new VideoAgentCitation("TRANSCRIPT:3", "TRANSCRIPT", 3L, 2, 3, "另一主题");
+        var window = List.of(a, b);
+        long capacity = AiPromptBudget.estimateText(VideoEvidenceContextService.formatEvidence(List.of(a, b, c)));
+        var packed = service.allocate(List.of(List.of(window, List.of(c)), List.of(window)), capacity,
+                List.of(values -> true, values -> true));
+        assertThat(packed.get(0)).containsExactlyInAnyOrder(a, b, c);
+        assertThat(packed.get(1)).containsExactly(a, b);
+        var tight = service.allocate(List.of(List.of(window, List.of(c))),
+                AiPromptBudget.estimateText(VideoEvidenceContextService.formatEvidence(List.of(c))), List.of(values -> true));
+        assertThat(tight.getFirst()).containsExactly(c);
+        assertThat(service.allocate(List.of(List.of(window)), capacity, List.of(values -> false)).getFirst()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2, 3})
+    void allocatesOneTwoOrThreeDisjointTasksWithinTheSameUnionLimit(int tasks) {
+        var windows = new java.util.ArrayList<List<List<VideoAgentCitation>>>();
+        var checks = new java.util.ArrayList<java.util.function.Predicate<List<VideoAgentCitation>>>();
+        var all = new java.util.ArrayList<VideoAgentCitation>();
+        for (int i = 0; i < tasks; i++) {
+            var citation = new VideoAgentCitation("TRANSCRIPT:" + i, "TRANSCRIPT", (long) i, i, i + 1, "主题" + i);
+            windows.add(List.of(List.of(citation))); checks.add(values -> true); all.add(citation);
+        }
+        long limit = AiPromptBudget.estimateText(VideoEvidenceContextService.formatEvidence(all));
+        var selected = service.allocate(windows, limit, checks);
+        assertThat(selected).hasSize(tasks).allSatisfy(values -> assertThat(values).hasSize(1));
+        assertThat(selected.stream().flatMap(List::stream).toList()).containsExactlyElementsOf(all);
+    }
+
+    @Test
+    void ocrCannotDisplaceSubtitleNeighborsOrOverwriteASameNumberedSubtitleScore() {
+        var context = context(List.of(transcript(1, 1000, "如果提交成功"), transcript(2, 2000, "它才能继续消费")),
+                List.of(visual(1, 1100, "SUCCEEDED", "无关画面")));
+        var candidates = service.expand(context, List.of(hit(0, 300_000, List.of(1L, 2L), List.of(1L))), true);
+        var ranked = service.rankForQuestion("提交成功才能继续消费", candidates);
+        assertThat(ranked.getFirst().evidence().type()).isEqualTo("TRANSCRIPT");
+        assertThat(service.windows("提交成功才能继续消费", candidates).getFirst())
+                .extracting(VideoAgentCitation::ref).containsExactly("TRANSCRIPT:1", "TRANSCRIPT:2");
     }
 
     private VideoContext context(List<VideoContext.TranscriptEvidence> transcripts, List<VideoContext.VisualEvidence> visuals) {

@@ -55,8 +55,10 @@
           v-else-if="message.messageType === 'AGENT_RUN' && message.agentRun"
           :run="message.agentRun"
           :user-id="userId"
+          :busy="busy"
           @seek="$emit('seek', $event)"
           @run-change="updateAgentRun(message.id, $event)"
+          @followup="$emit('followup', $event)"
         />
       </article>
     </div>
@@ -88,7 +90,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false }
 })
 
-defineEmits(['seek'])
+defineEmits(['seek', 'followup'])
 
 const conversations = ref([])
 const activeConversationId = ref(null)

@@ -20,7 +20,12 @@
       <p>{{ currentRun.errorMessage || '请稍后重新提交任务。' }}</p>
     </div>
 
-    <template v-else-if="currentRun.result">
+    <p v-if="currentRun.status === 'PARTIAL'" class="run-error" role="status">
+      已交付有依据的部分笔记：{{ currentRun.errorMessage }}
+    </p>
+    <p class="run-metrics">排队 {{ queueSeconds }} 秒<span v-if="currentRun.startedAt"> · 执行 {{ executionSeconds }} 秒（上限120秒）</span></p>
+
+    <template v-if="currentRun.result">
       <section class="result-block result-core">
         <p class="run-kicker">CORE CONCLUSION</p>
         <h2>{{ currentRun.result.title }}</h2>
@@ -52,6 +57,7 @@
         >
           <h3>{{ index + 1 }}. {{ point.title }}</h3>
           <p>{{ point.explanation }}</p>
+          <button :disabled="isRunning || busy" @click="followup(`展开知识点：${point.title}。只依据视频原文，详细说明条件与例子。`)">展开此知识点</button>
           <details v-if="citationsFor(point.evidenceRefs).length" class="evidence-details">
             <summary>参考证据 · {{ citationsFor(point.evidenceRefs).length }} 条</summary>
             <div class="evidence-list">
@@ -68,7 +74,9 @@
         </article>
       </section>
 
-      <section class="result-block">
+      <button v-if="!currentRun.result.quiz?.length" :disabled="isRunning || busy"
+        @click="followup(`针对主题「${currentRun.goal}」生成3道自测题，答案附视频原文依据。`)">按需生成自测题</button>
+      <section v-if="currentRun.result.quiz?.length" class="result-block">
         <p class="run-kicker">SELF CHECK</p>
         <details
           v-for="(item, index) in currentRun.result.quiz"
@@ -87,11 +95,11 @@
     </template>
 
     <footer class="run-metrics">
-      模型调用 {{ currentRun.generationCalls || 0 }} 次 · 检索 {{ currentRun.retrievalCalls || 0 }} 次
+      生成请求 {{ currentRun.generationCalls || 0 }} 次 · 检索 {{ currentRun.retrievalCalls || 0 }} 次
       <template v-if="currentRun.tokenUsageKnown">
         · Token {{ (currentRun.inputTokens || 0) + (currentRun.outputTokens || 0) }}
       </template>
-      <template v-else> · Token 未返回</template>
+      <template v-else> · 部分请求Token未知（不等于免费）</template>
     </footer>
   </article>
 </template>
@@ -102,15 +110,21 @@ import { getVideoAgentRun } from '../api/media'
 
 const props = defineProps({
   run: { type: Object, required: true },
-  userId: { type: Number, required: true }
+  userId: { type: Number, required: true },
+  busy: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['seek', 'run-change'])
-const terminal = new Set(['SUCCEEDED', 'FAILED'])
+const emit = defineEmits(['seek', 'run-change', 'followup'])
+const terminal = new Set(['SUCCEEDED', 'PARTIAL', 'FAILED'])
 const currentRun = ref(props.run)
 let pollTimer
 
 const isRunning = computed(() => currentRun.value && !terminal.has(currentRun.value.status))
+
+const secondsBetween = (start, end) => start ? Math.max(0, Math.floor((new Date(end || Date.now()) - new Date(start)) / 1000)) : 0
+const queueSeconds = computed(() => secondsBetween(currentRun.value.createdAt, currentRun.value.startedAt || currentRun.value.finishedAt))
+const executionSeconds = computed(() => secondsBetween(currentRun.value.startedAt, currentRun.value.finishedAt))
+const followup = goal => emit('followup', goal.slice(0, 500))
 
 const schedulePoll = () => {
   clearTimeout(pollTimer)
@@ -134,16 +148,16 @@ const citationsFor = (refs = []) => refs
   .filter(Boolean)
 
 const statusLabel = status => ({
-  QUEUED: '等待执行', PLANNING: '正在规划', RETRIEVING: '查找依据', DRAFTING: '整理笔记',
-  CRITIQUING: '检查结果', REVISING: '修订结果', RETRYING: '准备重试',
+  QUEUED: '等待执行', RETRIEVING: '查找依据', DRAFTING: '整理笔记',
+  REVISING: '修订结果', RETRYING: '准备重试',
   WAITING_FOR_QUOTA: '等待 AI 服务额度',
-  SUCCEEDED: '已完成', FAILED: '失败'
+  SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败'
 })[status] || status
 
 const stageDescription = status => ({
   WAITING_FOR_QUOTA: '额度恢复后会自动继续，无需重新提交',
-  QUEUED: '任务已进入队列', PLANNING: '正在拆解学习目标', RETRIEVING: '正在检索相关证据',
-  DRAFTING: '正在整理知识点', CRITIQUING: '正在核对目标、事实与引用',
+  QUEUED: '任务已进入队列', RETRIEVING: '正在检索相关证据',
+  DRAFTING: '正在整理知识点',
   REVISING: '正在按检查意见修订', RETRYING: '任务将从最近检查点恢复'
 })[status] || '正在处理'
 
@@ -171,6 +185,7 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .run-kicker { margin: 0; color: var(--accent); font: 10px var(--mono); letter-spacing: .1em; }
 .run-status { flex: none; padding: 6px 9px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font: 10px var(--mono); }
 .run-status.succeeded { color: var(--accent); }
+.run-status.partial { color: #e6b96d; }
 .run-status.failed { color: var(--danger); }
 .run-progress, .run-error, .result-block { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
 .progress-track { overflow: hidden; height: 5px; border-radius: 99px; background: var(--surface); }

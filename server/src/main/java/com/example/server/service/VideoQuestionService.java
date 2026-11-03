@@ -111,12 +111,7 @@ public class VideoQuestionService {
         String retainedAgentContext = agentContext == null ? "" : agentContext;
         List<DeepSeekMessage> messages = messages(question, selected, retainedHistory, retainedAgentContext);
         while (!budget.fits(SYSTEM_PROMPT, messages)) {
-            if (selected.stream().anyMatch(value -> !value.core())) {
-                var farthest = selected.stream().filter(value -> !value.core())
-                        .max(java.util.Comparator.comparingLong(VideoEvidenceContextService.Candidate::distanceMs))
-                        .orElseThrow();
-                selected.remove(farthest);
-            } else if (retainedHistory.size() > 2) {
+            if (retainedHistory.size() > 2) {
                 retainedHistory.removeFirst();
                 if (!retainedHistory.isEmpty() && "assistant".equals(retainedHistory.getFirst().role())) {
                     retainedHistory.removeFirst();
@@ -127,13 +122,7 @@ public class VideoQuestionService {
                     && !budget.fits(SYSTEM_PROMPT, messages(question, List.of(), retainedHistory, ""))) {
                 retainedHistory.clear();
             } else if (!selected.isEmpty() && retrieval) {
-                List<VideoEvidenceContextService.Candidate> packed = new ArrayList<>();
-                for (var candidate : selected) {
-                    packed.add(candidate);
-                    if (!budget.fits(SYSTEM_PROMPT, messages(question, packed, retainedHistory, retainedAgentContext))) {
-                        packed.removeLast();
-                    }
-                }
+                var packed = packWindows(question, selected, retainedHistory, retainedAgentContext);
                 if (packed.isEmpty() && !retainedHistory.isEmpty()) {
                     retainedHistory.clear();
                 } else {
@@ -189,6 +178,28 @@ public class VideoQuestionService {
                 .map(value -> new VideoQuestionCitationResponse(value.sourceId(), value.startMs(), value.endMs(), value.text()))
                 .toList();
         return new VideoQuestionResponse(answer.trim(), citations);
+    }
+
+    private List<VideoEvidenceContextService.Candidate> packWindows(
+            String question, List<VideoEvidenceContextService.Candidate> candidates,
+            List<DeepSeekMessage> history, String agentContext) {
+        // A subtitle that cannot fit even alone must not prevent other complete evidence from being used.
+        var usable = candidates.stream().filter(value -> budget.fits(SYSTEM_PROMPT,
+                messages(question, List.of(value), List.of(), ""))).toList();
+        var chronological = usable.stream().sorted(java.util.Comparator.comparingLong(
+                value -> value.evidence().startMs())).toList();
+        Map<Long, VideoEvidenceContextService.Candidate> packed = new LinkedHashMap<>();
+        for (var anchor : usable) {
+            if (!anchor.core() || packed.containsKey(anchor.evidence().sourceId())) continue;
+            var trial = new LinkedHashMap<>(packed);
+            for (var value : VideoEvidenceContextService.questionWindow(chronological, chronological.indexOf(anchor))) {
+                trial.putIfAbsent(value.evidence().sourceId(), value);
+            }
+            if (budget.fits(SYSTEM_PROMPT, messages(question, List.copyOf(trial.values()), history, agentContext))) {
+                packed = trial;
+            }
+        }
+        return List.copyOf(packed.values());
     }
 
     private List<DeepSeekMessage> messages(String question, List<VideoEvidenceContextService.Candidate> evidence,

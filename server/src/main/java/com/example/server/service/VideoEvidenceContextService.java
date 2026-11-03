@@ -120,18 +120,14 @@ public class VideoEvidenceContextService {
         for (int size = 2; size <= 3; size++) {
             for (int i = 0; i + size <= query.length(); i++) terms.add(query.substring(i, i + size));
         }
-        List<Candidate> chronological = candidates.stream().filter(Candidate::core)
+        List<Candidate> chronological = candidates.stream()
                 .sorted(Comparator.comparingLong(value -> value.evidence().startMs())).toList();
-        Map<Long, Double> scores = new HashMap<>();
+        Map<String, Double> scores = new HashMap<>();
         List<String> windows = new ArrayList<>();
         for (int i = 0; i < chronological.size(); i++) {
-            StringBuilder text = new StringBuilder();
-            for (int j = Math.max(0, i - 3); j <= Math.min(chronological.size() - 1, i + 3); j++) {
-                if (Math.abs(chronological.get(i).evidence().startMs() - chronological.get(j).evidence().startMs()) <= 30_000) {
-                    text.append(chronological.get(j).evidence().text());
-                }
-            }
-            windows.add(text.toString().toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", ""));
+            String text = questionWindow(chronological, i).stream().map(value -> value.evidence().text())
+                    .collect(java.util.stream.Collectors.joining());
+            windows.add(text.toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", ""));
         }
         Map<String, Long> frequencies = new HashMap<>();
         for (String term : terms) frequencies.put(term, windows.stream().filter(text -> text.contains(term)).count());
@@ -140,12 +136,69 @@ public class VideoEvidenceContextService {
             for (String term : terms) if (windows.get(i).contains(term)) {
                 score += term.length() * Math.log(1.0 + windows.size() / (1.0 + frequencies.get(term)));
             }
-            scores.put(chronological.get(i).evidence().sourceId(), score);
+            scores.put(chronological.get(i).evidence().ref(), score);
         }
         // Stable ties retain the cross-chunk round-robin order from expand().
-        return candidates.stream().sorted(Comparator.comparing(Candidate::core).reversed()
-                .thenComparing(Comparator.comparingDouble((Candidate value) ->
-                        scores.getOrDefault(value.evidence().sourceId(), 0.0)).reversed())).toList();
+        return candidates.stream().sorted(Comparator.comparingDouble((Candidate value) ->
+                scores.getOrDefault(value.evidence().ref(), 0.0)).reversed()).toList();
+    }
+
+    /** Keep the same neighborhood intact when ranking and packing question evidence. */
+    static List<Candidate> questionWindow(List<Candidate> chronological, int anchor) {
+        Candidate center = chronological.get(anchor);
+        if (!"TRANSCRIPT".equals(center.evidence().type())) return List.of(center);
+        var subtitles = chronological.stream().filter(v -> "TRANSCRIPT".equals(v.evidence().type())).toList();
+        int position = subtitles.indexOf(center);
+        long start = center.evidence().startMs();
+        return subtitles.subList(Math.max(0, position - 3), Math.min(subtitles.size(), position + 4))
+                .stream().filter(value -> Math.abs(value.evidence().startMs() - start) <= 30_000).toList();
+    }
+
+    /** Ranked whole neighborhoods; no answer labels or extra model calls are used. */
+    public List<List<VideoAgentCitation>> windows(String query, List<Candidate> candidates) {
+        var chronological = candidates.stream().sorted(Comparator.comparingLong(v -> v.evidence().startMs())).toList();
+        return rankForQuestion(query, candidates).stream().map(anchor -> questionWindow(chronological,
+                chronological.indexOf(anchor)).stream().map(Candidate::evidence).toList()).toList();
+    }
+
+    /** The exact wire representation is shared by packing and generation. */
+    public static String formatEvidence(List<VideoAgentCitation> values) {
+        return JSON.toJSONString(values.stream().map(v -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("evidenceRef", v.ref()); item.put("type", v.type());
+            item.put("startMs", v.startMs()); item.put("endMs", v.endMs()); item.put("text", v.text());
+            return item;
+        }).toList());
+    }
+
+    /** Fair initial shares, then round-robin reuse of unspent and duplicate evidence space. */
+    public List<List<VideoAgentCitation>> allocate(List<List<List<VideoAgentCitation>>> windows, long limit,
+            List<java.util.function.Predicate<List<VideoAgentCitation>>> fits) {
+        if (windows.size() != fits.size()) throw new IllegalArgumentException("One budget check per task is required");
+        List<LinkedHashMap<String, VideoAgentCitation>> selected = new ArrayList<>();
+        windows.forEach(v -> selected.add(new LinkedHashMap<>()));
+        int rounds = windows.stream().mapToInt(List::size).max().orElse(0);
+        long duplicates = 0, nodeOmissions = 0, shareOmissions = 0, poolOmissions = 0;
+        for (int phase = 0; phase < 2; phase++) for (int offset = 0; offset < rounds; offset++) {
+            for (int task = 0; task < windows.size(); task++) {
+                if (offset >= windows.get(task).size()) continue;
+                var trial = new LinkedHashMap<>(selected.get(task));
+                windows.get(task).get(offset).forEach(v -> trial.putIfAbsent(v.ref(), v));
+                if (trial.size() == selected.get(task).size()) { duplicates++; continue; }
+                var values = List.copyOf(trial.values());
+                if (!fits.get(task).test(values)) { nodeOmissions++; continue; }
+                if (phase == 0 && AiPromptBudget.estimateText(formatEvidence(values)) > limit / windows.size()) { shareOmissions++; continue; }
+                Map<String, VideoAgentCitation> union = new LinkedHashMap<>();
+                for (int i = 0; i < selected.size(); i++) union.putAll(i == task ? trial : selected.get(i));
+                if (AiPromptBudget.estimateText(formatEvidence(List.copyOf(union.values()))) <= limit) selected.set(task, trial);
+                else poolOmissions++;
+            }
+        }
+        for (int i = 0; i < selected.size(); i++) log.info("Evidence allocation task={} windows={} selected={} refs={}",
+                i + 1, windows.get(i).size(), selected.get(i).size(), selected.get(i).keySet());
+        log.info("Evidence window attempts duplicates={} nodeBudget={} initialShare={} sharedBudget={}",
+                duplicates, nodeOmissions, shareOmissions, poolOmissions);
+        return selected.stream().map(v -> List.copyOf(v.values())).toList();
     }
 
     public List<VideoAgentCitation> select(List<Candidate> candidates, long estimatedTokens,

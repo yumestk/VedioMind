@@ -1,254 +1,134 @@
 package com.example.server.service;
 
 import com.alibaba.fastjson2.JSON;
-import com.example.server.dto.VideoAgentCitation;
-import com.example.server.dto.VideoAgentResult;
+import com.example.server.dto.*;
 import com.example.server.entity.VideoAgentRun;
-import com.example.server.service.ai.impl.DeepSeekChatClient;
 import com.example.server.service.ai.AiPromptBudget;
+import com.example.server.service.ai.impl.*;
 import com.example.server.service.context.VideoContext;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.List;
-import java.util.Optional;
-
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import java.time.Instant;
+import java.util.*;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class VideoAgentWorkflowServiceTest {
+    final VideoAgentRunService runs = mock(VideoAgentRunService.class);
+    final VideoKnowledgeIndexService indexes = mock(VideoKnowledgeIndexService.class);
+    final VideoAgentEvidenceService evidence = mock(VideoAgentEvidenceService.class);
+    final DeepSeekChatClient chat = mock(DeepSeekChatClient.class);
+    final VideoAgentWorkflowService workflow = new VideoAgentWorkflowService(runs, indexes, evidence, chat, new AiPromptBudget(32000,8192));
+    final VideoAgentRun run = new VideoAgentRun();
+    final Map<String,String> steps = new HashMap<>();
+    final Instant deadline = Instant.now().plusSeconds(118);
 
-    private final VideoAgentRunService runService = mock(VideoAgentRunService.class);
-    private final VideoKnowledgeIndexService indexService = mock(VideoKnowledgeIndexService.class);
-    private final VideoAgentEvidenceService evidenceService = mock(VideoAgentEvidenceService.class);
-    private final DeepSeekChatClient chatClient = mock(DeepSeekChatClient.class);
-    private final VideoAgentWorkflowService service = new VideoAgentWorkflowService(
-            runService, indexService, evidenceService, chatClient, new AiPromptBudget(32000, 8192)
-    );
-
-    @Test
-    void runsPlannerExecutorCriticAndPersistsValidatedResult() throws InterruptedException {
-        prepareRun();
-        when(runService.completedStep(any(), any(), anyInt())).thenReturn(Optional.empty());
-        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(bundle());
-        when(chatClient.chatWithinBudget(any(), any(), any())).thenReturn(
-                chat(planJson()), chat(draftJson("TRANSCRIPT:1")), chat(criticJson(true))
-        );
-
-        service.process("run-1", 0);
-
-        verify(evidenceService).retrieve(any(), eq("query"), any());
-        verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
+    @BeforeEach void prepare() {
+        run.setId("r"); run.setMediaId(34L); run.setGoal("学习图同构"); run.setContextVersion("v1");
+        run.setGenerationCalls(0); run.setRetrievalCalls(0);
+        when(runs.beginAttempt(eq("r"),anyInt())).thenReturn(true);
+        when(runs.getRequired("r")).thenReturn(run);
+        when(runs.requestDeadline("r")).thenReturn(deadline);
+        when(indexes.requireReady(34L)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(
+                new VideoContext(34L,"v1","ASR",null,null,List.of(),List.of()),List.of(),"navigation"));
+        when(runs.completedStep(anyString(),anyString(),anyInt())).thenAnswer(c -> Optional.ofNullable(steps.get(c.getArgument(1)+":"+c.getArgument(2))));
+        doAnswer(c -> {steps.put(c.getArgument(1)+":"+c.getArgument(2),JSON.toJSONString(c.getArgument(4))); return null;})
+                .when(runs).saveCompletedStep(anyString(),anyString(),anyInt(),any(),any());
+        doAnswer(c -> {run.setResultJson(JSON.toJSONString(c.getArgument(1))); return null;})
+                .when(runs).saveUsableResult(anyString(),any(),any());
+        when(evidence.retrieve(any(),anyString(),any(),any())).thenReturn(bundle(1));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of())));
     }
-
-    @Test
-    void resumesCompletedPlannerAndExecutorWithoutRepeatingRetrieval() throws InterruptedException {
-        prepareRun();
-        VideoAgentWorkflowService.Plan plan = new VideoAgentWorkflowService.Plan(List.of(
-                new VideoAgentWorkflowService.Subtask("S1", "title", "query", "outcome")
-        ));
-        VideoAgentWorkflowService.ExecutionOutput execution = new VideoAgentWorkflowService.ExecutionOutput(
-                plan.subtasks().getFirst(),
-                new VideoAgentWorkflowService.Draft("draft", List.of(
-                        new VideoAgentWorkflowService.Claim("claim", List.of("TRANSCRIPT:1"))
-                )),
-                bundle().evidence()
-        );
-        when(runService.completedStep("run-1", "PLANNER", 0))
-                .thenReturn(Optional.of(JSON.toJSONString(plan)));
-        when(runService.completedStep("run-1", "EXECUTOR_1", 0))
-                .thenReturn(Optional.of(JSON.toJSONString(execution)));
-        when(runService.completedStep("run-1", "CRITIC", 0)).thenReturn(Optional.empty());
-        when(chatClient.chatWithinBudget(any(), any(), any())).thenReturn(chat(criticJson(true)));
-
-        service.process("run-1", 1);
-
-        verify(evidenceService, never()).retrieve(any(), any(), any());
-        verify(chatClient).chatWithinBudget(any(), any(), any());
-        verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
+    @Test void notesUseOneGenerationWithoutMandatoryPlannerOrQuiz() {
+        workflow.process("r",0);
+        verify(chat).chatWithinBudget(anyString(),anyList(),any(),eq(deadline),any());
+        verify(runs).markSucceeded(eq("r"),argThat(n -> n.quiz().isEmpty()),any());
+        verify(runs).saveCompletedStep(eq("r"),eq("RETRIEVAL_0"),eq(0),any(),any());
     }
-
-    @Test
-    void rejectsModelReferencesThatWereNotProvided() throws InterruptedException {
-        prepareRun();
-        when(runService.completedStep(any(), any(), anyInt())).thenReturn(Optional.empty());
-        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(bundle());
-        when(chatClient.chatWithinBudget(any(), any(), any())).thenReturn(
-                chat(planJson()), chat(draftJson("OCR:999"))
-        );
-
-        assertThatThrownBy(() -> service.process("run-1", 0))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("unavailable evidence reference");
-
-        verify(runService, never()).markSucceeded(any(), any(), any());
+    @Test void snapshotsSurviveGenerationFailureAndAreReusedAfterRedelivery() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any()))
+                .thenThrow(new com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException("quota",60))
+                .thenReturn(answer(notes(List.of())));
+        assertThatThrownBy(() -> workflow.process("r",0)).hasMessage("quota");
+        assertThat(steps).containsKey("RETRIEVAL_0:0");
+        workflow.process("r",1);
+        verify(evidence,times(1)).retrieve(any(),anyString(),any(),eq(deadline));
+        verify(runs).markSucceeded(eq("r"),any(),any());
     }
-
-    @Test
-    void resumesSavedRetrievalAfterDraftingWaitsForQuota() throws InterruptedException {
-        prepareRun();
-        var checkpoints = new java.util.HashMap<String, String>();
-        when(runService.completedStep(any(), any(), anyInt()))
-                .thenAnswer(call -> Optional.ofNullable(checkpoints.get(call.getArgument(1))));
-        doAnswer(call -> {
-            checkpoints.put(call.getArgument(1), JSON.toJSONString(call.getArgument(4)));
-            return null;
-        }).when(runService).saveCompletedStep(any(), any(), anyInt(), any(), any());
-        var expanded = new VideoAgentEvidenceService.EvidenceBundle(List.of(), List.of(
-                bundle().evidence().getFirst(),
-                new VideoAgentCitation("OCR:1", "OCR", 1L, 299_000, 299_000, "相邻 OCR 证据")));
-        when(evidenceService.retrieve(any(), eq("query"), any())).thenReturn(expanded);
-        when(chatClient.chatWithinBudget(any(), any(), any()))
-                .thenReturn(chat(planJson()))
-                .thenThrow(new com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException("busy", 60))
-                .thenReturn(chat(draftJson("TRANSCRIPT:1")), chat(criticJson(true)));
-
-        assertThatThrownBy(() -> service.process("run-1", 0))
-                .isInstanceOf(com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException.class);
-        service.process("run-1", 0);
-
-        verify(runService).saveCompletedStep(eq("run-1"), eq("RETRIEVAL_1"), eq(0), eq("query"), eq(expanded));
-        assertThat(checkpoints.get("RETRIEVAL_1")).contains("相邻 OCR 证据", "OCR:1");
-        verify(evidenceService, times(1)).retrieve(any(), eq("query"), any());
-        verify(runService).markSucceeded(eq("run-1"), any(VideoAgentResult.class), any());
+    @Test void aFailedSupplementKeepsTheFirstValidatedNotes() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of("需查找复杂度条件"))))
+                .thenThrow(new AiPromptBudget.PromptBudgetExceededException("deadline"));
+        when(evidence.retrieve(any(),anyString(),any(),any())).thenReturn(bundle(1),bundle(2));
+        workflow.process("r",0);
+        assertThat(run.getResultJson()).contains("需查找复杂度条件");
+        verify(runs).finishStopped("r","deadline");
+        verify(runs,never()).markSucceeded(any(),any(),any());
     }
-
-    @Test
-    void criticKeepsFullCitedEvidenceAndDropsOptionalEvidenceBeforeGenerating() throws InterruptedException {
-        prepareRun();
-        String complete = "x".repeat(1000) + "结尾条件不能丢";
-        cacheExecution(List.of(evidence(1, complete), evidence(2, "optional".repeat(3000))));
-        var bounded = new VideoAgentWorkflowService(runService, indexService, evidenceService, chatClient,
-                new AiPromptBudget(4000, 512));
-        when(chatClient.chatWithinBudget(any(), any(), any())).thenAnswer(call -> {
-            List<com.example.server.service.ai.impl.DeepSeekMessage> messages = call.getArgument(1);
-            assertThat(messages.getFirst().content()).contains(complete).doesNotContain("optional");
-            return chat(criticJson(true));
+    @Test void gapRetrievalStopsWhenNoNewEvidenceAppears() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of("未解决条件"))));
+        workflow.process("r",0);
+        verify(chat,times(1)).chatWithinBudget(anyString(),anyList(),any(),any(),any());
+        verify(runs).finishStopped(eq("r"),contains("未找到新增原文"));
+    }
+    @Test void invalidReferencesNeverBecomeUsableNotes() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of()).replace("TRANSCRIPT:1","OCR:999")));
+        workflow.process("r",0);
+        verify(runs,never()).saveUsableResult(any(),any(),any());
+        verify(runs).finishStopped(eq("r"),contains("引用有效"));
+    }
+    @Test void truncationWithoutEarlierNotesFailsAndIsNotAcceptedAsPartial() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenThrow(new AiPromptBudget.PromptBudgetExceededException("max-output-tokens"));
+        workflow.process("r",0);
+        verify(runs).finishStopped("r","max-output-tokens");
+        verify(runs,never()).saveUsableResult(any(),any(),any());
+    }
+    @Test void anExplicitRequestToOmitQuizKeepsConciseNotes() {
+        run.setGoal("整理学习笔记，不需要生成自测题");
+        workflow.process("r",0);
+        verify(runs).markSucceeded(eq("r"),argThat(n -> n.quiz().isEmpty()),any());
+        assertThat(VideoAgentWorkflowService.requestsQuiz("不用笔记，只要自测题")).isTrue();
+        assertThat(VideoAgentWorkflowService.requestsQuiz("notes without a quiz")).isFalse();
+    }
+    @Test void optionalQuizIsGeneratedOnlyOnRequest() {
+        run.setGoal("生成3道自测题");
+        var json=JSON.parseObject(notes(List.of()));
+        json.put("quiz",List.of(Map.of("question","q","answer","a","evidenceRefs",List.of("TRANSCRIPT:1"))));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(json.toJSONString()));
+        workflow.process("r",0);
+        verify(runs).markSucceeded(eq("r"),argThat(n -> n.quiz().size()==1),any());
+    }
+    @Test void absenceOfRelevantOriginalsDoesNotProduceFabricatedNotes() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any()))
+                .thenReturn(answer("{\"title\":\"未找到\",\"coreConclusion\":\"待查\",\"knowledgePoints\":[],\"gaps\":[\"Kubernetes调度证明\"]}"));
+        workflow.process("r",0);
+        verify(evidence,times(2)).retrieve(any(),anyString(),any(),any());
+        verify(runs,never()).saveUsableResult(any(),any(),any());
+        verify(runs).finishStopped(any(),any());
+    }
+    @Test void responseDiagnosticsPersistUsageIncludingTruncation() {
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenAnswer(c -> {
+            java.util.function.Consumer<DeepSeekChatClient.ChatAttempt> observer=c.getArgument(4);
+            run.setGenerationCalls(1);
+            observer.accept(new DeepSeekChatClient.ChatAttempt("raw","{","reason","length",123,8192,200,"truncated",20));
+            throw new AiPromptBudget.PromptBudgetExceededException("truncated");
         });
-        bounded.process("run-1", 0);
-        verify(runService).markSucceeded(eq("run-1"), any(), any());
+        workflow.process("r",0);
+        verify(runs).addTokens("r",123,8192);
+        assertThat(steps.get("GENERATION_ATTEMPT:1")).contains("reason","length","8192","raw");
     }
-
-    @Test
-    void criticRejectsReferencesToOptionalEvidenceRemovedByTheBudget() throws InterruptedException {
-        prepareRun();
-        cacheExecution(List.of(evidence(1, "完整证据"), evidence(2, "optional".repeat(3000))));
-        var bounded = new VideoAgentWorkflowService(runService, indexService, evidenceService, chatClient,
-                new AiPromptBudget(4000, 512));
-        when(chatClient.chatWithinBudget(any(), any(), any()))
-                .thenReturn(chat(criticJson(true).replace("TRANSCRIPT:1", "TRANSCRIPT:2")));
-        assertThatThrownBy(() -> bounded.process("run-1", 0)).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("unavailable evidence reference");
-        verify(runService, never()).markSucceeded(any(), any(), any());
+    @Test void completedNotesCanResumeWithoutRepeatingGeneration() {
+        steps.put("RETRIEVAL_0:0",JSON.toJSONString(bundle(1))); steps.put("NOTES:0",notes(List.of()));
+        workflow.process("r",1);
+        verifyNoInteractions(chat,evidence);
+        verify(runs).markSucceeded(eq("r"),any(),any());
     }
-
-    @Test
-    void failsBeforeAnyGenerationWhenPinnedEvidenceCannotFit() throws InterruptedException {
-        prepareRun();
-        cacheExecution(List.of(evidence(1, "pinned".repeat(3000))));
-        var bounded = new VideoAgentWorkflowService(runService, indexService, evidenceService, chatClient,
-                new AiPromptBudget(4000, 512));
-        assertThatThrownBy(() -> bounded.process("run-1", 0))
-                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
-        verify(chatClient, never()).chatWithinBudget(any(), any(), any());
-        verify(runService, never()).reserveGenerationCall(any());
+    static VideoAgentEvidenceService.EvidenceBundle bundle(long id) {
+        return new VideoAgentEvidenceService.EvidenceBundle(List.of(),List.of(new VideoAgentCitation("TRANSCRIPT:"+id,"TRANSCRIPT",id,1000,2000,"original")));
     }
-
-    @Test
-    void revisionPinsReferencesFromBothTheDraftAndCurrentResult() throws InterruptedException {
-        prepareRun();
-        String first = "a".repeat(900) + "草稿完整证据";
-        String second = "b".repeat(900) + "当前结果完整证据";
-        cacheExecution(List.of(evidence(1, first), evidence(2, second), evidence(3, "optional".repeat(3000))));
-        when(runService.completedStep("run-1", "CRITIC", 0)).thenReturn(Optional.of(
-                criticJson(false).replace("TRANSCRIPT:1", "TRANSCRIPT:2")));
-        var bounded = new VideoAgentWorkflowService(runService, indexService, evidenceService, chatClient,
-                new AiPromptBudget(5200, 512));
-        when(chatClient.chatWithinBudget(any(), any(), any())).thenAnswer(call -> {
-            List<com.example.server.service.ai.impl.DeepSeekMessage> messages = call.getArgument(1);
-            assertThat(messages.getFirst().content()).contains(first, second).doesNotContain("optional");
-            return chat(JSON.parseObject(criticJson(true)).getJSONObject("result").toJSONString());
-        });
-        bounded.process("run-1", 0);
-        verify(runService).markSucceeded(eq("run-1"), any(), any());
-    }
-
-    private void cacheExecution(List<VideoAgentCitation> evidence) {
-        var plan = new VideoAgentWorkflowService.Plan(List.of(
-                new VideoAgentWorkflowService.Subtask("S1", "title", "query", "outcome")));
-        var execution = new VideoAgentWorkflowService.ExecutionOutput(plan.subtasks().getFirst(),
-                new VideoAgentWorkflowService.Draft("draft", List.of(
-                        new VideoAgentWorkflowService.Claim("claim", List.of("TRANSCRIPT:1")))), evidence);
-        when(runService.completedStep("run-1", "PLANNER", 0)).thenReturn(Optional.of(JSON.toJSONString(plan)));
-        when(runService.completedStep("run-1", "EXECUTOR_1", 0)).thenReturn(Optional.of(JSON.toJSONString(execution)));
-        when(runService.completedStep("run-1", "CRITIC", 0)).thenReturn(Optional.empty());
-        when(runService.completedStep("run-1", "REVISION", 1)).thenReturn(Optional.empty());
-    }
-
-    private VideoAgentCitation evidence(long id, String text) {
-        return new VideoAgentCitation("TRANSCRIPT:" + id, "TRANSCRIPT", id, 1000, 2000, text);
-    }
-
-    private void prepareRun() throws InterruptedException {
-        VideoAgentRun run = new VideoAgentRun();
-        run.setId("run-1");
-        run.setMediaId(42L);
-        run.setGoal("learn this");
-        run.setContextVersion("t1-v1-p2");
-        run.setGenerationCalls(3);
-        run.setRetrievalCalls(1);
-        when(runService.beginAttempt("run-1", 0)).thenReturn(true);
-        when(runService.beginAttempt("run-1", 1)).thenReturn(true);
-        when(runService.getRequired("run-1")).thenReturn(run);
-        when(indexService.requireReady(42L)).thenReturn(index());
-    }
-
-    private VideoKnowledgeIndexService.IndexSnapshot index() {
-        VideoContext context = new VideoContext(
-                42L, "t1-v1-p2", "ALIYUN_ASR",
-                new VideoContext.Modality("AVAILABLE", 1, 1, 1, null),
-                new VideoContext.Modality("AVAILABLE", 1, 0, 0, null),
-                List.of(), List.of()
-        );
-        return new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(), "whole summary");
-    }
-
-    private VideoAgentEvidenceService.EvidenceBundle bundle() {
-        return new VideoAgentEvidenceService.EvidenceBundle(
-                List.of(),
-                List.of(new VideoAgentCitation(
-                        "TRANSCRIPT:1", "TRANSCRIPT", 1L, 1_000, 2_000, "evidence"
-                ))
-        );
-    }
-
-    private DeepSeekChatClient.ChatResult chat(String content) {
-        return new DeepSeekChatClient.ChatResult(content, 10, 5);
-    }
-
-    private String planJson() {
-        return """
-                {"subtasks":[{"id":"S1","title":"title","query":"query","expectedOutcome":"outcome"}]}
-                """;
-    }
-
-    private String draftJson(String ref) {
-        return """
-                {"title":"draft","claims":[{"text":"claim","evidenceRefs":["%s"]}]}
-                """.formatted(ref);
-    }
-
-    private String criticJson(boolean passed) {
-        return """
-                {"passed":%s,"feedback":[],"result":{"title":"notes","coreConclusion":"core","coreEvidenceRefs":["TRANSCRIPT:1"],"knowledgePoints":[{"title":"point","explanation":"explain","evidenceRefs":["TRANSCRIPT:1"]}],"quiz":[{"question":"q1","answer":"a1","evidenceRefs":["TRANSCRIPT:1"]},{"question":"q2","answer":"a2","evidenceRefs":["TRANSCRIPT:1"]},{"question":"q3","answer":"a3","evidenceRefs":["TRANSCRIPT:1"]}],"gaps":[]}}
-                """.formatted(passed);
+    static DeepSeekChatClient.ChatResult answer(String text) {return new DeepSeekChatClient.ChatResult(text,10,20);}
+    static String notes(List<String> gaps) {
+        return JSON.toJSONString(new VideoAgentResult("notes","core",List.of("TRANSCRIPT:1"),
+                List.of(new VideoAgentResult.KnowledgePoint("point","explanation",List.of("TRANSCRIPT:1"))),List.of(),gaps));
     }
 }

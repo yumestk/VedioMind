@@ -50,6 +50,37 @@ public class AliyunTextEmbeddingClient {
         return embed(List.of(text), TextEmbeddingParam.TextType.QUERY, beforeFirstAttempt).vectors().get(0);
     }
 
+    /** A per-call HTTP deadline is required for interactive learning tasks; SDK defaults are global. */
+    public List<Double> embedQuery(String text, Runnable beforeAttempt, java.time.Instant deadline) {
+        if (text == null || text.isBlank()) throw new IllegalArgumentException("Embedding query must not be empty");
+        if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("ALIYUN_API_KEY is not configured");
+        var body = com.alibaba.fastjson2.JSONObject.of("model", MODEL,
+                "input", com.alibaba.fastjson2.JSONObject.of("texts", List.of(text)),
+                "parameters", com.alibaba.fastjson2.JSONObject.of("text_type", "query", "dimension", DIMENSION));
+        var request = new okhttp3.Request.Builder()
+                .url(com.alibaba.dashscope.utils.Constants.baseHttpApiUrl + "/services/embeddings/text-embedding/text-embedding")
+                .header("Authorization", "Bearer " + apiKey)
+                .post(okhttp3.RequestBody.create(body.toJSONString(), okhttp3.MediaType.parse("application/json"))).build();
+        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING, beforeAttempt, () -> {
+            var call = QUERY_HTTP.newCall(request);
+            call.timeout().timeout(AiRetryExecutor.remainingMillis(deadline), java.util.concurrent.TimeUnit.MILLISECONDS);
+            try (var response = call.execute()) {
+                if (!response.isSuccessful()) throw AiProviderException.forStatus("Embedding request failed: " + response.code(),
+                        null, response.code(), 0);
+                var json = com.alibaba.fastjson2.JSON.parseObject(response.body().string());
+                var vector = json.getJSONObject("output").getJSONArray("embeddings").getJSONObject(0)
+                        .getJSONArray("embedding").toJavaList(Double.class);
+                if (vector.size() != DIMENSION) throw new IllegalArgumentException("Invalid embedding dimension");
+                return List.copyOf(vector);
+            } catch (java.io.IOException exception) {
+                throw new AiProviderException("Embedding connection failed", exception, true, 0);
+            }
+        }, deadline);
+    }
+
+    private static final okhttp3.OkHttpClient QUERY_HTTP = new okhttp3.OkHttpClient.Builder()
+            .retryOnConnectionFailure(false).build();
+
     private EmbeddingBatch embed(List<String> texts, TextEmbeddingParam.TextType textType) {
         return embed(texts, textType, () -> {});
     }

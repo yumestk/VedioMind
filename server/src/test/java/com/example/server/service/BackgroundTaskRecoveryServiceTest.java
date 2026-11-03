@@ -60,7 +60,7 @@ class BackgroundTaskRecoveryServiceTest {
         for (var type : BackgroundTaskRecoveryService.TaskType.values()) {
             jdbc.execute("CREATE TABLE " + type.table + " (id VARCHAR(36) PRIMARY KEY, media_id BIGINT, "
                     + "status VARCHAR(24), progress INT DEFAULT 0, retry_count INT DEFAULT 0, "
-                    + "error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP)");
+                    + "result_json VARCHAR(20000), error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP)");
         }
         new ResourceDatabasePopulator(new ClassPathResource(
                 "db/migration/V16__separate_quota_wait_from_failure_retries.sql"), new ClassPathResource(
@@ -136,6 +136,28 @@ class BackgroundTaskRecoveryServiceTest {
         service.execute(ANALYSIS, "task-1", 4, failures -> { throw transientFailure(); });
         assertThat(value(ANALYSIS, "status")).isEqualTo("FAILED");
         assertThat(value(ANALYSIS, "retry_count")).isEqualTo(3);
+    }
+
+    @Test
+    void expiredAgentWithSavedNotesBecomesPartialAndCannotBeRedelivered() {
+        insert(AGENT);
+        jdbc.update("UPDATE video_agent_runs SET result_json='{}', deadline_at=?", now().minusSeconds(1));
+        service.recoverDueTasks();
+        assertThat(value(AGENT,"status")).isEqualTo("PARTIAL");
+        AtomicInteger calls = new AtomicInteger();
+        service.execute(AGENT,"task-1",0, ignored -> calls.incrementAndGet());
+        assertThat(calls).hasValue(0);
+    }
+
+    @Test
+    void quotaRecoveryUsesDeadlineEstablishedDuringExecution() {
+        insert(AGENT);
+        service.execute(AGENT,"task-1",0, ignored -> {
+            jdbc.update("UPDATE video_agent_runs SET deadline_at=?", now().minusSeconds(1));
+            throw limited();
+        });
+        assertThat(value(AGENT,"status")).isEqualTo("FAILED");
+        verifyNoInteractions(messages);
     }
 
     @Test

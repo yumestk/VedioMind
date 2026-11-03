@@ -20,14 +20,27 @@ public class VideoAgentEvidenceService {
 
     public EvidenceBundle retrieve(VideoKnowledgeIndexService.IndexSnapshot index,
                                    String query, Runnable beforeEmbedding) {
-        var hits = retriever.searchMultimodal(index, query, beforeEmbedding);
-        var candidates = contextService.expand(index.context(), hits, true);
-        // Three subtasks share at most half the input budget; the rest is for drafts and review instructions.
-        var evidence = contextService.select(candidates, budget.inputLimit() / 6, 80, 20);
-        if (!candidates.isEmpty() && evidence.isEmpty()) {
+        return retrieve(index, query, beforeEmbedding, null);
+    }
+
+    public EvidenceBundle retrieve(VideoKnowledgeIndexService.IndexSnapshot index, String query,
+                                   Runnable beforeEmbedding, java.time.Instant deadline) {
+        var hits = deadline == null ? retriever.searchMultimodal(index, query, beforeEmbedding)
+                : retriever.searchMultimodal(index, query, beforeEmbedding, deadline);
+        var windows = hits.stream().map(hit -> contextService.windows(query,
+                contextService.expand(index.context(), List.of(hit), true))).toList();
+        // Notes-first has no executor drafts to reserve half the input for. Keep space for the actual prompt.
+        var allocations = contextService.allocate(windows, Math.max(1024, budget.inputLimit() - 2048),
+                hits.stream().<java.util.function.Predicate<List<VideoAgentCitation>>>map(hit -> values -> true).toList());
+        var unique = new java.util.LinkedHashMap<String, VideoAgentCitation>();
+        int longest = allocations.stream().mapToInt(List::size).max().orElse(0);
+        for (int offset = 0; offset < longest; offset++) for (var allocation : allocations) {
+            if (offset < allocation.size()) unique.putIfAbsent(allocation.get(offset).ref(), allocation.get(offset));
+        }
+        if (!hits.isEmpty() && unique.isEmpty()) {
             throw new AiPromptBudget.PromptBudgetExceededException("No complete Agent evidence fits the input budget");
         }
-        return new EvidenceBundle(hits, evidence);
+        return new EvidenceBundle(hits, List.copyOf(unique.values()));
     }
 
     public record EvidenceBundle(List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits,

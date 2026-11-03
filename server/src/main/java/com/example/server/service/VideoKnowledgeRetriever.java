@@ -60,13 +60,21 @@ public class VideoKnowledgeRetriever {
     public List<KnowledgeSearchHit> searchMultimodal(
             VideoKnowledgeIndexService.IndexSnapshot index, String query, Runnable beforeEmbedding
     ) {
+        return searchMultimodal(index, query, beforeEmbedding, null);
+    }
+
+    public List<KnowledgeSearchHit> searchMultimodal(VideoKnowledgeIndexService.IndexSnapshot index,
+            String query, Runnable beforeEmbedding, java.time.Instant deadline) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("Knowledge search query must not be empty");
         }
         long startedAt = System.nanoTime();
         String normalizedQuery = query.trim();
-        List<Double> queryVector = embeddingClient.embedQuery(query.trim(), beforeEmbedding);
-        CandidateSelection candidates = candidates(index, normalizedQuery, queryVector);
+        List<Double> queryVector = deadline == null ? embeddingClient.embedQuery(query.trim(), beforeEmbedding)
+                : embeddingClient.embedQuery(query.trim(), beforeEmbedding, deadline);
+        // Single-video learning has at most ~24 chunks: exact scan avoids an extra remote hop under its deadline.
+        CandidateSelection candidates = deadline == null ? candidates(index, normalizedQuery, queryVector)
+                : new CandidateSelection(index.chunks(), "bounded-single-video-exact");
         List<KnowledgeSearchHit> hits = candidates.chunks().stream()
                 .map(chunk -> hit(index.context(), normalizedQuery, queryVector, chunk))
                 .sorted(Comparator.comparingDouble(KnowledgeSearchHit::score).reversed()

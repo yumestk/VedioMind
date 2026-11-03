@@ -93,7 +93,7 @@ class VideoQuestionServiceTest {
     }
 
     @Test
-    void dropsNeighborsThenHistoryAndAgentContextBeforeCoreEvidence() {
+    void dropsOversizedEvidenceHistoryAndAgentContextBeforeGeneration() {
         AiPromptBudget budget = new AiPromptBudget(4000, 512);
         var bounded = new VideoQuestionService(chatClient, budget);
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
@@ -168,7 +168,7 @@ class VideoQuestionServiceTest {
     void preservesTheLatestTurnWhenPackingRetrievedEvidenceForAPronounFollowUp() {
         var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
         var evidence = new java.util.ArrayList<VideoEvidenceContextService.Candidate>();
-        for (int i = 11; i < 30; i++) evidence.add(candidate(i, "完整相关字幕".repeat(30), true, 0));
+        for (int i = 11; i < 30; i++) evidence.add(timedCandidate(i, "完整相关字幕".repeat(30), true, i * 60_000L));
         var history = List.of(new DeepSeekMessage("user", "有哪些方向？"),
                 new DeepSeekMessage("assistant", "第一个是部署工程师，第二个是解决方案架构师。"));
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
@@ -178,6 +178,56 @@ class VideoQuestionServiceTest {
             return chat("{\"answer\":\"第二个方向的解释\",\"segmentIds\":[11]}");
         });
         bounded.answer("第二个具体是什么意思？", evidence, history, "");
+    }
+
+    @Test
+    void packsTheWholeListEvenWhenItsContinuationHasLowRetrievalPriority() {
+        var evidence = new java.util.ArrayList<VideoEvidenceContextService.Candidate>();
+        evidence.add(timedCandidate(11, "必须说明现在做什么", true, 1_000));
+        for (int i = 20; i < 40; i++) evidence.add(timedCandidate(i, "其他话题字幕".repeat(50), true, i * 60_000L));
+        evidence.add(timedCandidate(12, "已经做到什么进度", true, 2_000));
+        evidence.add(timedCandidate(13, "今天计划做什么", true, 3_000));
+        evidence.add(timedCandidate(14, "接下来的计划是什么", true, 4_000));
+        assertWindowRetained(evidence, "现在做什么", "做到什么进度", "今天计划", "接下来的计划");
+    }
+
+    @Test
+    void reservesAdjacentConditionsBeforeUnrelatedCoreEvidence() {
+        var evidence = new java.util.ArrayList<VideoEvidenceContextService.Candidate>();
+        evidence.add(timedCandidate(11, "专家反对也可以追求", true, 1_000));
+        for (int i = 20; i < 40; i++) evidence.add(timedCandidate(i, "其他话题字幕".repeat(50), true, i * 60_000L));
+        evidence.add(timedCandidate(12, "前提是有连贯的世界观", false, 2_000));
+        assertWindowRetained(evidence, "专家反对", "连贯的世界观");
+    }
+
+    @Test
+    void skipsAnOversizedWindowAsAWholeInsteadOfSendingAnIncompleteList() {
+        var evidence = List.of(timedCandidate(11, "第一项".repeat(220), true, 1_000),
+                timedCandidate(12, "第二项".repeat(220), true, 2_000),
+                timedCandidate(13, "独立完整证据", true, 90_000));
+        when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
+            List<DeepSeekMessage> sent = call.getArgument(1);
+            assertThat(sent.getLast().content()).contains("独立完整证据").doesNotContain("第一项", "第二项");
+            return chat("{\"answer\":\"回答\",\"segmentIds\":[13]}");
+        });
+        new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512))
+                .answer("问题", evidence, List.of(), "");
+    }
+
+    private void assertWindowRetained(List<VideoEvidenceContextService.Candidate> evidence, String... expected) {
+        var budget = new AiPromptBudget(4000, 512);
+        when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
+            List<DeepSeekMessage> sent = call.getArgument(1);
+            assertThat(sent.getLast().content()).contains(expected);
+            assertThat(budget.fits(call.getArgument(0), sent)).isTrue();
+            return chat("{\"answer\":\"回答\",\"segmentIds\":[11,12]}");
+        });
+        new VideoQuestionService(chatClient, budget).answer("问题", evidence, List.of(), "");
+    }
+
+    private VideoEvidenceContextService.Candidate timedCandidate(long id, String text, boolean core, long start) {
+        return new VideoEvidenceContextService.Candidate(new VideoAgentCitation("TRANSCRIPT:" + id,
+                "TRANSCRIPT", id, start, start + 1_000, text), core, 0);
     }
 
     private VideoEvidenceContextService.Candidate candidate(long id, String text, boolean core, long distance) {

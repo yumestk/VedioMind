@@ -8,6 +8,7 @@
       :analysis-mode="analysisMode"
       :busy="submitting"
       @seek="$emit('seek', $event)"
+      @followup="submitFollowup"
     />
 
     <form v-if="hasTranscript" class="assistant-composer" @submit.prevent="submit">
@@ -106,13 +107,20 @@ const retryIndex = async () => {
 onUnmounted(stopIndexPolling)
 const isStudyMode = computed(() => props.analysisMode === 'STUDY')
 const placeholder = computed(() => isStudyMode.value
-  ? '向视频提问，或让我整理整节课并生成自测题'
+  ? '输入学习主题，我会整理简明笔记；自测题可按需生成'
   : '例如：视频如何解释这个问题？有哪些具体建议？')
 const modeHint = computed(() => ({
   AUTO: '自动判断快速回答或深度任务',
   QUICK: '基于视频字幕回答，并提供时间引用',
-  DEEP: '规划、检索、校验并生成学习产物'
+  DEEP: '依据视频原文整理简明笔记，按缺口补充'
 })[requestedMode.value])
+
+const submitFollowup = goal => {
+  if (submitting.value) return
+  content.value = goal
+  requestedMode.value = 'DEEP'
+  return submit()
+}
 
 const submit = async () => {
   const value = content.value.trim()

@@ -204,7 +204,7 @@ public class VideoConversationStore {
                 .filter(Objects::nonNull)
                 .map(agentRunMapper::selectById)
                 .filter(Objects::nonNull)
-                .filter(run -> "SUCCEEDED".equals(run.getStatus()))
+                .filter(run -> "SUCCEEDED".equals(run.getStatus()) || "PARTIAL".equals(run.getStatus()))
                 .findFirst();
     }
 

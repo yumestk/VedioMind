@@ -22,9 +22,9 @@ import java.util.Optional;
 @Service
 public class VideoAgentRunService {
 
-    public static final int MAX_GENERATION_CALLS = 9;
+    public static final int MAX_GENERATION_CALLS = 3;
     public static final int MAX_RETRIEVAL_CALLS = 6;
-    private static final List<String> TERMINAL = List.of("SUCCEEDED", "FAILED");
+    private static final List<String> TERMINAL = List.of("SUCCEEDED", "PARTIAL", "FAILED");
 
     private final VideoAgentRunMapper runMapper;
     private final VideoAgentStepMapper stepMapper;
@@ -110,7 +110,7 @@ public class VideoAgentRunService {
                 .set(VideoAgentRun::getUpdatedAt, now);
         if (run.getStartedAt() == null) {
             update.set(VideoAgentRun::getStartedAt, now)
-                    .set(VideoAgentRun::getDeadlineAt, now.plusMinutes(10));
+                    .set(VideoAgentRun::getDeadlineAt, now.plusSeconds(120));
         }
         return runMapper.update(null, update) == 1;
     }
@@ -134,7 +134,7 @@ public class VideoAgentRunService {
                 .setSql("generation_calls = generation_calls + 1")
                 .set(VideoAgentRun::getUpdatedAt, LocalDateTime.now()));
         if (updated != 1) {
-            throw new IllegalStateException("Agent generation call budget exhausted");
+            throw new com.example.server.service.ai.AiPromptBudget.PromptBudgetExceededException("Agent generation call budget exhausted");
         }
     }
 
@@ -147,7 +147,7 @@ public class VideoAgentRunService {
                 .setSql("retrieval_calls = retrieval_calls + 1")
                 .set(VideoAgentRun::getUpdatedAt, LocalDateTime.now()));
         if (updated != 1) {
-            throw new IllegalStateException("Agent retrieval call budget exhausted");
+            throw new com.example.server.service.ai.AiPromptBudget.PromptBudgetExceededException("Agent retrieval call budget exhausted");
         }
     }
 
@@ -203,6 +203,32 @@ public class VideoAgentRunService {
         }
     }
 
+    public java.time.Instant requestDeadline(String runId) {
+        ensureWithinDeadline(runId);
+        // Leave time for validation and persistence rather than letting HTTP consume all 120 seconds.
+        return getRequired(runId).getDeadlineAt().minusSeconds(2)
+                .atZone(java.time.ZoneId.systemDefault()).toInstant();
+    }
+
+    public void saveUsableResult(String runId, VideoAgentResult result, List<VideoAgentCitation> citations) {
+        runMapper.update(null, new LambdaUpdateWrapper<VideoAgentRun>()
+                .eq(VideoAgentRun::getId, runId).notIn(VideoAgentRun::getStatus, TERMINAL)
+                .set(VideoAgentRun::getResultJson, JSON.toJSONString(result))
+                .set(VideoAgentRun::getCitationsJson, JSON.toJSONString(citations))
+                .set(VideoAgentRun::getUpdatedAt, LocalDateTime.now()));
+    }
+
+    public void finishStopped(String runId, String reason) {
+        VideoAgentRun run = getRequired(runId);
+        LocalDateTime now = LocalDateTime.now();
+        runMapper.update(null, new LambdaUpdateWrapper<VideoAgentRun>()
+                .eq(VideoAgentRun::getId, runId).notIn(VideoAgentRun::getStatus, TERMINAL)
+                .set(VideoAgentRun::getStatus, run.getResultJson() == null ? "FAILED" : "PARTIAL")
+                .set(VideoAgentRun::getErrorMessage, reason == null ? "Task stopped" : reason.substring(0, Math.min(2000, reason.length())))
+                .set(VideoAgentRun::getProgress, 100).set(VideoAgentRun::getNextAttemptAt, null)
+                .set(VideoAgentRun::getFinishedAt, now).set(VideoAgentRun::getUpdatedAt, now));
+    }
+
     public void markSucceeded(
             String runId,
             VideoAgentResult result,
@@ -225,7 +251,7 @@ public class VideoAgentRunService {
     private void ensureWithinDeadline(String runId) {
         VideoAgentRun run = getRequired(runId);
         if (run.getDeadlineAt() != null && LocalDateTime.now().isAfter(run.getDeadlineAt())) {
-            throw new IllegalStateException("Agent run exceeded its 10 minute deadline");
+            throw new com.example.server.service.ai.AiPromptBudget.PromptBudgetExceededException("Agent run exceeded its 120 second deadline");
         }
     }
 

@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
@@ -41,10 +42,16 @@ public class AiRetryExecutor {
         return execute(provider, () -> {}, operation);
     }
 
-    public <T> T execute(String provider, Runnable beforeFirstAttempt, Supplier<T> operation) {
+    public <T> T execute(String provider, Runnable beforeAttempt, Supplier<T> operation) {
+        return execute(provider, beforeAttempt, operation, null);
+    }
+
+    public <T> T execute(String provider, Runnable beforeAttempt, Supplier<T> operation, Instant deadline) {
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            remainingMillis(deadline);
             rateLimitService.requireProviderRequest(provider);
-            if (attempt == 1) beforeFirstAttempt.run();
+            remainingMillis(deadline);
+            beforeAttempt.run();
             try {
                 return operation.get();
             } catch (AiProviderException exception) {
@@ -54,10 +61,21 @@ public class AiRetryExecutor {
                 long delayMillis = retryDelayMillis(exception, attempt);
                 log.warn("AI provider {} failed on attempt {}/{}; retrying in {} ms: {}",
                         provider, attempt, MAX_ATTEMPTS, delayMillis, exception.getMessage());
+                if (deadline != null && delayMillis >= remainingMillis(deadline)) {
+                    throw new AiPromptBudget.PromptBudgetExceededException("Task deadline leaves no time for another attempt");
+                }
                 sleeper.accept(Duration.ofMillis(delayMillis));
             }
         }
         throw new IllegalStateException("Unreachable AI retry state");
+    }
+
+    public static long remainingMillis(Instant deadline) {
+        if (Thread.currentThread().isInterrupted()) throw new AiPromptBudget.PromptBudgetExceededException("Task interrupted");
+        if (deadline == null) return 300_000;
+        long remaining = Duration.between(Instant.now(), deadline).toMillis();
+        if (remaining <= 0) throw new AiPromptBudget.PromptBudgetExceededException("Task execution deadline exceeded");
+        return remaining;
     }
 
     private long retryDelayMillis(AiProviderException exception, int attempt) {

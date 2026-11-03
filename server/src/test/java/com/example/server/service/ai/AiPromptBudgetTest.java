@@ -9,6 +9,22 @@ import static org.assertj.core.api.Assertions.*;
 
 class AiPromptBudgetTest {
     @Test
+    void productionDefaultsReserve8192OutputWithinTheMeasured64kContextAndRemainConfigurable() {
+        try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.register(AiPromptBudget.class); context.refresh();
+            assertThat(context.getBean(AiPromptBudget.class).inputLimit()).isEqualTo(55296);
+            assertThat(context.getBean(AiPromptBudget.class).outputTokens()).isEqualTo(8192);
+        }
+        try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.getEnvironment().getPropertySources().addFirst(new org.springframework.core.env.MapPropertySource("test",
+                    java.util.Map.of("ai.context.max-estimated-context-tokens","48000","ai.context.max-output-tokens","4096")));
+            context.register(AiPromptBudget.class); context.refresh();
+            assertThat(context.getBean(AiPromptBudget.class).inputLimit()).isEqualTo(48000-4096-512);
+            assertThat(context.getBean(AiPromptBudget.class).outputTokens()).isEqualTo(4096);
+        }
+    }
+
+    @Test
     void reservesOutputAndSafetyAndCountsAllMessagesAndFormatting() {
         var budget = new AiPromptBudget(4000, 512);
         var messages = List.of(new DeepSeekMessage("user", "问题"), new DeepSeekMessage("assistant", "回答"));
