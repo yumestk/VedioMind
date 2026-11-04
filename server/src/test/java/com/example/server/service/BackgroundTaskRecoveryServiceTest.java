@@ -51,6 +51,7 @@ class BackgroundTaskRecoveryServiceTest {
     private final Clock clock = mock(Clock.class);
     private JdbcTemplate jdbc;
     private BackgroundTaskRecoveryService service;
+    private StudyRunControl agentControl;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -60,11 +61,14 @@ class BackgroundTaskRecoveryServiceTest {
         for (var type : BackgroundTaskRecoveryService.TaskType.values()) {
             jdbc.execute("CREATE TABLE " + type.table + " (id VARCHAR(36) PRIMARY KEY, media_id BIGINT, "
                     + "status VARCHAR(24), progress INT DEFAULT 0, retry_count INT DEFAULT 0, "
-                    + "result_json VARCHAR(20000), error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP)");
+                    + "result_json VARCHAR(20000), error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP,execution_epoch BIGINT DEFAULT 0,phase VARCHAR(40),stop_code VARCHAR(64),active_limit_ms BIGINT DEFAULT 120000,active_remaining_ms BIGINT DEFAULT 120000,active_started_at TIMESTAMP,waiting_ms BIGINT DEFAULT 0,wait_started_at TIMESTAMP,event_sequence BIGINT DEFAULT 0,learner_id BIGINT,prepared_task VARCHAR(10000))");
         }
         new ResourceDatabasePopulator(new ClassPathResource(
                 "db/migration/V16__separate_quota_wait_from_failure_retries.sql"), new ClassPathResource(
                 "db/migration/V17__add_knowledge_index_jobs.sql")).execute(source);
+        jdbc.execute("CREATE TABLE ai_call_attempts (id VARCHAR(36),run_id VARCHAR(36),status VARCHAR(24),error_code VARCHAR(64),finished_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE study_run_events(run_id VARCHAR(36),sequence_no BIGINT,execution_epoch BIGINT,event_type VARCHAR(40),payload VARCHAR(2000),created_at TIMESTAMP)");
+        agentControl=new StudyRunControl(jdbc,new org.springframework.jdbc.datasource.DataSourceTransactionManager(source),mock(StudyTaskPreparationService.class),clock);
         when(clock.getZone()).thenReturn(ZoneOffset.UTC);
         when(clock.instant()).thenAnswer(call -> instant.get());
         var locks = new ConcurrentHashMap<String, RLock>();
@@ -81,7 +85,7 @@ class BackgroundTaskRecoveryServiceTest {
         SendResult sent = new SendResult();
         sent.setSendStatus(SendStatus.SEND_OK);
         when(messages.syncSend(anyString(), any(Message.class), eq(5000L), anyInt())).thenReturn(sent);
-        service = new BackgroundTaskRecoveryService(jdbc, redisson, messages, 30, clock);
+        service = new BackgroundTaskRecoveryService(jdbc, redisson, messages, 30, clock, agentControl);
     }
 
     @ParameterizedTest
@@ -200,7 +204,7 @@ class BackgroundTaskRecoveryServiceTest {
         var template = new RocketMQTemplate();
         template.setProducer(producer);
         template.setMessageConverter(new org.apache.rocketmq.spring.support.RocketMQMessageConverter().getMessageConverter());
-        var actual = new BackgroundTaskRecoveryService(jdbc, redisson, template, 30, clock);
+        var actual = new BackgroundTaskRecoveryService(jdbc, redisson, template, 30, clock, agentControl);
         insert(type);
 
         actual.execute(type, "task-1", 0, failures -> { throw limited(); });
@@ -233,7 +237,7 @@ class BackgroundTaskRecoveryServiceTest {
         service.execute(ANALYSIS, "task-1", 0, failures -> { throw limited(); });
         assertThat(value(ANALYSIS, "status")).isEqualTo("WAITING_FOR_QUOTA");
         advance(91);
-        var restarted = new BackgroundTaskRecoveryService(jdbc, redisson, messages, 30, clock);
+        var restarted = new BackgroundTaskRecoveryService(jdbc, redisson, messages, 30, clock, agentControl);
         restarted.recoverDueTasks();
         verify(messages).syncSend(eq("video-analysis-topic"), argThat((Message<?> message) ->
                 "1".equals(message.getHeaders().get(BackgroundTaskRecoveryService.VERSION_HEADER))), eq(5000L), eq(0));
@@ -336,8 +340,8 @@ class BackgroundTaskRecoveryServiceTest {
                     .setConnectionMinimumIdleSize(1).setConnectionPoolSize(2);
             firstClient = Redisson.create(config);
             secondClient = Redisson.create(config);
-            var firstService = new BackgroundTaskRecoveryService(jdbc, firstClient, messages, 30, clock);
-            var secondService = new BackgroundTaskRecoveryService(jdbc, secondClient, messages, 30, clock);
+            var firstService = new BackgroundTaskRecoveryService(jdbc, firstClient, messages, 30, clock, agentControl);
+            var secondService = new BackgroundTaskRecoveryService(jdbc, secondClient, messages, 30, clock, agentControl);
             insert(ANALYSIS);
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch release = new CountDownLatch(1);
@@ -370,6 +374,7 @@ class BackgroundTaskRecoveryServiceTest {
     private void insert(BackgroundTaskRecoveryService.TaskType type) {
         jdbc.update("INSERT INTO " + type.table + " (id, media_id, status, progress, updated_at) VALUES (?, ?, ?, ?, ?)",
                 "task-1", 42L, "QUEUED", 70, now());
+        if(type==AGENT)jdbc.update("UPDATE video_agent_runs SET deadline_at=?",now().plusMinutes(10));
     }
 
     private Object value(BackgroundTaskRecoveryService.TaskType type, String column) {

@@ -33,7 +33,7 @@ class AssistantDispatchServiceTest {
             conversationService,
             agentSubmissionService,
             agentRunService,
-            rateLimitService, tasks
+            rateLimitService, tasks, mock(com.example.server.service.ai.AiCallLedger.class)
     );
 
     @org.junit.jupiter.api.BeforeEach void preparedTask() {

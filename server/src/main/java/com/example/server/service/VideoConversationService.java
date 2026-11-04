@@ -33,6 +33,7 @@ public class VideoConversationService {
     static final int MAX_PREVIOUS_TURN_RETRIEVAL_CHARACTERS = 600;
 
     private final StudyTaskPreparationService tasks;
+    private final com.example.server.service.ai.AiCallLedger ledger;
     private final StudyEvidenceService studyEvidence;
     private final KnowledgeIndexPreparationService indexPreparation;
     private final VideoConversationStore store;
@@ -49,9 +50,9 @@ public class VideoConversationService {
             VideoKnowledgeRetriever knowledgeRetriever,
             RedissonClient redissonClient,
             VideoEvidenceContextService evidenceContextService,
-            KnowledgeIndexPreparationService indexPreparation, StudyTaskPreparationService tasks, StudyEvidenceService studyEvidence
+            KnowledgeIndexPreparationService indexPreparation, StudyTaskPreparationService tasks, StudyEvidenceService studyEvidence, com.example.server.service.ai.AiCallLedger ledger
     ) {
-        this.tasks = tasks; this.studyEvidence = studyEvidence;
+        this.tasks = tasks; this.studyEvidence = studyEvidence;this.ledger=ledger;
         this.indexPreparation = indexPreparation;
         this.store = store;
         this.mediaService = mediaService;
@@ -90,6 +91,9 @@ public class VideoConversationService {
     }
 
     public ConversationTurnResponse askPrepared(com.example.server.dto.PreparedStudyTask task) {
+        try(var context=ledger.open(task)) {return askWithinRequest(task);}
+    }
+    private ConversationTurnResponse askWithinRequest(com.example.server.dto.PreparedStudyTask task) {
         Long mediaId = task.anchorMediaId(), conversationId = task.conversationId(), userId = task.learnerId();
         String normalizedQuestion = normalizeQuestion(task.goal());
         var owned = requireConversationForMedia(mediaId, conversationId, userId);

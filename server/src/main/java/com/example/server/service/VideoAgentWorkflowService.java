@@ -10,6 +10,9 @@ import com.example.server.service.ai.AiPromptBudget;
 import com.example.server.service.ai.impl.DeepSeekChatClient;
 import com.example.server.service.ai.impl.DeepSeekMessage;
 import org.springframework.stereotype.Service;
+import com.example.server.dto.PreparedStudyTask;
+import com.example.server.service.ai.StudyExecutionContext;
+import com.example.server.service.ai.StudyExecutionContext.GovernanceException;
 
 import java.util.*;
 
@@ -51,18 +54,21 @@ public class VideoAgentWorkflowService {
         this.budget = budget;
     }
 
-    public void process(String runId, int retryCount) {
-        if (!runService.beginAttempt(runId, retryCount)) return;
-        try {
-            execute(runService.getRequired(runId));
-        } catch (RuntimeException error) {
-            VideoAgentRun run = runService.getRequired(runId);
-            if (run.getResultJson() != null || error instanceof IllegalArgumentException
-                    || run.getGenerationCalls() >= VideoAgentRunService.MAX_GENERATION_CALLS
-                    || run.getRetrievalCalls() >= VideoAgentRunService.MAX_RETRIEVAL_CALLS) {
-                runService.finishStopped(runId, error.getMessage());
-            } else {
-                throw error; // Durable recovery keeps the original deadline and cumulative counters.
+    public void process(String runId, long dispatchVersion) {
+        var lease=runService.beginAttempt(runId,dispatchVersion);
+        if(lease.isEmpty())return;
+        var initial=runService.getRequired(runId);
+        try(var scope=StudyExecutionContext.open(JSON.parseObject(initial.getPreparedTask(),PreparedStudyTask.class),runId,lease.getAsLong())) {
+            try { execute(initial); }
+            catch(com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException waiting) {throw waiting;}
+            catch(GovernanceException stopped) {runService.finishStopped(runId,stopped.code(),stopped.getMessage());}
+            catch(RuntimeException error) {
+                VideoAgentRun run=runService.getRequired(runId);
+                if(run.getResultJson()!=null || error instanceof IllegalArgumentException || error instanceof NoSuchElementException
+                        || run.getGenerationCalls()>=VideoAgentRunService.MAX_GENERATION_CALLS
+                        || run.getRetrievalCalls()>=VideoAgentRunService.MAX_RETRIEVAL_CALLS)
+                    runService.finishStopped(runId,(error instanceof StudyTaskPreparationService.SourceChangedException || error instanceof NoSuchElementException)?"TASK_RESOURCE_CHANGED":"TASK_STOPPED",error.getMessage());
+                else throw error;
             }
         }
     }
@@ -87,8 +93,10 @@ public class VideoAgentWorkflowService {
                 if (cached != null) bundle = JSON.parseObject(cached, VideoAgentEvidenceService.EvidenceBundle.class);
                 else {
                     runService.markStage(id, "RETRIEVING", round == 0 ? 15 : 65);
-                    bundle = evidenceService.retrieve(index, queries.get(query),
-                            () -> runService.reserveRetrievalCall(id), runService.requestDeadline(id));
+                    try(var purpose=StudyExecutionContext.purpose("RETRIEVAL:"+round+":"+query)) {
+                        bundle = evidenceService.retrieve(index, queries.get(query),
+                                () -> runService.checkExecution(id), runService.requestDeadline(id));
+                    }
                     // Persist before generation: a failed model call never destroys the retrieval snapshot.
                     runService.saveCompletedStep(id, stage, round, queries.get(query), bundle);
                 }
@@ -128,14 +136,11 @@ public class VideoAgentWorkflowService {
                     + (current == null ? "" : "\n当前可用笔记（只按具体缺口补充，保留已有正确内容）：\n" + JSON.toJSONString(current))
                     + repair;
             Input input = input(prefix, evidence, current);
-            var response = chatClient.chatWithinBudget(NOTES_PROMPT, List.of(new DeepSeekMessage("user", input.prompt())),
-                    () -> runService.reserveGenerationCall(run.getId()), runService.requestDeadline(run.getId()), observed -> {
-                        int number = runService.getRequired(run.getId()).getGenerationCalls();
-                        runService.saveCompletedStep(run.getId(), "GENERATION_ATTEMPT", number,
-                                Map.of("round", round, "system", NOTES_PROMPT, "prompt", input.prompt(), "refs", input.refs(), "estimatedInputTokens", budget.estimate(NOTES_PROMPT,
-                                        List.of(new DeepSeekMessage("user", input.prompt())))), observed);
-                        runService.addTokens(run.getId(), observed.inputTokens(), observed.outputTokens());
-                    });
+            DeepSeekChatClient.ChatResult response;
+            try(var purpose=StudyExecutionContext.purpose("NOTES:"+round+":"+attempt)) {
+                response=chatClient.chatWithinBudget(NOTES_PROMPT,List.of(new DeepSeekMessage("user",input.prompt())),
+                        ()->runService.checkExecution(run.getId()),runService.requestDeadline(run.getId()));
+            }
             try {
                 VideoAgentResult result = parseObject(response.content(), "Notes").toJavaObject(VideoAgentResult.class);
                 if (result != null && result.knowledgePoints().isEmpty() && !result.gaps().isEmpty()) return result;

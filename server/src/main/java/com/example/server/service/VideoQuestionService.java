@@ -206,7 +206,9 @@ public class VideoQuestionService {
             String agentContext, boolean retrieval) {
         String frozen = JSON.toJSONString(task);
         var aux = fullContext(task.goal(), evidence, history, agentContext, frozen);
-        return answer(task.goal(), evidence, aux.history(), aux.agentContext(), retrieval, frozen, () -> tasks.assertCurrent(task));
+        try(var purpose=com.example.server.service.ai.StudyExecutionContext.purposeIfPresent("ANSWER")) {
+            return answer(task.goal(), evidence, aux.history(), aux.agentContext(), retrieval, frozen, () -> tasks.assertCurrent(task));
+        }
     }
 
     private List<DeepSeekMessage> messages(String question, List<VideoEvidenceContextService.Candidate> evidence,

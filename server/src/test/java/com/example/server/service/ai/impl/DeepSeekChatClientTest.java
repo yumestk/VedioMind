@@ -32,6 +32,19 @@ class DeepSeekChatClientTest {
         assertThat(DeepSeekChatClient.parseRetryAfterMillis("invalid", now)).isZero();
     }
 
+    private com.example.server.service.ai.AiCallLedger transportLedger() throws Exception {
+        var ledger=mock(com.example.server.service.ai.AiCallLedger.class);
+        when(ledger.bind(any())).thenReturn(()->{});
+        when(ledger.exchange(anyString(),anyString(),any(),any(),any(),any())).thenAnswer(c -> {
+            rates.requireProviderRequest(c.getArgument(0));
+            ((Runnable)c.getArgument(3)).run();
+            Instant deadline=c.getArgument(4);
+            try{return ((com.example.server.service.ai.AiCallLedger.Transport)c.getArgument(5)).send(deadline);}
+            catch(java.io.IOException unknown){throw new com.example.server.service.ai.StudyExecutionContext.GovernanceException("MODEL_OUTCOME_UNKNOWN","unknown");}
+        });
+        return ledger;
+    }
+
     private HttpServer server;
     private final AtomicInteger requests = new AtomicInteger();
     private final AtomicReference<JSONObject> sent = new AtomicReference<>();
@@ -81,19 +94,6 @@ class DeepSeekChatClientTest {
     }
 
     @Test
-    void truncatedResponsePreservesRawReasoningUsageAndFinishReason() throws Exception {
-        var client = client("length");
-        var observed = new AtomicReference<DeepSeekChatClient.ChatAttempt>();
-        assertThatThrownBy(() -> client.chatWithinBudget("system", List.of(new DeepSeekMessage("user","q")),
-                () -> {}, Instant.now().plusSeconds(1), observed::set))
-                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
-        assertThat(observed.get().rawResponse()).contains("reasoning_content");
-        assertThat(observed.get().reasoningContent()).isEqualTo("reasoning");
-        assertThat(observed.get().finishReason()).isEqualTo("length");
-        assertThat(observed.get().outputTokens()).isEqualTo(20);
-    }
-
-    @Test
     void httpCallCannotOverrunTheSharedDeadlineOrStartAnotherAttempt() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/chat/completions", exchange -> {
@@ -103,15 +103,13 @@ class DeepSeekChatClientTest {
         });
         server.start();
         var client = new DeepSeekChatClient("test-key","http://127.0.0.1:"+server.getAddress().getPort(),
-                new AiRetryExecutor(rates),new AiPromptBudget(4000,512));
-        var observed = new AtomicReference<DeepSeekChatClient.ChatAttempt>();
+                transportLedger(),new AiPromptBudget(4000,512));
         long start=System.nanoTime();
         assertThatThrownBy(() -> client.chatWithinBudget("system",List.of(new DeepSeekMessage("user","q")),
-                () -> {},Instant.now().plusMillis(100),observed::set))
-                .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+                () -> {},Instant.now().plusMillis(100)))
+                .isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
         assertThat((System.nanoTime()-start)/1_000_000).isLessThan(450);
         assertThat(requests).hasValue(1);
-        assertThat(observed.get().inputTokens()).isNull();
     }
 
     private DeepSeekChatClient client(String finishReason) throws Exception {
@@ -128,6 +126,6 @@ class DeepSeekChatClientTest {
         });
         server.start();
         return new DeepSeekChatClient("test-key", "http://127.0.0.1:" + server.getAddress().getPort(),
-                new AiRetryExecutor(rates), new AiPromptBudget(4000, 512));
+                transportLedger(), new AiPromptBudget(4000, 512));
     }
 }

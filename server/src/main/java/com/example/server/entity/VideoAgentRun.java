@@ -12,6 +12,18 @@ public class VideoAgentRun {
 
     @TableId
     private String id;
+    private String requestId;
+    private Long executionEpoch;
+    private String phase;
+    private String stopCode;
+    private Long activeLimitMs;
+    private Long activeRemainingMs;
+    private LocalDateTime activeStartedAt;
+    private Long waitingMs;
+    private LocalDateTime waitStartedAt;
+    private Long eventSequence;
+    private Long accountedTokens;
+    private Integer unknownCalls;
     private Long mediaId;
     private Long learnerId;
     private Long courseId;

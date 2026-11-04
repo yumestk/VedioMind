@@ -28,7 +28,7 @@ class VideoAgentRunServiceTest {
     private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
     private final VideoConversationStore conversationStore = mock(VideoConversationStore.class);
     private final VideoAgentRunService service = new VideoAgentRunService(
-            runMapper, stepMapper, mediaFileMapper, conversationStore, mock(StudyAccessService.class),mock(StudyTaskPreparationService.class)
+            runMapper, stepMapper, mediaFileMapper, conversationStore, mock(StudyAccessService.class),mock(StudyTaskPreparationService.class),mock(StudyRunControl.class),mock(com.example.server.service.ai.AiCallLedger.class)
     );
 
     @Test

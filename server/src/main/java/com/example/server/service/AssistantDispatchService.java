@@ -17,6 +17,7 @@ public class AssistantDispatchService {
     private final VideoAgentSubmissionService agentSubmissionService;
     private final VideoAgentRunService agentRunService;
     private final AiRateLimitService rateLimitService;
+    private final com.example.server.service.ai.AiCallLedger ledger;
 
     public AssistantDispatchService(
             MediaService mediaService,
@@ -24,9 +25,9 @@ public class AssistantDispatchService {
             VideoConversationService conversationService,
             VideoAgentSubmissionService agentSubmissionService,
             VideoAgentRunService agentRunService,
-            AiRateLimitService rateLimitService, StudyTaskPreparationService tasks
+            AiRateLimitService rateLimitService, StudyTaskPreparationService tasks, com.example.server.service.ai.AiCallLedger ledger
     ) {
-        this.tasks = tasks;
+        this.tasks = tasks;this.ledger=ledger;
         this.mediaService = mediaService;
         this.modeRouter = modeRouter;
         this.conversationService = conversationService;
@@ -54,6 +55,7 @@ public class AssistantDispatchService {
                     null, "NEEDS_INPUT", null);
         }
         rateLimitService.requireRequest(userId);
+        try(var context=ledger.open(task)) {
         boolean followingAgentRun = conversation != null
                 && conversationService.hasCompletedAgentRun(conversation.id());
         AssistantModeRouter.Decision decision = modeRouter.route(
@@ -79,6 +81,7 @@ public class AssistantDispatchService {
         return new AssistantDispatchResponse(
                 decision.mode(), decision.routedBy(), decision.reason(), conversation,
                 conversationService.messages(conversation.id(), userId), "READY", task.inConversation(conversation.id()));
+        }
     }
 
     private String normalizeContent(String content) {

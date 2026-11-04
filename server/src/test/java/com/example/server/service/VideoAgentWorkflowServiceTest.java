@@ -27,7 +27,8 @@ class VideoAgentWorkflowServiceTest {
     @BeforeEach void prepare() {
         run.setId("r"); run.setMediaId(34L); run.setGoal("学习图同构"); run.setContextVersion("v1");
         run.setGenerationCalls(0); run.setRetrievalCalls(0);
-        when(runs.beginAttempt(eq("r"),anyInt())).thenReturn(true);
+        when(runs.beginAttempt(eq("r"),anyLong())).thenReturn(OptionalLong.of(1));
+        run.setPreparedTask(JSON.toJSONString(StudyTaskFixtures.video(34L,2L,7L,null,run.getGoal(),"v1")));
         when(runs.getRequired("r")).thenReturn(run);
         when(runs.requestDeadline("r")).thenReturn(deadline);
         when(indexes.requireReady(34L)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(
@@ -38,16 +39,16 @@ class VideoAgentWorkflowServiceTest {
         doAnswer(c -> {run.setResultJson(JSON.toJSONString(c.getArgument(1))); return null;})
                 .when(runs).saveUsableResult(anyString(),any(),any());
         when(evidence.retrieve(any(),anyString(),any(),any())).thenReturn(bundle(1));
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of())));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenReturn(answer(notes(List.of())));
     }
     @Test void notesUseOneGenerationWithoutMandatoryPlannerOrQuiz() {
         workflow.process("r",0);
-        verify(chat).chatWithinBudget(anyString(),anyList(),any(),eq(deadline),any());
+        verify(chat).chatWithinBudget(anyString(),anyList(),any(),eq(deadline));
         verify(runs).markSucceeded(eq("r"),argThat(n -> n.quiz().isEmpty()),any());
         verify(runs).saveCompletedStep(eq("r"),eq("RETRIEVAL_0"),eq(0),any(),any());
     }
     @Test void snapshotsSurviveGenerationFailureAndAreReusedAfterRedelivery() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any()))
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any()))
                 .thenThrow(new com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException("quota",60))
                 .thenReturn(answer(notes(List.of())));
         assertThatThrownBy(() -> workflow.process("r",0)).hasMessage("quota");
@@ -57,30 +58,30 @@ class VideoAgentWorkflowServiceTest {
         verify(runs).markSucceeded(eq("r"),any(),any());
     }
     @Test void aFailedSupplementKeepsTheFirstValidatedNotes() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of("需查找复杂度条件"))))
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenReturn(answer(notes(List.of("需查找复杂度条件"))))
                 .thenThrow(new AiPromptBudget.PromptBudgetExceededException("deadline"));
         when(evidence.retrieve(any(),anyString(),any(),any())).thenReturn(bundle(1),bundle(2));
         workflow.process("r",0);
         assertThat(run.getResultJson()).contains("需查找复杂度条件");
-        verify(runs).finishStopped("r","deadline");
+        verify(runs).finishStopped("r","TASK_STOPPED","deadline");
         verify(runs,never()).markSucceeded(any(),any(),any());
     }
     @Test void gapRetrievalStopsWhenNoNewEvidenceAppears() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of("未解决条件"))));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenReturn(answer(notes(List.of("未解决条件"))));
         workflow.process("r",0);
-        verify(chat,times(1)).chatWithinBudget(anyString(),anyList(),any(),any(),any());
+        verify(chat,times(1)).chatWithinBudget(anyString(),anyList(),any(),any());
         verify(runs).finishStopped(eq("r"),contains("未找到新增原文"));
     }
     @Test void invalidReferencesNeverBecomeUsableNotes() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(notes(List.of()).replace("TRANSCRIPT:1","OCR:999")));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenReturn(answer(notes(List.of()).replace("TRANSCRIPT:1","OCR:999")));
         workflow.process("r",0);
         verify(runs,never()).saveUsableResult(any(),any(),any());
-        verify(runs).finishStopped(eq("r"),contains("引用有效"));
+        verify(runs).finishStopped(eq("r"),eq("TASK_STOPPED"),contains("引用有效"));
     }
     @Test void truncationWithoutEarlierNotesFailsAndIsNotAcceptedAsPartial() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenThrow(new AiPromptBudget.PromptBudgetExceededException("max-output-tokens"));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenThrow(new AiPromptBudget.PromptBudgetExceededException("max-output-tokens"));
         workflow.process("r",0);
-        verify(runs).finishStopped("r","max-output-tokens");
+        verify(runs).finishStopped("r","TASK_STOPPED","max-output-tokens");
         verify(runs,never()).saveUsableResult(any(),any(),any());
     }
     @Test void anExplicitRequestToOmitQuizKeepsConciseNotes() {
@@ -94,28 +95,17 @@ class VideoAgentWorkflowServiceTest {
         run.setGoal("生成3道自测题");
         var json=JSON.parseObject(notes(List.of()));
         json.put("quiz",List.of(Map.of("question","q","answer","a","evidenceRefs",List.of("TRANSCRIPT:1"))));
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenReturn(answer(json.toJSONString()));
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any())).thenReturn(answer(json.toJSONString()));
         workflow.process("r",0);
         verify(runs).markSucceeded(eq("r"),argThat(n -> n.quiz().size()==1),any());
     }
     @Test void absenceOfRelevantOriginalsDoesNotProduceFabricatedNotes() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any()))
+        when(chat.chatWithinBudget(anyString(),anyList(),any(),any()))
                 .thenReturn(answer("{\"title\":\"未找到\",\"coreConclusion\":\"待查\",\"knowledgePoints\":[],\"gaps\":[\"Kubernetes调度证明\"]}"));
         workflow.process("r",0);
         verify(evidence,times(2)).retrieve(any(),anyString(),any(),any());
         verify(runs,never()).saveUsableResult(any(),any(),any());
         verify(runs).finishStopped(any(),any());
-    }
-    @Test void responseDiagnosticsPersistUsageIncludingTruncation() {
-        when(chat.chatWithinBudget(anyString(),anyList(),any(),any(),any())).thenAnswer(c -> {
-            java.util.function.Consumer<DeepSeekChatClient.ChatAttempt> observer=c.getArgument(4);
-            run.setGenerationCalls(1);
-            observer.accept(new DeepSeekChatClient.ChatAttempt("raw","{","reason","length",123,8192,200,"truncated",20));
-            throw new AiPromptBudget.PromptBudgetExceededException("truncated");
-        });
-        workflow.process("r",0);
-        verify(runs).addTokens("r",123,8192);
-        assertThat(steps.get("GENERATION_ATTEMPT:1")).contains("reason","length","8192","raw");
     }
     @Test void completedNotesCanResumeWithoutRepeatingGeneration() {
         steps.put("RETRIEVAL_0:0",JSON.toJSONString(bundle(1))); steps.put("NOTES:0",notes(List.of()));

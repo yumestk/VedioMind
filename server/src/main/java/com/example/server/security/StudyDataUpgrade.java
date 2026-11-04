@@ -40,7 +40,7 @@ public final class StudyDataUpgrade {
                 throw new IllegalStateException("Another offline conversion is running");
             try {
                 for (String table : List.of("analysis_jobs", "video_agent_runs")) {
-                    if (jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE status NOT IN ('SUCCEEDED','PARTIAL','FAILED')", Integer.class) != 0)
+                    if (jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE status NOT IN "+com.example.server.entity.StudyRunStatus.TERMINAL_SQL, Integer.class) != 0)
                         throw new IllegalStateException("Stop and drain background tasks before conversion");
                 }
                 String version = jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=1 AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1", String.class);

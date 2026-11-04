@@ -41,6 +41,8 @@ public class AssistantController {
     ) {
         try {
             return dispatchService.dispatch(mediaId, userId, request);
+        } catch (com.example.server.service.ai.StudyExecutionContext.GovernanceException stopped) {
+            throw stopped;
         } catch (com.example.server.service.StudyTaskPreparationService.SourceChangedException exception) {
             throw exception;
         } catch (IllegalArgumentException exception) {
@@ -56,6 +58,11 @@ public class AssistantController {
         } catch (IllegalStateException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, exception.getMessage(), exception);
         }
+    }
+
+    @ExceptionHandler(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class)
+    public ProblemDetail governance(com.example.server.service.ai.StudyExecutionContext.GovernanceException stopped) {
+        var result=ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,stopped.getMessage());result.setProperty("code",stopped.code());return result;
     }
 
     @ExceptionHandler(com.example.server.service.StudyTaskPreparationService.SourceChangedException.class)

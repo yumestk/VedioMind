@@ -102,3 +102,6 @@ export const importMediaUrl = async (url) => {
 export const deleteMedia = async (mediaId) => {
   await http.delete(`/media/${mediaId}`)
 }
+
+export const cancelVideoAgentRun = async (runId) => (await http.post(`/agent-runs/${runId}/cancel`)).data
+export const getVideoAgentRunEvents = async (runId, after = 0) => (await http.get(`/agent-runs/${runId}/events`, { params: { after }, sessionActivity: false })).data

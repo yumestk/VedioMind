@@ -44,7 +44,7 @@ class StudyAuthorizationMySqlTest {
     @Configuration @EnableTransactionManagement
     @Import({StudyAccessService.class, CourseService.class, MediaService.class, VideoConversationStore.class,
             VideoConversationService.class, VideoAgentRunService.class, VideoAgentSubmissionService.class,
-            AssistantDispatchService.class, AssistantModeRouter.class, StudyTaskPreparationService.class, StudyEvidenceService.class})
+            AssistantDispatchService.class, AssistantModeRouter.class, StudyTaskPreparationService.class, StudyEvidenceService.class,StudyRunControl.class})
     static class Config {
         @Bean DataSource dataSource() {
             String url=System.getenv("STUDY_TEST_MYSQL_URL");
@@ -94,6 +94,7 @@ class StudyAuthorizationMySqlTest {
         @Bean VideoKnowledgeIndexService index() { return mock(VideoKnowledgeIndexService.class); }
         @Bean RocketMQTemplate messages() { return mock(RocketMQTemplate.class); }
         @Bean AiRateLimitService quota() { return mock(AiRateLimitService.class); }
+        @Bean com.example.server.service.ai.AiCallLedger ledger(){return mock(com.example.server.service.ai.AiCallLedger.class);}
         @Bean DeepSeekChatClient model() { return mock(DeepSeekChatClient.class); }
     }
     @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
@@ -185,7 +186,7 @@ class StudyAuthorizationMySqlTest {
         runs.createQueuedRun(command("active",b.id(),2L));
         courses.publish(courseId,1L,false);
         assertThat(runs.getRequired("active").getStatus()).isEqualTo("FAILED");
-        assertThat(runs.beginAttempt("active",0)).isFalse();
+        assertThat(runs.beginAttempt("active",0)).isEmpty();
         assertThatThrownBy(() -> media.getDetail(10L,2L)).isInstanceOf(NoSuchElementException.class);
         var timeline=conversations.messages(b.id(),2L);
         assertThat(timeline.sourceAvailable()).isFalse();
@@ -247,6 +248,26 @@ class StudyAuthorizationMySqlTest {
         })).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=99",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_conversations WHERE learner_id=99",Integer.class)).isZero();
+    }
+
+    @Test void cancelledLeaseCannotPersistAnyCheckpointPartialOrFinalResult() {
+        courses.publish(courseId,1L,true);
+        var conversation=conversations.create(10L,2L,courseId);
+        var command=command("cancel-test",conversation.id(),2L);
+        runs.createQueuedRun(command);
+        jdbc.update("UPDATE video_agent_runs SET deadline_at=DATE_ADD(NOW(),INTERVAL 10 MINUTE) WHERE id='cancel-test'");
+        long epoch=runs.beginAttempt("cancel-test",0).orElseThrow();
+        try(var context=com.example.server.service.ai.StudyExecutionContext.open(command.preparedTask(),"cancel-test",epoch)) {
+            runs.cancel("cancel-test",2L);
+            var result=com.alibaba.fastjson2.JSON.parseObject(resultJson(),VideoAgentResult.class);
+            assertThatThrownBy(()->runs.saveCompletedStep("cancel-test","NOTES",0,"input",result)).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+            assertThatThrownBy(()->runs.saveUsableResult("cancel-test",result,List.of())).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+            assertThatThrownBy(()->runs.markSucceeded("cancel-test",result,List.of())).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+        }
+        assertThat(runs.getRequired("cancel-test").getStatus()).isEqualTo("CANCELLED");
+        assertThat(runs.getRequired("cancel-test").getResultJson()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_steps WHERE run_id='cancel-test'",Integer.class)).isZero();
+        assertThat(runs.events("cancel-test",2L,0)).extracting(e->e.get("type")).containsExactly("TASK_QUEUED","EXECUTION_STARTED","TASK_STOPPED");
     }
 
     private VideoAgentRunMessage command(String id,Long conversationId,Long learnerId) {

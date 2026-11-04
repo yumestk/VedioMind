@@ -19,7 +19,16 @@ public record PreparedStudyTask(
     public record OutputSlot(String slotId, String kind, Map<String, Integer> constraints) {
         public OutputSlot { constraints = Map.copyOf(constraints); }
     }
-    public record Budget(int inputTokens, int outputTokens, int generationCalls, int retrievalCalls, int maxMaterials) {}
+    public record Budget(int inputTokens, int outputTokens, int generationCalls, int retrievalCalls, int maxMaterials,
+                         long maxAccountedTokens, long activeLimitMs, long wallLimitMs, String runtimeVersion) {
+        /** P4 tool-loop profile, deliberately separate from the currently enabled short workflows. */
+        public static Budget boundedStudy(int input,int output,int materials) {
+            return new Budget(input,output,8,6,materials,96000,120000,600000,"bounded-study-v1");
+        }
+        public static Budget standard(int input,int output,int generations,int retrievals,int materials) {
+            return new Budget(input,output,generations,retrievals,materials,200000,120000,600000,"study-runtime-v1");
+        }
+    }
 
     public static PreparedStudyTask create(String id, Long learnerId, Long conversationId, Long courseId, Long anchor,
             Long courseVersion, Scope scope, List<Material> materials, String originalRequest, String goal,

@@ -9,6 +9,6 @@ public final class StudyTaskFixtures {
         return PreparedStudyTask.create("test-task", learner, conversation, course, media, course == null ? null : 1L,
                 new PreparedStudyTask.Scope("VIDEO", null, List.of(media)),
                 List.of(new PreparedStudyTask.Material(media, null, null, "lecture", version, "AVAILABLE")), goal, goal,
-                List.of("NOTE"), "COURSE_MATERIAL_ONLY", new PreparedStudyTask.Budget(55296,8192,3,6,12));
+                List.of("NOTE"), "COURSE_MATERIAL_ONLY", PreparedStudyTask.Budget.standard(55296,8192,3,6,12));
     }
 }

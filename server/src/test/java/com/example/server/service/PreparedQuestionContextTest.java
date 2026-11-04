@@ -15,7 +15,7 @@ class PreparedQuestionContextTest {
     PreparedStudyTask task=PreparedStudyTask.create("request-1",2L,7L,1L,10L,1L,
             new PreparedStudyTask.Scope("SECTION",3L,List.of(10L,11L)),
             List.of(new PreparedStudyTask.Material(10L,1L,3L,"事务上","v1","AVAILABLE"),new PreparedStudyTask.Material(11L,2L,3L,"事务下","v1","AVAILABLE")),
-            "解释第三章", "解释第三章",List.of("ANSWER"),"COURSE_MATERIAL_ONLY",new PreparedStudyTask.Budget(55296,8192,3,6,12));
+            "解释第三章", "解释第三章",List.of("ANSWER"),"COURSE_MATERIAL_ONLY",PreparedStudyTask.Budget.standard(55296,8192,3,6,12));
     VideoEvidenceContextService.Candidate evidence(long material, String type, String text) {
         return new VideoEvidenceContextService.Candidate(new VideoAgentCitation(material+":"+type+":42:v1",type,42L,
                 300000,301000,text,material,"v1"),true,0);

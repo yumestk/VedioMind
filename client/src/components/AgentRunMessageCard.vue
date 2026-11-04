@@ -12,11 +12,13 @@
 
     <div v-if="isRunning" class="run-progress">
       <div class="progress-track"><span :style="{ width: `${currentRun.progress || 0}%` }"></span></div>
-      <p>{{ stageDescription(currentRun.status) }} · {{ currentRun.progress || 0 }}%</p>
+      <p>{{ stageDescription(currentRun.status === 'RUNNING' ? currentRun.phase : currentRun.status) }} · {{ currentRun.progress || 0 }}%</p>
     </div>
 
-    <div v-else-if="currentRun.status === 'FAILED'" class="run-error">
-      <strong>深度任务未完成</strong>
+    <button v-if="isRunning" :disabled="cancelPending" @click="cancelRun">{{ cancelPending ? '正在取消…' : '取消任务' }}</button>
+    <p v-if="controlError" role="alert" class="run-error">{{ controlError }}</p>
+    <div v-if="['FAILED', 'CANCELLED', 'NEEDS_INPUT'].includes(currentRun.status)" class="run-error">
+      <strong>{{ statusLabel(currentRun.status) }}</strong>
       <p>{{ currentRun.errorMessage || '请稍后重新提交任务。' }}</p>
     </div>
 
@@ -24,7 +26,12 @@
       已交付有依据的部分笔记：{{ currentRun.errorMessage }}
     </p>
     <p v-if="!currentRun.sourceAvailable" role="status">引用来源已失效，原文和播放不可用；已保留学习成果。</p>
-    <p class="run-metrics">排队 {{ queueSeconds }} 秒<span v-if="currentRun.startedAt"> · 执行 {{ executionSeconds }} 秒（上限120秒）</span></p>
+    <p class="run-metrics">等待 {{ Math.floor((currentRun.waitingMs || 0) / 1000) }} 秒 · 活动 {{ Math.floor((currentRun.activeElapsedMs || 0) / 1000) }} 秒 / {{ Math.floor((currentRun.activeLimitMs || 120000) / 1000) }} 秒</p>
+    <p v-if="currentRun.stopCode" class="run-metrics">停止原因：{{ currentRun.stopCode }}</p>
+    <details v-if="events.length" class="evidence-details">
+      <summary>执行记录 · {{ events.length }} 条</summary>
+      <ol><li v-for="event in events" :key="event.sequence">#{{ event.sequence }} {{ eventLabel(event.type) }}<span v-if="event.data.elapsedMs != null"> · {{ event.data.elapsedMs }} ms</span><span v-if="event.data.code"> · {{ event.data.code }}</span></li></ol>
+    </details>
 
     <template v-if="currentRun.result">
       <section class="result-block result-core">
@@ -96,7 +103,7 @@
     </template>
 
     <footer class="run-metrics">
-      生成请求 {{ currentRun.generationCalls || 0 }} 次 · 检索 {{ currentRun.retrievalCalls || 0 }} 次
+      生成请求 {{ currentRun.generationCalls || 0 }} 次 · 检索 {{ currentRun.retrievalCalls || 0 }} 次 · 治理 Token {{ currentRun.accountedTokens || 0 }}
       <template v-if="currentRun.tokenUsageKnown">
         · Token {{ (currentRun.inputTokens || 0) + (currentRun.outputTokens || 0) }}
       </template>
@@ -107,7 +114,8 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { getVideoAgentRun } from '../api/media'
+import { getVideoAgentRun, cancelVideoAgentRun, getVideoAgentRunEvents } from '../api/media'
+import { errorMessage } from '../api/http'
 
 const props = defineProps({
   run: { type: Object, required: true },
@@ -116,15 +124,16 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['seek', 'run-change', 'followup'])
-const terminal = new Set(['SUCCEEDED', 'PARTIAL', 'FAILED'])
+const events = ref([])
+const controlError = ref('')
+const cancelPending = ref(false)
+let eventCursor = 0
 const currentRun = ref(props.run)
 let pollTimer
+let observedId
 
-const isRunning = computed(() => currentRun.value && !terminal.has(currentRun.value.status))
+const isRunning = computed(() => currentRun.value && !currentRun.value.terminal)
 
-const secondsBetween = (start, end) => start ? Math.max(0, Math.floor((new Date(end || Date.now()) - new Date(start)) / 1000)) : 0
-const queueSeconds = computed(() => secondsBetween(currentRun.value.createdAt, currentRun.value.startedAt || currentRun.value.finishedAt))
-const executionSeconds = computed(() => secondsBetween(currentRun.value.startedAt, currentRun.value.finishedAt))
 const followup = goal => emit('followup', goal.slice(0, 500))
 
 const schedulePoll = () => {
@@ -136,6 +145,8 @@ const refresh = async () => {
   if (!currentRun.value) return
   try {
     currentRun.value = await getVideoAgentRun(currentRun.value.id)
+    const batch = await getVideoAgentRunEvents(currentRun.value.id, eventCursor)
+    if (batch.length) { events.value = [...events.value, ...batch].slice(-100); eventCursor = batch.at(-1).sequence }
     emit('run-change', currentRun.value)
   } catch (error) {
     console.warn('Agent run polling failed', error)
@@ -144,22 +155,30 @@ const refresh = async () => {
   }
 }
 
+const cancelRun = async () => {
+  cancelPending.value = true
+  controlError.value = ''
+  try { currentRun.value = await cancelVideoAgentRun(currentRun.value.id); emit('run-change', currentRun.value); await refresh() }
+  catch (error) { controlError.value = errorMessage(error, '取消失败，请稍后重试') }
+  finally { cancelPending.value = false }
+}
+const eventLabel = type => ({ TASK_QUEUED: '任务入队', PREPARATION_ACCOUNTED: '准备阶段用量已计入', RESULT_SAVED: '已保存可用笔记', EXECUTION_STARTED: '开始执行', PHASE_CHANGED: '进入新阶段', CALL_RESERVED: '预留调用预算', CALL_SETTLED: '供应商调用已记录', CALL_OUTCOME_UNKNOWN: '供应商结果未知', CHECKPOINT_SAVED: '检查点已保存', QUOTA_WAIT: '等待额度', RETRY_SCHEDULED: '安排恢复', TASK_COMPLETED: '任务完成', TASK_STOPPED: '任务停止' })[type] || type
+
 const citationsFor = (refs = []) => refs
   .map(ref => currentRun.value.citations?.find(citation => citation.ref === ref))
   .filter(Boolean)
 
 const statusLabel = status => ({
-  QUEUED: '等待执行', RETRIEVING: '查找依据', DRAFTING: '整理笔记',
-  REVISING: '修订结果', RETRYING: '准备重试',
+  QUEUED: '等待执行', RUNNING: '正在执行', RETRY_WAIT: '准备恢复', WAITING_OPERATION: '等待操作',
   WAITING_FOR_QUOTA: '等待 AI 服务额度',
-  SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败'
+  SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败', CANCELLED: '已取消', NEEDS_INPUT: '需要补充条件'
 })[status] || status
 
 const stageDescription = status => ({
   WAITING_FOR_QUOTA: '额度恢复后会自动继续，无需重新提交',
   QUEUED: '任务已进入队列', RETRIEVING: '正在检索相关证据',
   DRAFTING: '正在整理知识点',
-  REVISING: '正在按检查意见修订', RETRYING: '任务将从最近检查点恢复'
+  REVISING: '正在按检查意见修订', RETRY_WAIT: '任务将从已保存响应和检查点恢复'
 })[status] || '正在处理'
 
 const formatTime = milliseconds => {
@@ -173,8 +192,11 @@ const formatTime = milliseconds => {
 }
 
 watch(() => props.run, run => {
+  const changed = observedId !== run.id
+  if (changed) { observedId = run.id; events.value = []; eventCursor = 0 }
   currentRun.value = run
-  schedulePoll()
+  if (changed) refresh()
+  else schedulePoll()
 }, { immediate: true })
 onBeforeUnmount(() => clearTimeout(pollTimer))
 </script>

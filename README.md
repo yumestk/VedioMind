@@ -10,7 +10,7 @@
 - Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
 - Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块将摘要、关键词和阿里云 `text-embedding-v4` 向量持久化到 MySQL，并将就绪向量同步到可重建的 Qdrant 检索索引；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
 - Study Mode 问答使用当前问题与上一轮对话从 Qdrant 召回 Chunk 候选，并结合 MySQL 关键词和原始向量精排，合并命中时间区间后补充外侧相邻字幕，再生成带引用回答；Qdrant 缺失或不可用时自动退回 MySQL 精确扫描，Quick Insight 继续直接使用平台字幕。
-- Study Mode 提供持久化学习助手：Planner 将目标拆成最多 3 个子任务，Executor 按任务检索字幕与 OCR，Critic 校验证据并生成核心结论、知识点和 3 道自测题；最多修订一次，所有引用由后端校验。
+- Study Mode 提供持久化学习助手：单视频笔记先检索、再生成，只围绕具体证据缺口补充一次；默认不生成自测题，按需生成。宿主验证结构和引用，保存可用成果与检查点。
 - 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
 - MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
 - FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳；DeepSeek 生成分块摘要、全局总结和语义章节。
@@ -18,8 +18,8 @@
 - 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
 - 供应商瞬时故障先在客户端有限重试，耗尽后再由 RocketMQ 恢复当前任务阶段；鉴权和参数等永久错误直接标记 `FAILED`，不做无效重投。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
-- Redis / Redisson 用户级、全局和供应商级分布式限流限制 AI 请求；DeepSeek、阿里云 ASR 与 Embedding 共用轻量重试器，仅对网络错误、408、429 和 5xx 使用带抖动的指数退避，总尝试次数最多 3 次。
-- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟，Agent 沿用首次启动后的 120 秒总时限。
+- Redis / Redisson 实现用户级、全局和供应商级限流；供应商返回可重试 HTTP 状态时，采用带抖动的指数退避，单次逻辑调用最多 3 次实际尝试。DeepSeek / Embedding 每次出网独立记账；连接中断等远端结果未知情形保留预算预留并停止自动重投。ASR 继续使用其独立分析恢复策略。
+- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟；Agent 活动时间累计最多 120 秒，额度等待与队列退避暂停活动计时，创建请求起 10 分钟总截止持续计时。
 - 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
@@ -173,18 +173,24 @@ QUEUED
 flowchart LR
     A[提交学习目标] --> B[RocketMQ 事务消息]
     B --> C[持久化 AgentRun]
-    C --> D[Planner 全局规划]
-    D --> E[Executor 分任务检索与草稿]
-    E --> F[Critic 校验]
-    F -->|通过| G[结构化学习笔记]
-    F -->|不通过，最多一次| H[Revision]
-    H --> G
-    D -. Checkpoint .-> I[(AgentStep)]
-    E -. Checkpoint .-> I
-    F -. Checkpoint .-> I
+    C --> D[检索原文并保存检查点]
+    D --> E[预留调用预算]
+    E --> F[调用供应商并先保存响应]
+    F --> G[宿主校验结构与引用]
+    G -->|可交付| H[保存学习笔记]
+    G -->|存在具体缺口，最多两轮| D
+    D -.-> I[(AgentStep)]
+    F -.-> J[(CallAttempt)]
+    H -.-> K[(有序 RunEvent)]
 ```
 
-每次模型与检索调用前先持久化预算消耗；成功阶段立即写入 `video_agent_steps`，RocketMQ 重投时从最近成功阶段继续，不重复执行已经完成的 Executor。单任务最多 3 个子任务、9 次生成调用、6 次检索调用和 10 分钟执行时间。
+当前单视频笔记最多 3 次实际生成、6 次 Embedding 尝试、两轮检索，路由与修复也包含在上限内；累计治理 Token 上限为 200,000。完整请求仍受配置的输入估算与输出上限约束。另有 P4 工具任务专用预算定义（8 次模型尝试、6 次检索、96,000 累计 Token），尚未开放工具循环入口。
+
+`study_ai_requests` 保存每个学生请求的累计用量，`ai_call_attempts` 在出网前独立事务预留调用次数和 Token。收到响应后先保存原始响应，再做业务解析；已知 usage 幂等替换预留，未知 usage 保留估算。治理 Token 不是供应商账单，也不承诺远端调用 exactly-once。旧历史不推测补造账本，视频预处理的独立费用记录不归入学生问答用量；当前没有启用跨 Run 月度额度。
+
+执行代次和消息投递版本由数据库校验。取消、超时、撤权会阻止旧 worker 保存检查点或成果；本机 HTTP 取消尽力执行，供应商仍可能计费，迟到 usage 可补记但不能恢复结果交付。恢复优先复用已落库响应和检查点；预留后或出网中的崩溃、收到响应但未可靠落库，均按 `MODEL_OUTCOME_UNKNOWN` 停止自动重投。只有确定未出网的预留可以释放。
+
+任务卡展示阶段、活动/等待时间、治理用量、停止原因、取消按钮与执行事件。生命周期终态统一为 `SUCCEEDED` / `PARTIAL` / `FAILED` / `CANCELLED` / `NEEDS_INPUT`；检索、生成、修订作为 phase。事件只返回安全元数据，原始模型响应、提示和隐藏答案不通过学生接口暴露。
 
 ### 检索后的相邻上下文与预算
 
@@ -192,7 +198,7 @@ flowchart LR
 
 核心证据按命中排序轮流选取，之后再取距离较近的补充证据。快速问答的完整输入预算包含系统提示、问题、对话历史、Agent 辅助结果和证据 JSON；超预算时先移除较远的补充证据，再移除旧对话、辅助结果，最后按优先级保留能完整放入的核心证据。模型只可引用最终输入中保留的 ID。Quick Insight 的平台字幕问答同样受输入预算约束。
 
-Agent 每个检索子任务最多使用输入预算的六分之一，最多 3 个子任务合计预留一半给证据，余量留给草稿和审查提示。扩展、去重和选择完成后才保存检索 Checkpoint，额度等待后复用该结果，不重复生成查询向量。Executor 保留完整证据文本；Critic / Revision 裁剪未引用的证据时，必须保留草稿以及当前结果引用的证据。每次发送前重新检查完整请求；必要证据仍放不下或输出触及上限时明确失败，不通过失败重试重复付费。
+单视频笔记将检索证据装入输入预算，并给任务提示与当前笔记留出空间。扩展、去重和选择完成后才保存检索 Checkpoint，额度等待后复用该结果，不重复生成查询向量。补充生成保留当前笔记已经引用的必要证据。每次发送前重新检查完整请求；必要证据仍放不下或输出触及上限时明确失败，不通过失败重试重复付费。
 
 配置位于 `server/src/main/resources/application.example.properties`：
 
@@ -245,6 +251,9 @@ Agent 每个检索子任务最多使用输入预算的六分之一，最多 3 �
 | `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
 | `GET` | `/media/{mediaId}/conversations` | 查询媒体的问答会话 |
 | `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
+| `POST` | `/agent-runs/{runId}/cancel` | 取消本人任务，阻止旧执行器提交结果 |
+| `GET` | `/agent-runs/{runId}/events?after=0` | 按序读取本人任务事件，每批最多 100 条 |
+| `GET` | `/user/ai-usage` | 当前学生新版账本累计用量（含未知预留） |
 | `POST` | `/media/{mediaId}/assistant/dispatch` | 自动或显式路由到快速 RAG 问答、深度 Agent 任务 |
 | `GET` | `/agent-runs/{runId}` | 查询学习任务阶段、用量与结构化结果 |
 | `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
@@ -309,7 +318,7 @@ export TESSERACT_PATH=/path/to/tesseract
 export YTDLP_PATH=/path/to/yt-dlp
 ```
 
-后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 的 120 秒总时限在首次启动时确定，恢复不会重置。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
+后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 通过 V22 持久化 120 秒活动余额和创建请求起 10 分钟的总截止；等待/退避暂停活动计时，恢复不重置次数、Token 或总截止。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
 
 数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。AI 入口默认限制为单用户每分钟 5 次、全局每分钟 30 次，供应商调用额度可通过 `AI_RATE_LIMIT_*` 环境变量调整。
 
@@ -347,7 +356,9 @@ npm test
 npm run build
 ```
 
-后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、AI 令牌桶与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、助手模式识别与分发、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
+运行真实 MySQL 迁移、授权与调用治理验收：在仓库根目录执行 `python3 scripts/test-study-agent-p1.py`，需先启动 Compose 的 MySQL。脚本只创建和清理独立临时库，覆盖 V21→V22、取消后写入隔离、调用预留/结算、UNKNOWN、响应复用和并发准入，供应商使用本地合成响应，不产生真实模型费用。
+
+后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、Redisson 限流与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、助手模式识别与分发、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
 
 ## Roadmap
 

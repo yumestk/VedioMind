@@ -65,16 +65,25 @@ public class StudyAccessService {
 
     /** Called in the same transaction as a withdrawal/removal/deletion. Fences late result commits. */
     public void stopUnavailableRuns() {
+        // ponytail: short global active-run lock; select affected runs first if shared-course traffic grows.
+        var candidates=jdbc.queryForList("SELECT id FROM video_agent_runs WHERE status NOT IN "+com.example.server.entity.StudyRunStatus.TERMINAL_SQL+" ORDER BY id FOR UPDATE",String.class);
         jdbc.update("UPDATE video_agent_runs r JOIN media_files m ON m.id=r.media_id SET "
                 + "r.status=CASE WHEN r.result_json IS NULL THEN 'FAILED' ELSE 'PARTIAL' END, "
-                + "r.error_message='来源已撤回或删除，任务已停止', r.next_attempt_at=NULL, "
+                + "r.error_message='来源已撤回或删除，任务已停止', r.stop_code='TASK_SOURCE_UNAVAILABLE',r.execution_epoch=r.execution_epoch+1,r.dispatch_version=r.dispatch_version+1, r.next_attempt_at=NULL, "
+                + "r.active_remaining_ms=GREATEST(0,r.active_remaining_ms-COALESCE(TIMESTAMPDIFF(MICROSECOND,r.active_started_at,CURRENT_TIMESTAMP(3))/1000,0)),r.active_started_at=NULL, "
+                + "r.waiting_ms=r.waiting_ms+COALESCE(TIMESTAMPDIFF(MICROSECOND,r.wait_started_at,CURRENT_TIMESTAMP(3))/1000,0),r.wait_started_at=NULL, "
                 + "r.finished_at=CURRENT_TIMESTAMP, r.updated_at=CURRENT_TIMESTAMP "
-                + "WHERE r.status NOT IN ('SUCCEEDED','PARTIAL','FAILED') AND (m.deleted_at IS NOT NULL OR "
+                + "WHERE r.status NOT IN "+com.example.server.entity.StudyRunStatus.TERMINAL_SQL+" AND (m.deleted_at IS NOT NULL OR "
                 + "(r.course_id IS NULL AND m.user_id<>r.learner_id AND NOT EXISTS "
                 + "(SELECT 1 FROM course_materials cm JOIN courses c ON c.id=cm.course_id "
                 + "WHERE cm.media_id=r.media_id AND c.status='PUBLISHED')) OR "
                 + "(r.course_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM course_materials cm JOIN courses c "
                 + "ON c.id=cm.course_id WHERE c.id=r.course_id AND cm.media_id=r.media_id "
                 + "AND (c.author_id=r.learner_id OR c.status='PUBLISHED'))))");
+        for(String id:candidates) {
+            var r=jdbc.queryForMap("SELECT execution_epoch,stop_code,status FROM video_agent_runs WHERE id=?",id);
+            if("TASK_SOURCE_UNAVAILABLE".equals(r.get("stop_code")))new StudyRunEvents(jdbc).append(id,((Number)r.get("execution_epoch")).longValue(),"TASK_STOPPED",
+                    java.util.Map.of("status",r.get("status"),"code","TASK_SOURCE_UNAVAILABLE"),java.time.LocalDateTime.now());
+        }
     }
 }

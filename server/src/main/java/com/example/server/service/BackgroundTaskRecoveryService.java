@@ -1,6 +1,7 @@
 package com.example.server.service;
 
 import com.example.server.service.ai.AiProviderException;
+import com.example.server.entity.StudyRunStatus;
 import com.example.server.service.ai.AiRateLimitService.AiRateLimitExceededException;
 import org.apache.rocketmq.client.producer.SendStatus;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -58,23 +59,24 @@ public class BackgroundTaskRecoveryService {
     private final RocketMQTemplate messages;
     private final long analysisWaitMinutes;
     private final Clock clock;
+    private final StudyRunControl agentControl;
 
     @Autowired
     public BackgroundTaskRecoveryService(
             JdbcTemplate jdbc, RedissonClient redisson, RocketMQTemplate messages,
-            @Value("${ai.task-recovery.analysis-quota-wait-minutes:30}") long analysisWaitMinutes
+            @Value("${ai.task-recovery.analysis-quota-wait-minutes:30}") long analysisWaitMinutes, StudyRunControl agentControl
     ) {
-        this(jdbc, redisson, messages, analysisWaitMinutes, Clock.systemDefaultZone());
+        this(jdbc, redisson, messages, analysisWaitMinutes, Clock.systemDefaultZone(),agentControl);
     }
 
     BackgroundTaskRecoveryService(JdbcTemplate jdbc, RedissonClient redisson,
-                                  RocketMQTemplate messages, long analysisWaitMinutes, Clock clock) {
+                                  RocketMQTemplate messages, long analysisWaitMinutes, Clock clock, StudyRunControl agentControl) {
         if (analysisWaitMinutes <= 0) throw new IllegalArgumentException("Quota wait limit must be positive");
         this.jdbc = jdbc;
         this.redisson = redisson;
         this.messages = messages;
         this.analysisWaitMinutes = analysisWaitMinutes;
-        this.clock = clock;
+        this.clock = clock;this.agentControl=agentControl;
     }
 
     public void execute(TaskType type, String id, long version, IntConsumer operation) {
@@ -95,15 +97,20 @@ public class BackgroundTaskRecoveryService {
                     || (task.nextAttempt != null && task.nextAttempt.isAfter(now))) return;
             if (expire(type, task, now)) return;
             int claimed = jdbc.update("UPDATE " + type.table + " SET status = ?, next_attempt_at = NULL, updated_at = ? "
-                            + "WHERE id = ? AND dispatch_version = ? AND status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED')",
-                    type == TaskType.ANALYSIS ? "PREPARING" : "RETRIEVING", now, id, version);
+                            + "WHERE id = ? AND dispatch_version = ? AND status NOT IN "+StudyRunStatus.TERMINAL_SQL,
+                    type == TaskType.ANALYSIS ? "PREPARING" : "RUNNING", now, id, version);
             if (claimed != 1) return;
             try {
                 operation.accept(task.retries);
             } catch (AiRateLimitExceededException exception) {
                 defer(type, task, exception, true, false);
             } catch (RuntimeException exception) {
-                if ((exception instanceof AiProviderException provider && !provider.isRetryable())
+                if (type == TaskType.AGENT && (exception instanceof StudyTaskPreparationService.SourceChangedException || exception instanceof java.util.NoSuchElementException
+                        || exception instanceof com.example.server.service.ai.StudyExecutionContext.GovernanceException)) {
+                    String code = exception instanceof com.example.server.service.ai.StudyExecutionContext.GovernanceException governed
+                            ? governed.code() : "TASK_RESOURCE_CHANGED";
+                    agentControl.stopIfVersion(task.id, task.version, code, exception.getMessage(), false);
+                } else if ((exception instanceof AiProviderException provider && !provider.isRetryable())
                         || exception instanceof IllegalArgumentException
                         || task.retries >= MAX_FAILURE_RETRIES) {
                     fail(type, task, exception.getMessage(), false);
@@ -133,6 +140,12 @@ public class BackgroundTaskRecoveryService {
     }
 
     private void defer(TaskType type, Task task, RuntimeException error, boolean quotaWait, boolean pendingOnly) {
+        if(type==TaskType.AGENT) {
+            int retries=quotaWait?task.retries:task.retries+1;
+            long seconds=quotaWait?Math.max(1,((AiRateLimitExceededException)error).retryAfterSeconds()):new long[]{10,30,60}[retries-1];
+            if(agentControl.pause(task.id,task.version,quotaWait,seconds,error.getMessage(),pendingOnly))publish(type,task.id,task.mediaId,task.version+1,seconds);
+            return;
+        }
         task = load(type, task.id);
         if (task == null || task.terminal()) return;
         LocalDateTime now = now();
@@ -158,14 +171,11 @@ public class BackgroundTaskRecoveryService {
     @Scheduled(fixedDelayString = "${ai.task-recovery.scan-interval-ms:10000}")
     public void recoverDueTasks() {
         LocalDateTime cutoff = now().minusSeconds(30);
-        jdbc.update("UPDATE video_agent_runs SET status = CASE WHEN result_json IS NOT NULL THEN 'PARTIAL' ELSE 'FAILED' END, "
-                        + "error_message = 'Agent run exceeded its 120 second deadline', next_attempt_at = NULL, "
-                        + "finished_at = ?, updated_at = ? WHERE deadline_at <= ? AND status NOT IN ('SUCCEEDED','PARTIAL','FAILED')",
-                now(), now(), now());
+        agentControl.expireDue();
         for (TaskType type : TaskType.values()) {
-            for (Task task : jdbc.query(select(type) + " WHERE (status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
+            for (Task task : jdbc.query(select(type) + " WHERE (status IN ('WAITING_FOR_QUOTA', 'RETRYING','RETRY_WAIT') "
                     + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
-                    ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : "")
+                    ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : " OR status IN ('QUEUED','RUNNING')")
                     + ") AND updated_at <= ? ORDER BY updated_at LIMIT 100",
                     (rs, row) -> task(rs), cutoff, cutoff)) {
                 recover(type, task);
@@ -184,14 +194,18 @@ public class BackgroundTaskRecoveryService {
             if (task == null || task.terminal() || task.version != candidate.version) return;
             LocalDateTime now = now();
             if (expire(type, task, now)) return;
+            if(type==TaskType.AGENT && "RUNNING".equals(task.status)) {
+                if (agentControl.recoverRunning(task.id,task.version)) wakeup = load(type,task.id);
+            } else {
             // Claim only publication; keep the due time so an immediate delivery can run.
             int claimed = jdbc.update("UPDATE " + type.table + " SET updated_at = ? WHERE id = ? "
-                            + "AND dispatch_version = ? AND (status IN ('WAITING_FOR_QUOTA', 'RETRYING') "
+                            + "AND dispatch_version = ? AND (status IN ('WAITING_FOR_QUOTA', 'RETRYING','RETRY_WAIT') "
                             + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
-                            ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : "")
+                            ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : " OR status IN ('QUEUED','RUNNING')")
                             + ") AND updated_at <= ?",
                     now, task.id, task.version, now.minusSeconds(30), now.minusSeconds(30));
             if (claimed == 1) wakeup = task;
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         } catch (RuntimeException exception) {
@@ -222,6 +236,7 @@ public class BackgroundTaskRecoveryService {
     }
 
     private boolean expire(TaskType type, Task task, LocalDateTime now) {
+        if(type==TaskType.AGENT)return agentControl.expireTask(task.id,task.version);
         boolean quotaExpired = task.waitStarted != null && (type == TaskType.ANALYSIS
                 ? !now.isBefore(task.waitStarted.plusMinutes(analysisWaitMinutes))
                 : task.deadline != null && !now.isBefore(task.deadline));
@@ -233,6 +248,7 @@ public class BackgroundTaskRecoveryService {
     }
 
     private void fail(TaskType type, Task task, String message, boolean pendingOnly) {
+        if(type==TaskType.AGENT){agentControl.stopIfVersion(task.id,task.version,"TASK_FAILED",message,pendingOnly);return;}
         String stoppedStatus = type == TaskType.AGENT
                 ? "CASE WHEN result_json IS NOT NULL THEN 'PARTIAL' ELSE 'FAILED' END" : "'FAILED'";
         jdbc.update("UPDATE " + type.table + " SET status = " + stoppedStatus + ", error_message = ?, "
@@ -270,7 +286,7 @@ public class BackgroundTaskRecoveryService {
 
     private record Task(String id, long mediaId, String status, int retries, long version,
                         LocalDateTime nextAttempt, LocalDateTime waitStarted, LocalDateTime deadline) {
-        boolean terminal() { return "SUCCEEDED".equals(status) || "PARTIAL".equals(status) || "FAILED".equals(status); }
-        boolean pending() { return "QUEUED".equals(status) || "WAITING_FOR_QUOTA".equals(status) || "RETRYING".equals(status); }
+        boolean terminal() {return StudyRunStatus.terminal(status);}
+        boolean pending() { return "QUEUED".equals(status) || "WAITING_FOR_QUOTA".equals(status) || "RETRYING".equals(status) || "RETRY_WAIT".equals(status); }
     }
 }

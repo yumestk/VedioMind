@@ -59,14 +59,14 @@ SELECT JSON_OBJECT('section', 'run_status_counts', 'data', JSON_OBJECT('status',
 FROM video_agent_runs GROUP BY status ORDER BY status;
 
 SELECT JSON_OBJECT('section', 'active_summary', 'data', JSON_OBJECT(
-  'active_runs', (SELECT COUNT(*) FROM video_agent_runs WHERE status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED')),
+  'active_runs', (SELECT COUNT(*) FROM video_agent_runs WHERE status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED', 'CANCELLED', 'NEEDS_INPUT')),
   'active_analysis_jobs', (SELECT COUNT(*) FROM analysis_jobs WHERE status NOT IN ('SUCCEEDED', 'FAILED'))));
 
 SELECT JSON_OBJECT('section', 'active_run_preview', 'data', JSON_OBJECT(
   'run_id', id, 'status', status, 'retry_count', retry_count,
   'generation_calls', generation_calls, 'retrieval_calls', retrieval_calls,
   'deadline_at', deadline_at, 'next_attempt_at', next_attempt_at))
-FROM video_agent_runs WHERE status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED') ORDER BY id LIMIT 20;
+FROM video_agent_runs WHERE status NOT IN ('SUCCEEDED', 'PARTIAL', 'FAILED', 'CANCELLED', 'NEEDS_INPUT') ORDER BY id LIMIT 20;
 
 SELECT JSON_OBJECT('section', 'delete_rules', 'data', JSON_OBJECT(
   'table', TABLE_NAME, 'constraint', CONSTRAINT_NAME, 'delete_rule', DELETE_RULE))

@@ -51,7 +51,7 @@ class VideoConversationServiceTest {
             questionService,
             knowledgeRetriever,
             redissonClient,
-            new VideoEvidenceContextService(3, 30), indexPreparation, tasks, mock(StudyEvidenceService.class)
+            new VideoEvidenceContextService(3, 30), indexPreparation, tasks, mock(StudyEvidenceService.class),mock(com.example.server.service.ai.AiCallLedger.class)
     );
 
     @org.junit.jupiter.api.BeforeEach void preparedTask() {

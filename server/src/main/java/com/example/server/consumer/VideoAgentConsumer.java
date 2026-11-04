@@ -43,6 +43,6 @@ public class VideoAgentConsumer implements RocketMQListener<MessageExt> {
             throw new IllegalArgumentException("Invalid background task message", exception);
         }
         recovery.execute(AGENT, command.runId(), version,
-                retries -> service.process(command.runId(), retries));
+                retries -> service.process(command.runId(), version));
     }
 }

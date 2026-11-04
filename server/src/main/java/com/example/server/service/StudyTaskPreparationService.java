@@ -87,7 +87,7 @@ public class StudyTaskPreparationService {
         var frozenScope = new Scope(scope.type(), scope.sectionId(), selected.stream().map(Material::materialId).toList());
         var task = PreparedStudyTask.create(UUID.randomUUID().toString(), learnerId, conversationId, courseId, mediaId,
                 detail == null ? null : detail.course().structureVersion(), frozenScope, selected, goal, goal.trim(),
-                List.of("ANSWER"), "COURSE_MATERIAL_ONLY", new Budget(budget.inputLimit(), budget.outputTokens(),
+                List.of("ANSWER"), "COURSE_MATERIAL_ONLY", Budget.standard(budget.inputLimit(), budget.outputTokens(),
                 VideoAgentRunService.MAX_GENERATION_CALLS, VideoAgentRunService.MAX_RETRIEVAL_CALLS, MAX_MATERIALS));
         assertCurrent(task);
         return task;
@@ -108,7 +108,9 @@ public class StudyTaskPreparationService {
         if (!"study-task-v1".equals(task.contractVersion()) || task.budget().inputTokens() != budget.inputLimit()
                 || task.budget().outputTokens() != budget.outputTokens()
                 || task.budget().generationCalls() != VideoAgentRunService.MAX_GENERATION_CALLS
-                || task.budget().retrievalCalls() != VideoAgentRunService.MAX_RETRIEVAL_CALLS)
+                || task.budget().retrievalCalls() != VideoAgentRunService.MAX_RETRIEVAL_CALLS
+                || !"study-runtime-v1".equals(task.budget().runtimeVersion())
+                || task.budget().maxAccountedTokens() != 200000 || task.budget().activeLimitMs() != 120000 || task.budget().wallLimitMs() != 600000)
             throw new SourceChangedException("任务契约或预算配置已变更，请重新提交任务");
         access.requireRead(task.anchorMediaId(), task.courseId(), task.learnerId());
         if (task.courseId() != null && courses.detail(task.courseId(), task.learnerId()).course().structureVersion() != task.courseVersion())
