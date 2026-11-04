@@ -542,6 +542,22 @@ class StudyAgentRuntimeMySqlTest {
                 .isInstanceOf(NoSuchElementException.class);
         workflow.process("run", 0);
         assertThat(provider.requests).hasSize(5);
+        String notes = StudyAgentSkills.bundled().read("course-notes").getString("instructions");
+        String qa = StudyAgentSkills.bundled().read("video-qa").getString("instructions");
+        assertThat(JSON.toJSONString(provider.requests.getFirst()))
+                .contains("course-notes", "video-qa")
+                .doesNotContain(JSON.toJSONString(notes), JSON.toJSONString(qa), "## 执行步骤");
+        assertThat(
+                        JSON.parseObject(
+                                        provider.requests
+                                                .get(1)
+                                                .getJSONArray("messages")
+                                                .getJSONObject(3)
+                                                .getString("content"))
+                                .getString("instructions"))
+                .isEqualTo(notes);
+        assertThat(JSON.toJSONString(provider.requests.get(1)))
+                .doesNotContain(JSON.toJSONString(qa));
         assertThat(
                         provider.requests
                                 .getFirst()
@@ -841,7 +857,7 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {3, 4})
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 4})
     void recoveryAfterAResponseButBeforeDecisionCheckpointReusesIdenticalNativeHistory(
             int crashRound) {
         script();

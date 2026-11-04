@@ -30,6 +30,7 @@ public class StudyAgentRuntime {
         this.model = model;
         this.dispatcher = dispatcher;
         this.artifacts = artifacts;
+        StudyAgentSkills.bundled(); // Validate bundled files when the runtime is constructed.
     }
 
     public void execute(String runId) {
@@ -37,7 +38,8 @@ public class StudyAgentRuntime {
         List<JSONObject> history =
                 new ArrayList<>(
                         List.of(
-                                JSONObject.of("role", "system", "content", StudyAgentSpec.PROMPT),
+                                JSONObject.of(
+                                        "role", "system", "content", StudyAgentSpec.systemPrompt()),
                                 JSONObject.of(
                                         "role",
                                         "user",

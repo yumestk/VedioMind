@@ -80,12 +80,7 @@ public class StudyAgentToolDispatcher {
         JSONObject result;
         switch (call.name()) {
             case "read_skill" ->
-                    result =
-                            JSONObject.of(
-                                    "name",
-                                    call.args().getString("name"),
-                                    "instructions",
-                                    StudyAgentSpec.SKILLS.get(call.args().getString("name")));
+                    result = StudyAgentSkills.bundled().read(call.args().getString("name"));
             case "get_course_structure" ->
                     result = JSONObject.of("scope", task.scope(), "materials", task.materials());
             case "search_course_evidence" -> {
