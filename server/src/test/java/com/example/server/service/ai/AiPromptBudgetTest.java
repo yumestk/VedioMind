@@ -8,6 +8,18 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.*;
 
 class AiPromptBudgetTest {
+    @Test void countsEscapedWireBodyToolSchemasAndToolMessages() {
+        var budget = new AiPromptBudget(4000, 512);
+        var messages = List.of(new DeepSeekMessage("user", "\"quoted\"\n中文"));
+        var request = AiPromptBudget.request("rules", messages, 512);
+        assertThat(budget.estimate("rules", messages)).isEqualTo(budget.estimateRequest(request));
+        long before = budget.estimateRequest(request);
+        request.put("tools", List.of(com.alibaba.fastjson2.JSONObject.of("type", "function", "function",
+                com.alibaba.fastjson2.JSONObject.of("name", "read_evidence", "description", "长工具描述".repeat(300)))));
+        request.getJSONArray("messages").add(com.alibaba.fastjson2.JSONObject.of("role","tool","tool_call_id","call-1","content","工具原文".repeat(200)));
+        assertThat(budget.estimateRequest(request)).isGreaterThan(before + 3000);
+    }
+
     @Test
     void productionDefaultsReserve8192OutputWithinTheMeasured64kContextAndRemainConfigurable() {
         try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {

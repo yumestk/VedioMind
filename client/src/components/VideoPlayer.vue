@@ -30,13 +30,15 @@ import { ref } from 'vue'
 
 const emit = defineEmits(['time-update'])
 
-defineProps({
+const props = defineProps({
+  initialStartMs: { type: Number, default: 0 },
   src: { type: String, default: '' },
   poster: { type: String, default: '' }
 })
 
 const video = ref(null)
 const playbackError = ref(false)
+let pendingSeek = null
 
 const emitCurrentTime = () => {
   emit('time-update', Math.round((video.value?.currentTime || 0) * 1000))
@@ -44,12 +46,17 @@ const emitCurrentTime = () => {
 
 const handleLoadedMetadata = () => {
   playbackError.value = false
+  video.value.currentTime = (pendingSeek ?? props.initialStartMs) / 1000
+  pendingSeek = null
   emitCurrentTime()
 }
 
 const seekTo = (milliseconds) => {
   if (!video.value) return
+  pendingSeek = milliseconds
+  if (video.value.readyState < 1) return
   video.value.currentTime = milliseconds / 1000
+  pendingSeek = null
   video.value.play().catch(() => {})
 }
 

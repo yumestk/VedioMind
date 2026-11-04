@@ -18,5 +18,6 @@ public class VideoMessage {
     private String messageType;
     private String content;
     private String agentRunId;
+    private String preparedTask;
     private LocalDateTime createdAt;
 }

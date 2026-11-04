@@ -31,19 +31,20 @@ public class VideoAgentRunService {
     private final MediaFileMapper mediaFileMapper;
     private final VideoConversationStore conversationStore;
     private final StudyAccessService access;
+    private final StudyTaskPreparationService tasks;
 
     public VideoAgentRunService(
             VideoAgentRunMapper runMapper,
             VideoAgentStepMapper stepMapper,
             MediaFileMapper mediaFileMapper,
             VideoConversationStore conversationStore,
-            StudyAccessService access
+            StudyAccessService access, StudyTaskPreparationService tasks
     ) {
         this.runMapper = runMapper;
         this.stepMapper = stepMapper;
         this.mediaFileMapper = mediaFileMapper;
         this.conversationStore = conversationStore;
-        this.access = access;
+        this.access = access; this.tasks = tasks;
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -65,6 +66,15 @@ public class VideoAgentRunService {
         if (!message.mediaId().equals(conversation.getMediaId())) {
             throw new IllegalArgumentException("Conversation does not belong to the Agent media");
         }
+        var task = message.preparedTask();
+        if (task == null || !message.learnerId().equals(task.learnerId())
+                || !message.conversationId().equals(task.conversationId())
+                || !message.mediaId().equals(task.anchorMediaId()) || !message.goal().equals(task.goal())
+                || !java.util.Objects.equals(message.courseId(), task.courseId())
+                || !"VIDEO".equals(task.scope().type()) || task.materials().size() != 1
+                || !message.contextVersion().equals(task.materials().getFirst().version()))
+            throw new IllegalArgumentException("Prepared task does not match command");
+        tasks.lockCurrent(task);
         LocalDateTime now = LocalDateTime.now();
         VideoAgentRun run = new VideoAgentRun();
         run.setId(message.runId());
@@ -72,7 +82,8 @@ public class VideoAgentRunService {
         run.setLearnerId(message.learnerId());
         run.setCourseId(conversation.getCourseId());
         run.setConversationId(conversation.getId());
-        run.setTaskScope(JSON.toJSONString(java.util.Map.of("type", "VIDEO", "mediaIds", List.of(message.mediaId()))));
+        run.setTaskScope(JSON.toJSONString(task.scope()));
+        run.setPreparedTask(JSON.toJSONString(task));
         run.setGoal(message.goal());
         run.setContextVersion(message.contextVersion());
         run.setStatus("QUEUED");
@@ -226,7 +237,9 @@ public class VideoAgentRunService {
                 .atZone(java.time.ZoneId.systemDefault()).toInstant();
     }
 
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void saveUsableResult(String runId, VideoAgentResult result, List<VideoAgentCitation> citations) {
+        lockTask(runId);
         ensureWithinDeadline(runId);
         runMapper.update(null, new LambdaUpdateWrapper<VideoAgentRun>()
                 .eq(VideoAgentRun::getId, runId).notIn(VideoAgentRun::getStatus, TERMINAL)
@@ -246,11 +259,13 @@ public class VideoAgentRunService {
                 .set(VideoAgentRun::getFinishedAt, now).set(VideoAgentRun::getUpdatedAt, now));
     }
 
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void markSucceeded(
             String runId,
             VideoAgentResult result,
             List<VideoAgentCitation> citations
     ) {
+        lockTask(runId);
         ensureWithinDeadline(runId);
         LocalDateTime now = LocalDateTime.now();
         runMapper.update(null, new LambdaUpdateWrapper<VideoAgentRun>()
@@ -280,8 +295,26 @@ public class VideoAgentRunService {
         return run;
     }
 
+    public boolean sourceAvailable(VideoAgentRun run) {
+        return tasks.sourceAvailable(run.getMediaId(), run.getCourseId(), run.getLearnerId(), run.getContextVersion());
+    }
+
+    private void lockTask(String runId) {
+        var run = getRequired(runId);
+        if (run.getPreparedTask() == null) throw new IllegalArgumentException("Task snapshot missing");
+        tasks.lockCurrent(JSON.parseObject(run.getPreparedTask(), com.example.server.dto.PreparedStudyTask.class));
+    }
+
     private void requireSource(VideoAgentRun run) {
-        try { access.requireRead(run.getMediaId(), run.getCourseId(), run.getLearnerId()); }
+        try {
+            access.requireRead(run.getMediaId(), run.getCourseId(), run.getLearnerId());
+            if (run.getPreparedTask() == null) throw new StudyTaskPreparationService.SourceChangedException("任务没有冻结快照，请重新提交");
+            tasks.assertCurrent(JSON.parseObject(run.getPreparedTask(), com.example.server.dto.PreparedStudyTask.class));
+        }
+        catch (StudyTaskPreparationService.SourceChangedException changed) {
+            finishStopped(run.getId(), changed.getMessage());
+            throw changed;
+        }
         catch (NoSuchElementException denied) {
             finishStopped(run.getId(), "来源已撤回或删除，任务已停止");
             throw new IllegalArgumentException("Source is unavailable");

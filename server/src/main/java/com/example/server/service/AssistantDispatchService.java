@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class AssistantDispatchService {
 
+    private final StudyTaskPreparationService tasks;
     private final MediaService mediaService;
     private final AssistantModeRouter modeRouter;
     private final VideoConversationService conversationService;
@@ -23,8 +24,9 @@ public class AssistantDispatchService {
             VideoConversationService conversationService,
             VideoAgentSubmissionService agentSubmissionService,
             VideoAgentRunService agentRunService,
-            AiRateLimitService rateLimitService
+            AiRateLimitService rateLimitService, StudyTaskPreparationService tasks
     ) {
+        this.tasks = tasks;
         this.mediaService = mediaService;
         this.modeRouter = modeRouter;
         this.conversationService = conversationService;
@@ -44,34 +46,39 @@ public class AssistantDispatchService {
                 : conversationService.get(mediaId, requestedConversationId, userId);
         if (conversation != null && !java.util.Objects.equals(conversation.courseId(), request.courseId()))
             throw new java.util.NoSuchElementException("Conversation does not belong to this course context");
+        com.example.server.dto.PreparedStudyTask task;
+        try {
+            task = tasks.prepare(mediaId, userId, requestedConversationId, request.courseId(), request.scope(), content);
+        } catch (StudyTaskPreparationService.NeedsInputException missing) {
+            return new AssistantDispatchResponse(null, "PREPARATION", missing.getMessage(), conversation,
+                    null, "NEEDS_INPUT", null);
+        }
         rateLimitService.requireRequest(userId);
         boolean followingAgentRun = conversation != null
                 && conversationService.hasCompletedAgentRun(conversation.id());
         AssistantModeRouter.Decision decision = modeRouter.route(
                 request.mode(), content, studyMode, followingAgentRun
         );
+        task = tasks.forMode(task, decision.mode());
         if ("DEEP".equals(decision.mode())) {
             if (conversation == null) {
                 conversation = conversationService.create(mediaId, userId, request.courseId());
             }
             if (agentRunService.findLatestActive(conversation.id(), userId).isPresent())
                 throw new AgentRunBusyException("当前对话已有正在执行的深度任务");
-            agentSubmissionService.submit(mediaId, userId, conversation.id(), content);
+            agentSubmissionService.submit(task.inConversation(conversation.id()));
         } else {
             if (conversation == null) {
                 conversation = conversationService.create(mediaId, userId, request.courseId());
             }
-            ConversationTurnResponse turn = conversationService.ask(
-                    mediaId, conversation.id(), userId, content
-            );
+            ConversationTurnResponse turn = conversationService.askPrepared(task.inConversation(conversation.id()));
             conversation = turn.conversation();
         }
 
         conversation = conversationService.get(mediaId, conversation.id(), userId);
-        return AssistantDispatchResponse.of(
+        return new AssistantDispatchResponse(
                 decision.mode(), decision.routedBy(), decision.reason(), conversation,
-                conversationService.messages(conversation.id(), userId)
-        );
+                conversationService.messages(conversation.id(), userId), "READY", task.inConversation(conversation.id()));
     }
 
     private String normalizeContent(String content) {

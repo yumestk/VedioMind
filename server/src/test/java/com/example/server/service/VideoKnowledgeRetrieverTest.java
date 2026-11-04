@@ -24,6 +24,24 @@ class VideoKnowledgeRetrieverTest {
             indexService, embeddingClient, qdrantIndexService
     );
 
+    @Test void courseFanOutEmbedsOnceAndFiltersEveryQdrantQueryByMediaAndVersion() {
+        var modality=new VideoContext.Modality("AVAILABLE",1,1,1,null);
+        var indexes=java.util.stream.LongStream.of(42L,43L).mapToObj(id -> {
+            var context=new VideoContext(id,"t1-v1-p2","test",modality,modality,
+                    List.of(new VideoContext.TranscriptEvidence(1L,0,1000,"definition")),List.of());
+            var chunk=chunk(0,"definition","[]","[1.0,0.0]"); chunk.setMediaId(id);
+            return new VideoKnowledgeIndexService.IndexSnapshot(context,List.of(chunk),"");
+        }).toList();
+        when(embeddingClient.embedQuery(eq("definition"),any())).thenReturn(List.of(1.0,0.0));
+        when(qdrantIndexService.search(any(),any(),org.mockito.ArgumentMatchers.anyInt(),any(),org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of(1L));
+        var result=retriever.searchMaterials(indexes,"definition",()->{});
+        assertThat(result).hasSize(2);
+        verify(embeddingClient,org.mockito.Mockito.times(1)).embedQuery(eq("definition"),any());
+        for(long id:List.of(42L,43L)) verify(qdrantIndexService).search(eq(id),eq("t1-v1-p2"),
+                eq(VideoKnowledgeIndexService.PROCESSOR_VERSION),eq(List.of(1.0,0.0)),eq(VideoKnowledgeRetriever.QDRANT_CANDIDATES));
+    }
+
     @Test
     void ranksSemanticallyRelevantChunksAndReturnsSentenceEvidenceIds() {
         VideoContext context = new VideoContext(
@@ -48,7 +66,7 @@ class VideoKnowledgeRetrieverTest {
         when(embeddingClient.embedQuery(eq("network question"), any())).thenReturn(List.of(1.0, 0.0));
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
-                42L, "network question"
+                42L, "network question", () -> {}
         ).hits();
 
         assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)
@@ -82,7 +100,7 @@ class VideoKnowledgeRetrieverTest {
         when(embeddingClient.embedQuery(eq("visual question"), any())).thenReturn(List.of(1.0, 0.0));
 
         List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits = retriever.search(
-                42L, "visual question"
+                42L, "visual question", () -> {}
         ).hits();
 
         assertThat(hits).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex)

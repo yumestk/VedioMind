@@ -40,19 +40,22 @@ public class VideoConversationStore {
     private final VideoMessageCitationMapper citationMapper;
     private final VideoAgentRunMapper agentRunMapper;
     private final StudyAccessService access;
+    private final StudyTaskPreparationService tasks;
+    private final com.example.server.service.context.VideoContextService contexts;
 
     public VideoConversationStore(
             VideoConversationMapper conversationMapper,
             VideoMessageMapper messageMapper,
             VideoMessageCitationMapper citationMapper,
             VideoAgentRunMapper agentRunMapper,
-            StudyAccessService access
+            StudyAccessService access, StudyTaskPreparationService tasks,
+            com.example.server.service.context.VideoContextService contexts
     ) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.citationMapper = citationMapper;
         this.agentRunMapper = agentRunMapper;
-        this.access = access;
+        this.access = access; this.tasks = tasks; this.contexts = contexts;
     }
 
     public VideoConversationResponse create(Long mediaId, Long learnerId, Long courseId) {
@@ -106,6 +109,7 @@ public class VideoConversationStore {
             return new ConversationMessagesResponse(conversationId, sourceAvailable, List.of());
         }
 
+        var conversation = getRequired(conversationId);
         List<Long> messageIds = messages.stream().map(VideoMessage::getId).toList();
         Map<Long, List<VideoQuestionCitationResponse>> citationsByMessage = citationMapper.selectList(
                         new LambdaQueryWrapper<VideoMessageCitation>()
@@ -115,7 +119,7 @@ public class VideoConversationStore {
                 ).stream()
                 .collect(Collectors.groupingBy(
                         VideoMessageCitation::getMessageId,
-                        Collectors.mapping(VideoConversationStore::toCitation, Collectors.toList())
+                        Collectors.mapping(c -> toCitation(c, conversation), Collectors.toList())
                 ));
         List<String> runIds = messages.stream()
                 .map(VideoMessage::getAgentRunId)
@@ -127,7 +131,7 @@ public class VideoConversationStore {
                 : agentRunMapper.selectBatchIds(runIds).stream()
                 .collect(Collectors.toMap(
                         VideoAgentRun::getId,
-                        run -> VideoAgentRunResponse.from(run, sourceAvailable)
+                        run -> VideoAgentRunResponse.from(run, tasks.sourceAvailable(run.getMediaId(), run.getCourseId(), run.getLearnerId(), run.getContextVersion()))
                 ));
 
         return new ConversationMessagesResponse(
@@ -136,7 +140,7 @@ public class VideoConversationStore {
                 messages.stream()
                         .map(message -> ConversationMessageResponse.from(
                                 message,
-                                sourceAvailable ? citationsByMessage.getOrDefault(message.getId(), List.of()) : List.of(),
+                                citationsByMessage.getOrDefault(message.getId(), List.of()),
                                 message.getAgentRunId() == null ? null : runsById.get(message.getAgentRunId())
                         ))
                         .toList()
@@ -156,12 +160,16 @@ public class VideoConversationStore {
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public ConversationTurnResponse saveTurn(
+    public ConversationTurnResponse savePreparedTurn(
             VideoConversation conversation,
-            String question,
+            com.example.server.dto.PreparedStudyTask task,
             VideoQuestionResponse answer
     ) {
-        access.lockReadable(conversation.getMediaId(), conversation.getCourseId(), conversation.getLearnerId());
+        if (!conversation.getId().equals(task.conversationId()) || !conversation.getLearnerId().equals(task.learnerId())
+                || !java.util.Objects.equals(conversation.getCourseId(), task.courseId())
+                || !conversation.getMediaId().equals(task.anchorMediaId())) throw new IllegalArgumentException("Task conversation mismatch");
+        tasks.lockCurrent(task);
+        String question = task.goal();
         LocalDateTime now = LocalDateTime.now();
         VideoMessage userMessage = newMessage(conversation.getId(), "USER", question, null, now);
         messageMapper.insert(userMessage);
@@ -169,6 +177,7 @@ public class VideoConversationStore {
         VideoMessage assistantMessage = newMessage(
                 conversation.getId(), "ASSISTANT", answer.answer(), null, now
         );
+        assistantMessage.setPreparedTask(com.alibaba.fastjson2.JSON.toJSONString(task));
         messageMapper.insert(assistantMessage);
         for (int index = 0; index < answer.citations().size(); index++) {
             VideoQuestionCitationResponse citation = answer.citations().get(index);
@@ -176,6 +185,15 @@ public class VideoConversationStore {
             snapshot.setMessageId(assistantMessage.getId());
             snapshot.setCitationIndex(index);
             snapshot.setSegmentId(citation.segmentId());
+            Long materialId = citation.materialId() == null ? conversation.getMediaId() : citation.materialId();
+            var material = task.materials().stream().filter(m -> m.materialId().equals(materialId)).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Citation outside prepared task"));
+            String type = citation.type() == null ? "TRANSCRIPT" : citation.type();
+            if (!java.util.Set.of("TRANSCRIPT", "OCR").contains(type)) throw new IllegalArgumentException("Invalid citation modality");
+            if (citation.contextVersion() != null && !material.version().equals(citation.contextVersion()))
+                throw new IllegalArgumentException("Citation version mismatch");
+            snapshot.setMaterialId(materialId); snapshot.setContextVersion(material.version()); snapshot.setType(type);
+            snapshot.setEvidenceRef(materialId + ":" + type + ":" + citation.segmentId() + ":" + material.version());
             snapshot.setStartMs(citation.startMs());
             snapshot.setEndMs(citation.endMs());
             snapshot.setText(citation.text());
@@ -191,7 +209,12 @@ public class VideoConversationStore {
         return new ConversationTurnResponse(
                 VideoConversationResponse.from(conversation),
                 ConversationMessageResponse.from(userMessage, List.of(), null),
-                ConversationMessageResponse.from(assistantMessage, answer.citations(), null)
+                ConversationMessageResponse.from(assistantMessage, answer.citations().stream().map(c -> {
+                    Long id = c.materialId() == null ? task.anchorMediaId() : c.materialId();
+                    var m = task.materials().stream().filter(v -> v.materialId().equals(id)).findFirst().orElseThrow();
+                    return new VideoQuestionCitationResponse(c.segmentId(), c.startMs(), c.endMs(), c.text(), id,
+                            m.version(), id + ":" + c.type() + ":" + c.segmentId() + ":" + m.version(), c.type(), true);
+                }).toList(), null)
         );
     }
 
@@ -252,12 +275,12 @@ public class VideoConversationStore {
         conversationMapper.updateById(conversation);
     }
 
-    private static VideoQuestionCitationResponse toCitation(VideoMessageCitation citation) {
-        return new VideoQuestionCitationResponse(
-                citation.getSegmentId(),
-                citation.getStartMs(),
-                citation.getEndMs(),
-                citation.getText()
-        );
+    private VideoQuestionCitationResponse toCitation(VideoMessageCitation citation, VideoConversation conversation) {
+        boolean readable = access.canRead(citation.getMaterialId(), conversation.getCourseId(), conversation.getLearnerId());
+        if (readable && citation.getContextVersion() != null)
+            readable = citation.getContextVersion().equals(contexts.currentVersion(citation.getMaterialId()));
+        return new VideoQuestionCitationResponse(citation.getSegmentId(), citation.getStartMs(), citation.getEndMs(),
+                readable ? citation.getText() : null, citation.getMaterialId(), citation.getContextVersion(),
+                citation.getEvidenceRef(), citation.getType(), readable);
     }
 }

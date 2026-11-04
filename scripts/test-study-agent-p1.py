@@ -11,7 +11,7 @@ def mysql(sql):
         'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --batch --skip-column-names'],
         input=sql,text=True,capture_output=True,check=True)
 def main():
-    databases = ['vediomind_auth_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex]
+    databases = ['vediomind_auth_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex]
     created=[]
     try:
         for database in databases:
@@ -21,7 +21,8 @@ def main():
         env={**os.environ,'AUTH_TEST_MYSQL_USER':'root','AUTH_TEST_MYSQL_PASSWORD':credential,
             'AUTH_TEST_MIGRATION_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[0]+'?allowPublicKeyRetrieval=true&useSSL=false',
             'STUDY_TEST_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[1]+'?allowPublicKeyRetrieval=true&useSSL=false',
-            'STUDY_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[2]+'?allowPublicKeyRetrieval=true&useSSL=false'}
+            'STUDY_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[2]+'?allowPublicKeyRetrieval=true&useSSL=false',
+            'STUDY_P2_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[3]+'?allowPublicKeyRetrieval=true&useSSL=false'}
         log=ROOT/'server/target/study-agent-p1-mysql-tests.log'
         with log.open('w') as output:
             result=subprocess.run(['./mvnw','-q','test'],cwd=ROOT/'server',env=env,stdout=output,stderr=subprocess.STDOUT)

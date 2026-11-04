@@ -113,7 +113,13 @@ public class MediaService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public MediaDetailResponse getDetail(Long mediaId, Long userId) {
-        MediaFile media = getReadableMedia(mediaId, userId);
+        return getDetail(mediaId, userId, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public MediaDetailResponse getDetail(Long mediaId, Long userId, Long courseId) {
+        access.lockReadable(mediaId, courseId, userId);
+        MediaFile media = mediaFileMapper.selectById(mediaId);
         String playbackUrl = media.getObjectKey() == null || media.getObjectKey().isBlank()
                 ? null
                 : objectStorageService.createReadUrl(media.getObjectKey());

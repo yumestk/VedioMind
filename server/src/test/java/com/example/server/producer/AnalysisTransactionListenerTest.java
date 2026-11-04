@@ -66,9 +66,7 @@ class AnalysisTransactionListenerTest {
 
     @Test
     void commitsAgentRunThroughTheSharedTransactionalProducer() {
-        VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 12L, 7L, 3L, null, "learn", "t1-v1-p2"
-        );
+        VideoAgentRunMessage command = new VideoAgentRunMessage("run-1", 12L, 7L, 3L, null, "learn", "t1-v1-p2", com.example.server.service.StudyTaskFixtures.video(12L,3L,7L,null,"learn","t1-v1-p2"));
         Message<VideoAgentRunMessage> message = MessageBuilder.withPayload(command).build();
 
         RocketMQLocalTransactionState state = listener.executeLocalTransaction(message, command);
@@ -79,9 +77,7 @@ class AnalysisTransactionListenerTest {
 
     @Test
     void transactionCheckRecognizesAnAgentRunFromItsHeader() throws Exception {
-        VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-2", 12L, 7L, 3L, null, "learn", "t1-v1-p2"
-        );
+        VideoAgentRunMessage command = new VideoAgentRunMessage("run-2", 12L, 7L, 3L, null, "learn", "t1-v1-p2", com.example.server.service.StudyTaskFixtures.video(12L,3L,7L,null,"learn","t1-v1-p2"));
         Message<byte[]> message = MessageBuilder
                 .withPayload(new ObjectMapper().writeValueAsBytes(command))
                 .setHeader(VideoAgentSubmissionService.TASK_TYPE_HEADER,

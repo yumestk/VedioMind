@@ -392,7 +392,7 @@ class SecurityIntegrationTest {
     void everyResourceEntryUsesSignedIdentityAndRejectsOtherUsersResources() throws Exception {
         String token = access();
         var missing = new IllegalArgumentException("not found");
-        when(media.getDetail(99L, 1L)).thenThrow(missing);
+        when(media.getDetail(99L, 1L, null)).thenThrow(missing);
         when(media.getTranscript(99L, 1L)).thenThrow(missing);
         when(media.getChapters(99L, 1L)).thenThrow(missing);
         doThrow(missing).when(media).delete(99L, 1L);

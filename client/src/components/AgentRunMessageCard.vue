@@ -40,7 +40,7 @@
             <button
               v-for="citation in citationsFor(currentRun.result.coreEvidenceRefs)"
               :key="citation.ref"
-              @click="$emit('seek', citation.startMs)"
+              @click="$emit('seek', { materialId: citation.materialId || currentRun.mediaId, startMs: citation.startMs })"
             >
               <span>{{ formatTime(citation.startMs) }}</span>
               {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}
@@ -65,7 +65,7 @@
               <button
                 v-for="citation in citationsFor(point.evidenceRefs)"
                 :key="citation.ref"
-                @click="$emit('seek', citation.startMs)"
+                @click="$emit('seek', { materialId: citation.materialId || currentRun.mediaId, startMs: citation.startMs })"
               >
                 <span>{{ formatTime(citation.startMs) }}</span>
                 {{ citation.type === 'OCR' ? '画面文字' : '字幕' }} · {{ citation.text }}

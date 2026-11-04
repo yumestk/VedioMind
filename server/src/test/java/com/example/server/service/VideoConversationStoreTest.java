@@ -27,8 +27,9 @@ class VideoConversationStoreTest {
     private final VideoMessageMapper messageMapper = mock(VideoMessageMapper.class);
     private final VideoMessageCitationMapper citationMapper = mock(VideoMessageCitationMapper.class);
     private final VideoAgentRunMapper runMapper = mock(VideoAgentRunMapper.class);
+    private final StudyTaskPreparationService tasks = mock(StudyTaskPreparationService.class);
     private final VideoConversationStore store = new VideoConversationStore(
-            conversationMapper, messageMapper, citationMapper, runMapper, mock(StudyAccessService.class)
+            conversationMapper, messageMapper, citationMapper, runMapper, mock(StudyAccessService.class), tasks, mock(com.example.server.service.context.VideoContextService.class)
     );
 
     @Test
@@ -86,6 +87,8 @@ class VideoConversationStoreTest {
         assertThat(messages.getAllValues().get(1).getAgentRunId()).isEqualTo("run-1");
         verify(conversationMapper).updateById(conversation);
     }
+
+    @org.junit.jupiter.api.BeforeEach void conversationExists() { when(conversationMapper.selectById(7L)).thenReturn(new VideoConversation()); when(tasks.sourceAvailable(any(),any(),any(),any())).thenReturn(true); }
 
     private VideoMessage message(Long id, String type, String runId) {
         VideoMessage message = new VideoMessage();

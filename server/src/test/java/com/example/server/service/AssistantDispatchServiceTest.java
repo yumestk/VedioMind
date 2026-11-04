@@ -26,28 +26,34 @@ class AssistantDispatchServiceTest {
     private final VideoAgentSubmissionService agentSubmissionService = mock(VideoAgentSubmissionService.class);
     private final VideoAgentRunService agentRunService = mock(VideoAgentRunService.class);
     private final AiRateLimitService rateLimitService = mock(AiRateLimitService.class);
+    private final StudyTaskPreparationService tasks = mock(StudyTaskPreparationService.class);
     private final AssistantDispatchService service = new AssistantDispatchService(
             mediaService,
             modeRouter,
             conversationService,
             agentSubmissionService,
             agentRunService,
-            rateLimitService
+            rateLimitService, tasks
     );
+
+    @org.junit.jupiter.api.BeforeEach void preparedTask() {
+        when(tasks.prepare(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(c ->
+                StudyTaskFixtures.video(c.getArgument(0),c.getArgument(1),c.getArgument(2),c.getArgument(3),c.getArgument(5),"v"));
+        when(tasks.forMode(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(c -> c.getArgument(0));
+    }
 
     @Test
     void rejectsForeignMediaBeforeQuotaRoutingConversationOrPaidWork() {
         org.mockito.Mockito.doThrow(new java.util.NoSuchElementException("not found")).when(mediaService).requireReadable(42L, null, 3L);
-        assertThatThrownBy(() -> service.dispatch(42L, 3L, new AssistantDispatchRequest("hello", "AUTO", null, null)))
+        assertThatThrownBy(() -> service.dispatch(42L, 3L, new AssistantDispatchRequest("hello", "AUTO", null, null, null)))
             .isInstanceOf(java.util.NoSuchElementException.class);
         org.mockito.Mockito.verifyNoInteractions(modeRouter, conversationService, agentSubmissionService, agentRunService, rateLimitService);
     }
 
     @Test
     void createsAConversationAndDispatchesAQuickQuestion() {
-        AssistantDispatchRequest request = new AssistantDispatchRequest(
-                " 主讲人是谁？ ", "AUTO", null, null
-        );
+        AssistantDispatchRequest request = new AssistantDispatchRequest(" 主讲人是谁？ ", "AUTO", null, null, null);
         VideoConversationResponse conversation = mock(VideoConversationResponse.class);
         ConversationTurnResponse turn = mock(ConversationTurnResponse.class);
         ConversationMessagesResponse timeline = mock(ConversationMessagesResponse.class);
@@ -57,7 +63,7 @@ class AssistantDispatchServiceTest {
         );
         when(conversation.id()).thenReturn(7L);
         when(conversationService.create(42L, 3L, null)).thenReturn(conversation);
-        when(conversationService.ask(42L, 7L, 3L, "主讲人是谁？")).thenReturn(turn);
+        when(conversationService.askPrepared(org.mockito.ArgumentMatchers.argThat(t -> t.conversationId().equals(7L)))).thenReturn(turn);
         when(turn.conversation()).thenReturn(conversation);
         when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
         when(conversationService.messages(7L, 3L)).thenReturn(timeline);
@@ -72,9 +78,7 @@ class AssistantDispatchServiceTest {
 
     @Test
     void dispatchesADeepTaskToTheExistingAgentSubmissionService() {
-        AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "AUTO", null, null
-        );
+        AssistantDispatchRequest request = new AssistantDispatchRequest("整理整节课", "AUTO", null, null, null);
         VideoConversationResponse conversation = mock(VideoConversationResponse.class);
         ConversationMessagesResponse timeline = mock(ConversationMessagesResponse.class);
         VideoAgentRun run = new VideoAgentRun();
@@ -91,21 +95,19 @@ class AssistantDispatchServiceTest {
         when(conversationService.create(42L, 3L, null)).thenReturn(conversation);
         when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
         when(conversationService.messages(7L, 3L)).thenReturn(timeline);
-        when(agentSubmissionService.submit(42L, 3L, 7L, "整理整节课")).thenReturn(run);
+        when(agentSubmissionService.submit(org.mockito.ArgumentMatchers.argThat(t -> t.conversationId().equals(7L)))).thenReturn(run);
 
         AssistantDispatchResponse response = service.dispatch(42L, 3L, request);
 
         assertThat(response.executionMode()).isEqualTo("DEEP");
         assertThat(response.timeline()).isSameAs(timeline);
-        verify(agentSubmissionService).submit(42L, 3L, 7L, "整理整节课");
+        verify(agentSubmissionService).submit(org.mockito.ArgumentMatchers.argThat(t -> t.conversationId().equals(7L)));
         verify(rateLimitService).requireRequest(3L);
     }
 
     @Test
     void rejectsAnotherDeepTaskWhileOneIsRunning() {
-        AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "DEEP", null, null
-        );
+        AssistantDispatchRequest request = new AssistantDispatchRequest("整理整节课", "DEEP", null, null, null);
         when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
         when(modeRouter.route("DEEP", "整理整节课", true, false)).thenReturn(
                 new AssistantModeRouter.Decision("DEEP", "EXPLICIT", "用户选择")
@@ -118,6 +120,6 @@ class AssistantDispatchServiceTest {
         assertThatThrownBy(() -> service.dispatch(42L, 3L, request))
                 .isInstanceOf(AssistantDispatchService.AgentRunBusyException.class);
 
-        verify(agentSubmissionService, never()).submit(42L, 3L, 7L, "整理整节课");
+        verify(agentSubmissionService, never()).submit(org.mockito.ArgumentMatchers.argThat(t -> t.conversationId().equals(7L)));
     }
 }

@@ -41,6 +41,8 @@ public class AssistantController {
     ) {
         try {
             return dispatchService.dispatch(mediaId, userId, request);
+        } catch (com.example.server.service.StudyTaskPreparationService.SourceChangedException exception) {
+            throw exception;
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage(), exception);
         } catch (NoSuchElementException exception) {
@@ -54,6 +56,13 @@ public class AssistantController {
         } catch (IllegalStateException exception) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, exception.getMessage(), exception);
         }
+    }
+
+    @ExceptionHandler(com.example.server.service.StudyTaskPreparationService.SourceChangedException.class)
+    public ProblemDetail sourceChanged(com.example.server.service.StudyTaskPreparationService.SourceChangedException exception) {
+        var problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, exception.getMessage());
+        problem.setProperty("code", "SOURCE_CHANGED");
+        return problem;
     }
 
     @ExceptionHandler(IndexPreparationException.class)

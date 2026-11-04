@@ -4,7 +4,6 @@ import com.example.server.security.CurrentUserId;
 
 import com.example.server.dto.VideoAgentRunResponse;
 import com.example.server.entity.VideoAgentRun;
-import com.example.server.service.MediaService;
 import com.example.server.service.VideoAgentRunService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,14 +19,11 @@ import java.util.NoSuchElementException;
 public class VideoAgentController {
 
     private final VideoAgentRunService runService;
-    private final MediaService mediaService;
 
     public VideoAgentController(
-            VideoAgentRunService runService,
-            MediaService mediaService
+            VideoAgentRunService runService
     ) {
         this.runService = runService;
-        this.mediaService = mediaService;
     }
 
     @GetMapping("/agent-runs/{runId}")
@@ -41,7 +37,7 @@ public class VideoAgentController {
         } catch (NoSuchElementException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }
-        return VideoAgentRunResponse.from(run, mediaService.canRead(run.getMediaId(), run.getCourseId(), userId));
+        return VideoAgentRunResponse.from(run, runService.sourceAvailable(run));
     }
 
 }

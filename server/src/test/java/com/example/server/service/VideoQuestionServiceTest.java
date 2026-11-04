@@ -21,9 +21,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class VideoQuestionServiceTest {
+    private final StudyTaskPreparationService tasks = mock(StudyTaskPreparationService.class);
 
     private final DeepSeekChatClient chatClient = mock(DeepSeekChatClient.class);
-    private final VideoQuestionService service = new VideoQuestionService(chatClient, new AiPromptBudget(32000, 8192));
+    private final VideoQuestionService service = new VideoQuestionService(chatClient, new AiPromptBudget(32000, 8192), tasks);
     private final List<VideoEvidenceContextService.Candidate> segments = List.of(
             candidate(11L, "第一段字幕", true, 0),
             candidate(12L, "第二段字幕", true, 0)
@@ -41,9 +42,7 @@ class VideoQuestionServiceTest {
                 new DeepSeekMessage("user", "前一个问题"),
                 new DeepSeekMessage("assistant", "前一个回答")
         );
-        VideoQuestionResponse response = service.answer(
-                "视频讲了什么？", segments, history, "知识点 1：事务消息"
-        );
+        VideoQuestionResponse response = service.answerPrepared(prepared("视频讲了什么？"), segments, history, "知识点 1：事务消息", true);
 
         assertThat(response.answer()).isEqualTo("这是回答");
         assertThat(response.citations()).extracting("segmentId").containsExactly(12L, 11L);
@@ -67,7 +66,7 @@ class VideoQuestionServiceTest {
         when(chatClient.chatWithinBudget(anyString(), anyList(), any()))
                 .thenReturn(chat("{\"answer\":\"猜测\",\"segmentIds\":[999]}"));
 
-        assertThatThrownBy(() -> service.answer("问题", segments, List.of(), ""))
+        assertThatThrownBy(() -> service.answerPrepared(prepared("问题"), segments, List.of(), "", true))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("invalid transcript citation");
     }
@@ -77,7 +76,7 @@ class VideoQuestionServiceTest {
         when(chatClient.chatWithinBudget(anyString(), anyList(), any()))
                 .thenReturn(chat("{\"answer\":\"随便说点什么\",\"segmentIds\":[]}"));
 
-        VideoQuestionResponse response = service.answer("字幕中没有的问题", segments, List.of(), "");
+        VideoQuestionResponse response = service.answerPrepared(prepared("字幕中没有的问题"), segments, List.of(), "", true);
 
         assertThat(response.answer()).isEqualTo("视频字幕中没有足够信息回答这个问题。");
         assertThat(response.citations()).isEmpty();
@@ -85,7 +84,7 @@ class VideoQuestionServiceTest {
 
     @Test
     void returnsTheCanonicalNoAnswerWithoutCallingTheModelWhenRetrievalIsEmpty() {
-        VideoQuestionResponse response = service.answer("没有召回的问题", List.of(), List.of(), "");
+        VideoQuestionResponse response = service.answerPrepared(prepared("没有召回的问题"), List.of(), List.of(), "", true);
 
         assertThat(response.answer()).isEqualTo("视频字幕中没有足够信息回答这个问题。");
         assertThat(response.citations()).isEmpty();
@@ -94,8 +93,8 @@ class VideoQuestionServiceTest {
 
     @Test
     void dropsOversizedEvidenceHistoryAndAgentContextBeforeGeneration() {
-        AiPromptBudget budget = new AiPromptBudget(4000, 512);
-        var bounded = new VideoQuestionService(chatClient, budget);
+        AiPromptBudget budget = new AiPromptBudget(6000, 512);
+        var bounded = new VideoQuestionService(chatClient, budget, tasks);
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
             assertThat(budget.fits(call.getArgument(0), call.getArgument(1))).isTrue();
             List<DeepSeekMessage> messages = call.getArgument(1);
@@ -104,50 +103,48 @@ class VideoQuestionServiceTest {
                     .doesNotContain("邻居", "旧历史", "任务结果");
             return chat("{\"answer\":\"回答\",\"segmentIds\":[11]}");
         });
-        bounded.answer("问题", List.of(candidate(11L, "完整核心证据", true, 0),
-                        candidate(12L, "邻居".repeat(3000), false, 20_000)),
-                List.of(new DeepSeekMessage("user", "旧历史".repeat(2000)),
-                        new DeepSeekMessage("assistant", "旧回答")), "任务结果".repeat(2000));
+        bounded.answerPrepared(prepared("问题"), List.of(candidate(11L, "完整核心证据", true, 0),
+                        candidate(12L, "邻居".repeat(3000), false, 20_000)), List.of(new DeepSeekMessage("user", "旧历史".repeat(2000)),
+                        new DeepSeekMessage("assistant", "旧回答")), "任务结果".repeat(2000), true);
     }
 
     @Test
     void skipsAnOversizedWholeCoreSegmentAndKeepsOtherHitsWithoutTruncation() {
-        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks);
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
             List<DeepSeekMessage> messages = call.getArgument(1);
             assertThat(messages.getLast().content()).contains("短的完整证据").doesNotContain("超长");
             return chat("{\"answer\":\"回答\",\"segmentIds\":[12]}");
         });
-        assertThat(bounded.answer("问题", List.of(candidate(11L, "超长".repeat(3000), true, 0),
-                candidate(12L, "短的完整证据", true, 0)), List.of(), "").citations())
+        assertThat(bounded.answerPrepared(prepared("问题"), List.of(candidate(11L, "超长".repeat(3000), true, 0),
+                candidate(12L, "短的完整证据", true, 0)), List.of(), "", true).citations())
                 .extracting("segmentId").containsExactly(12L);
     }
 
     @Test
     void rejectsAReferenceToEvidenceRemovedByTheBudget() {
-        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks);
         when(chatClient.chatWithinBudget(anyString(), anyList(), any()))
                 .thenReturn(chat("{\"answer\":\"回答\",\"segmentIds\":[12]}"));
-        assertThatThrownBy(() -> bounded.answer("问题", List.of(candidate(11L, "核心", true, 0),
-                candidate(12L, "邻居".repeat(3000), false, 30_000)), List.of(), ""))
+        assertThatThrownBy(() -> bounded.answerPrepared(prepared("问题"), List.of(candidate(11L, "核心", true, 0),
+                candidate(12L, "邻居".repeat(3000), false, 30_000)), List.of(), "", true))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("invalid transcript citation");
     }
 
     @Test
     void failsBeforeGenerationWhenNoWholeEvidenceFits() {
-        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
-        assertThatThrownBy(() -> bounded.answer("问题", List.of(candidate(11L, "巨长".repeat(3000), true, 0)),
-                List.of(), "")).isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks);
+        assertThatThrownBy(() -> bounded.answerPrepared(prepared("问题"), List.of(candidate(11L, "巨长".repeat(3000), true, 0)), List.of(), "", true)).isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
         verify(chatClient, never()).chatWithinBudget(any(), any(), any());
     }
 
     @Test
     void fullInputContainsLateEvidenceAndDoesNotSilentlyPackThePrefix() {
-        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks);
         var evidence = List.of(candidate(11L, "开头".repeat(2000), true, 0),
                 candidate(12L, "后半段就业信息", true, 0));
-        assertThat(bounded.fitsFull("就业", evidence, List.of(), "")).isFalse();
-        assertThatThrownBy(() -> bounded.answerFull("就业", evidence, List.of(), ""))
+        assertThat(bounded.fitsPrepared(prepared("就业"), evidence, List.of(), "")).isFalse();
+        assertThatThrownBy(() -> bounded.answerPrepared(prepared("就业"), evidence, List.of(), "", false))
                 .isInstanceOf(AiPromptBudget.PromptBudgetExceededException.class);
         verify(chatClient, never()).chatWithinBudget(any(), any(), any());
     }
@@ -159,14 +156,14 @@ class VideoQuestionServiceTest {
             assertThat(messages.getLast().content()).contains("第一段字幕", "第二段字幕");
             return chat("{\"answer\":\"末尾事实\",\"segmentIds\":[12]}");
         });
-        assertThat(service.fitsFull("末尾是什么", segments, List.of(), "")).isTrue();
-        assertThat(service.answerFull("末尾是什么", segments, List.of(), "").citations())
+        assertThat(service.fitsPrepared(prepared("末尾是什么"), segments, List.of(), "")).isTrue();
+        assertThat(service.answerPrepared(prepared("末尾是什么"), segments, List.of(), "", false).citations())
                 .extracting("segmentId").containsExactly(12L);
     }
 
     @Test
     void preservesTheLatestTurnWhenPackingRetrievedEvidenceForAPronounFollowUp() {
-        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512));
+        var bounded = new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks);
         var evidence = new java.util.ArrayList<VideoEvidenceContextService.Candidate>();
         for (int i = 11; i < 30; i++) evidence.add(timedCandidate(i, "完整相关字幕".repeat(30), true, i * 60_000L));
         var history = List.of(new DeepSeekMessage("user", "有哪些方向？"),
@@ -174,10 +171,10 @@ class VideoQuestionServiceTest {
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
             List<DeepSeekMessage> sent = call.getArgument(1);
             assertThat(sent.subList(0, 2)).isEqualTo(history);
-            assertThat(new AiPromptBudget(4000, 512).fits(call.getArgument(0), sent)).isTrue();
+            assertThat(new AiPromptBudget(6000, 512).fits(call.getArgument(0), sent)).isTrue();
             return chat("{\"answer\":\"第二个方向的解释\",\"segmentIds\":[11]}");
         });
-        bounded.answer("第二个具体是什么意思？", evidence, history, "");
+        bounded.answerPrepared(prepared("第二个具体是什么意思？"), evidence, history, "", true);
     }
 
     @Test
@@ -210,19 +207,19 @@ class VideoQuestionServiceTest {
             assertThat(sent.getLast().content()).contains("独立完整证据").doesNotContain("第一项", "第二项");
             return chat("{\"answer\":\"回答\",\"segmentIds\":[13]}");
         });
-        new VideoQuestionService(chatClient, new AiPromptBudget(4000, 512))
-                .answer("问题", evidence, List.of(), "");
+        new VideoQuestionService(chatClient, new AiPromptBudget(6000, 512), tasks)
+                .answerPrepared(prepared("问题"), evidence, List.of(), "", true);
     }
 
     private void assertWindowRetained(List<VideoEvidenceContextService.Candidate> evidence, String... expected) {
-        var budget = new AiPromptBudget(4000, 512);
+        var budget = new AiPromptBudget(6000, 512);
         when(chatClient.chatWithinBudget(anyString(), anyList(), any())).thenAnswer(call -> {
             List<DeepSeekMessage> sent = call.getArgument(1);
             assertThat(sent.getLast().content()).contains(expected);
             assertThat(budget.fits(call.getArgument(0), sent)).isTrue();
             return chat("{\"answer\":\"回答\",\"segmentIds\":[11,12]}");
         });
-        new VideoQuestionService(chatClient, budget).answer("问题", evidence, List.of(), "");
+        new VideoQuestionService(chatClient, budget, tasks).answerPrepared(prepared("问题"), evidence, List.of(), "", true);
     }
 
     private VideoEvidenceContextService.Candidate timedCandidate(long id, String text, boolean core, long start) {
@@ -233,6 +230,10 @@ class VideoQuestionServiceTest {
     private VideoEvidenceContextService.Candidate candidate(long id, String text, boolean core, long distance) {
         return new VideoEvidenceContextService.Candidate(new VideoAgentCitation("TRANSCRIPT:" + id,
                 "TRANSCRIPT", id, id == 11 ? 1000 : 3000, id == 11 ? 3000 : 6000, text), core, distance);
+    }
+
+    private com.example.server.dto.PreparedStudyTask prepared(String question) {
+        return StudyTaskFixtures.video(42L,3L,7L,null,question,"v").forDeliverables(List.of("ANSWER"));
     }
 
     private DeepSeekChatClient.ChatResult chat(String content) {

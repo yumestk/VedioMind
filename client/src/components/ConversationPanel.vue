@@ -42,12 +42,13 @@
             <div class="citation-list">
               <button
                 v-for="citation in message.citations"
-                :key="`${message.id}-${citation.segmentId}`"
+                :key="`${message.id}-${citation.evidenceRef || citation.segmentId}`"
                 class="citation-button"
-                @click="$emit('seek', citation.startMs)"
+                :disabled="citation.sourceAvailable === false || Boolean(archivedConversation)"
+                @click="$emit('seek', { materialId: citation.materialId || mediaId, startMs: citation.startMs })"
               >
-                <span>{{ formatTime(citation.startMs) }}</span>
-                {{ citation.text }}
+                <span>{{ citation.materialId ? `视频 #${citation.materialId} · ` : '' }}{{ formatTime(citation.startMs) }}</span>
+                {{ citation.sourceAvailable === false ? '来源已失效' : citation.text }}
               </button>
             </div>
           </details>

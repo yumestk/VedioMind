@@ -7,6 +7,7 @@ public record VideoAgentRunMessage(
         Long learnerId,
         Long courseId,
         String goal,
-        String contextVersion
+        String contextVersion,
+        PreparedStudyTask preparedTask
 ) {
 }

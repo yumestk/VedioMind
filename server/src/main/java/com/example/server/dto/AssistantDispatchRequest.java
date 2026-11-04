@@ -4,6 +4,7 @@ public record AssistantDispatchRequest(
         String content,
         String mode,
         Long conversationId,
-        Long courseId
+        Long courseId,
+        PreparedStudyTask.Scope scope
 ) {
 }

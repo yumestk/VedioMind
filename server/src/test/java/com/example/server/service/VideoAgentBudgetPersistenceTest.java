@@ -24,16 +24,16 @@ class VideoAgentBudgetPersistenceTest {
         JdbcDataSource db=new JdbcDataSource();
         db.setURL("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1");
         var jdbc=new JdbcTemplate(db);
-        jdbc.execute("CREATE TABLE video_agent_runs (id VARCHAR(36) PRIMARY KEY,media_id BIGINT,learner_id BIGINT,conversation_id BIGINT,course_id BIGINT,task_scope CLOB,goal VARCHAR(500),context_version VARCHAR(100),status VARCHAR(24),progress INT,retry_count INT,dispatch_version BIGINT,next_attempt_at TIMESTAMP,quota_wait_started_at TIMESTAMP,generation_calls INT,retrieval_calls INT,input_tokens INT,output_tokens INT,token_usage_known BOOLEAN,result_json CLOB,citations_json CLOB,error_message VARCHAR(2000),created_at TIMESTAMP,updated_at TIMESTAMP,started_at TIMESTAMP,deadline_at TIMESTAMP,finished_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE video_agent_runs (id VARCHAR(36) PRIMARY KEY,media_id BIGINT,learner_id BIGINT,conversation_id BIGINT,course_id BIGINT,task_scope CLOB,prepared_task CLOB,goal VARCHAR(500),context_version VARCHAR(100),status VARCHAR(24),progress INT,retry_count INT,dispatch_version BIGINT,next_attempt_at TIMESTAMP,quota_wait_started_at TIMESTAMP,generation_calls INT,retrieval_calls INT,input_tokens INT,output_tokens INT,token_usage_known BOOLEAN,result_json CLOB,citations_json CLOB,error_message VARCHAR(2000),created_at TIMESTAMP,updated_at TIMESTAMP,started_at TIMESTAMP,deadline_at TIMESTAMP,finished_at TIMESTAMP)");
         var config=new MybatisConfiguration(); config.setMapUnderscoreToCamelCase(true);
         config.setEnvironment(new Environment("test",new JdbcTransactionFactory(),db));
         config.addMapper(VideoAgentRunMapper.class);
         var factory=new MybatisSqlSessionFactoryBuilder().build(config);
         try(var session=factory.openSession(true)) {
             var mapper=session.getMapper(VideoAgentRunMapper.class);
-            var service=new VideoAgentRunService(mapper,mock(VideoAgentStepMapper.class),mock(MediaFileMapper.class),mock(VideoConversationStore.class),mock(StudyAccessService.class));
+            var service=new VideoAgentRunService(mapper,mock(VideoAgentStepMapper.class),mock(MediaFileMapper.class),mock(VideoConversationStore.class),mock(StudyAccessService.class),mock(StudyTaskPreparationService.class));
             var run=new VideoAgentRun();run.setId("r");run.setStatus("QUEUED");run.setGenerationCalls(0);run.setRetrievalCalls(0);run.setInputTokens(0);run.setOutputTokens(0);run.setTokenUsageKnown(true);
-            mapper.insert(run);
+            run.setPreparedTask(com.alibaba.fastjson2.JSON.toJSONString(StudyTaskFixtures.video(42L,3L,34L,null,"notes","v"))); mapper.insert(run);
             assertThat(service.beginAttempt("r",0)).isTrue();
             run=service.getRequired("r");
             assertThat(java.time.Duration.between(run.getStartedAt(),run.getDeadlineAt()).getSeconds()).isEqualTo(120);
@@ -63,7 +63,7 @@ class VideoAgentBudgetPersistenceTest {
             var tasks=new java.util.ArrayList<Future<?>>();
             for(int i=0;i<20;i++) tasks.add(pool.submit(() -> {
                 try(var session=factory.openSession(true)) {
-                    var service=new VideoAgentRunService(session.getMapper(VideoAgentRunMapper.class),mock(VideoAgentStepMapper.class),mock(MediaFileMapper.class),mock(VideoConversationStore.class),mock(StudyAccessService.class));
+                    var service=new VideoAgentRunService(session.getMapper(VideoAgentRunMapper.class),mock(VideoAgentStepMapper.class),mock(MediaFileMapper.class),mock(VideoConversationStore.class),mock(StudyAccessService.class),mock(StudyTaskPreparationService.class));
                     try { service.reserveGenerationCall("r");allowed.incrementAndGet(); }
                     catch(AiPromptBudget.PromptBudgetExceededException expected) { }
                 }

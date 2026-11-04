@@ -29,6 +29,8 @@ class StudyUpgradeMySqlTest {
                 + "('unlinked',10,'synthetic goal','v','FAILED',NULL)");
         jdbc.update("INSERT INTO video_messages(conversation_id,message_type,content,agent_run_id,created_at) VALUES (1,'AGENT_RUN','old card','linked',NOW())");
         jdbc.update("INSERT INTO video_agent_steps(run_id,stage,status,output_json) VALUES ('linked','NOTES','SUCCEEDED',JSON_OBJECT('saved',true))");
+        jdbc.update("INSERT INTO video_messages(id,conversation_id,message_type,content,created_at) VALUES (100,1,'ASSISTANT','historical answer',NOW())");
+        jdbc.update("INSERT INTO video_message_citations(message_id,citation_index,segment_id,start_ms,end_ms,text) VALUES (100,0,99,0,100,'historical original')");
         String database=jdbc.queryForObject("SELECT DATABASE()",String.class);
         var dumpProcess=new ProcessBuilder("docker","exec",System.getenv().getOrDefault("P1_MYSQL_CONTAINER","mysql-media"),"sh","-c",
                 "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" exec mysqldump -uroot --single-transaction --no-tablespaces \"$1\"","sh",database).start();
@@ -42,6 +44,10 @@ class StudyUpgradeMySqlTest {
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("count changed");
         assertThat(jdbc.queryForObject("SELECT MAX(CAST(version AS UNSIGNED)) FROM flyway_schema_history",Integer.class)).isEqualTo(18);
         StudyDataUpgrade.upgrade(url,user,password,1,1,database,backup,crypto);
+        assertThat(jdbc.queryForObject("SELECT material_id FROM video_message_citations WHERE message_id=100",Long.class)).isEqualTo(10L);
+        assertThat(jdbc.queryForObject("SELECT context_version FROM video_message_citations WHERE message_id=100",String.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT text FROM video_message_citations WHERE message_id=100",String.class)).isEqualTo("historical original");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_runs WHERE prepared_task IS NOT NULL",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_conversations",Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_conversations WHERE title='导入的历史任务' AND learner_id=1",Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_runs WHERE learner_id=1 AND conversation_id IS NOT NULL AND task_scope IS NOT NULL",Integer.class)).isEqualTo(2);
@@ -50,6 +56,10 @@ class StudyUpgradeMySqlTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM courses",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.title')) FROM video_agent_runs WHERE id='linked'",String.class)).isEqualTo("saved notes");
         StudyDataUpgrade.upgrade(url,user,password,1,1,database,backup,crypto);
+        assertThat(jdbc.queryForObject("SELECT material_id FROM video_message_citations WHERE message_id=100",Long.class)).isEqualTo(10L);
+        assertThat(jdbc.queryForObject("SELECT context_version FROM video_message_citations WHERE message_id=100",String.class)).isNull();
+        assertThat(jdbc.queryForObject("SELECT text FROM video_message_citations WHERE message_id=100",String.class)).isEqualTo("historical original");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_runs WHERE prepared_task IS NOT NULL",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_conversations",Integer.class)).isEqualTo(2);
         var flyway=Flyway.configure().dataSource(ds).load(); flyway.validate();
         assertThat(flyway.migrate().migrationsExecuted).isZero();

@@ -5,17 +5,8 @@ public record AssistantDispatchResponse(
         String routedBy,
         String reason,
         VideoConversationResponse conversation,
-        ConversationMessagesResponse timeline
+        ConversationMessagesResponse timeline,
+        String preparationStatus,
+        PreparedStudyTask task
 ) {
-    public static AssistantDispatchResponse of(
-            String executionMode,
-            String routedBy,
-            String reason,
-            VideoConversationResponse conversation,
-            ConversationMessagesResponse timeline
-    ) {
-        return new AssistantDispatchResponse(
-                executionMode, routedBy, reason, conversation, timeline
-        );
-    }
 }

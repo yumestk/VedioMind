@@ -97,23 +97,12 @@ public class DeepSeekChatClient {
             throw new IllegalStateException("DEEPSEEK_API_KEY is not configured");
         }
 
-        JSONObject bodyJson = new JSONObject();
-        bodyJson.put("model", "deepseek-v4-flash");
-        bodyJson.put("stream", false);
-        if (maxOutputTokens != null) bodyJson.put("max_tokens", maxOutputTokens);
-
-        JSONArray messages = new JSONArray();
-        messages.add(JSONObject.of("role", "system", "content", systemPrompt));
         for (DeepSeekMessage message : conversation) {
-            if (message == null
-                    || !Set.of("user", "assistant").contains(message.role())
-                    || message.content() == null
-                    || message.content().isBlank()) {
+            if (message == null || !Set.of("user", "assistant").contains(message.role())
+                    || message.content() == null || message.content().isBlank())
                 throw new IllegalArgumentException("DeepSeek message is invalid");
-            }
-            messages.add(JSONObject.of("role", message.role(), "content", message.content()));
         }
-        bodyJson.put("messages", messages);
+        JSONObject bodyJson = AiPromptBudget.request(systemPrompt, conversation, maxOutputTokens);
 
         Request request = new Request.Builder()
                 .url(baseUrl + "/chat/completions")

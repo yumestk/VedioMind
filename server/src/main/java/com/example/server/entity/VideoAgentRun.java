@@ -17,6 +17,7 @@ public class VideoAgentRun {
     private Long courseId;
     private Long conversationId;
     private String taskScope;
+    private String preparedTask;
     private String goal;
     private String contextVersion;
     private String status;

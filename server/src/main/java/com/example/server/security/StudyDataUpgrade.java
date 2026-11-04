@@ -39,16 +39,16 @@ public final class StudyDataUpgrade {
             if (jdbc.queryForObject("SELECT GET_LOCK('vediomind-study-p1-upgrade',0)", Integer.class) != 1)
                 throw new IllegalStateException("Another offline conversion is running");
             try {
-                String version = jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=1 AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1", String.class);
-                if ("20".equals(version)) { Flyway.configure().dataSource(url,user,password).load().validate(); System.out.println("P1 already converted and validated; no rows changed."); return; }
-                if (!List.of("18", "19").contains(version)) throw new IllegalStateException("Expected schema V18 or V19");
-                if (jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=?", Integer.class, owner) != 1
-                        || jdbc.queryForObject("SELECT COUNT(*) FROM media_files WHERE user_id IS NULL OR user_id<>?", Integer.class, owner) != 0)
-                    throw new IllegalStateException("Confirmed single-owner mapping no longer holds; audit again");
                 for (String table : List.of("analysis_jobs", "video_agent_runs")) {
                     if (jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " WHERE status NOT IN ('SUCCEEDED','PARTIAL','FAILED')", Integer.class) != 0)
                         throw new IllegalStateException("Stop and drain background tasks before conversion");
                 }
+                String version = jdbc.queryForObject("SELECT version FROM flyway_schema_history WHERE success=1 AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1", String.class);
+                if (Integer.parseInt(version) >= 20) { var current = Flyway.configure().dataSource(url,user,password).load(); current.migrate(); current.validate(); System.out.println("Historical ownership already converted; schema migrations applied and validated."); return; }
+                if (!List.of("18", "19").contains(version)) throw new IllegalStateException("Expected schema V18 or V19");
+                if (jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=?", Integer.class, owner) != 1
+                        || jdbc.queryForObject("SELECT COUNT(*) FROM media_files WHERE user_id IS NULL OR user_id<>?", Integer.class, owner) != 0)
+                    throw new IllegalStateException("Confirmed single-owner mapping no longer holds; audit again");
                 int unlinked = jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_runs r WHERE NOT EXISTS "
                         + "(SELECT 1 FROM video_messages m WHERE m.agent_run_id=r.id)", Integer.class);
                 if (unlinked != expected) throw new IllegalStateException("Unlinked run count changed; audit again");
@@ -83,7 +83,7 @@ public final class StudyDataUpgrade {
                 finally { db.setAutoCommit(true); }
                 var flyway = Flyway.configure().dataSource(url,user,password).load();
                 flyway.migrate(); flyway.validate();
-                System.out.println("P1 schema V20 validated.");
+                System.out.println("Study schema upgraded and validated.");
             } finally { jdbc.queryForObject("SELECT RELEASE_LOCK('vediomind-study-p1-upgrade')", Integer.class); }
         } catch (java.sql.SQLException error) {
             throw new IllegalStateException("Offline database operation failed, SQLState=" + error.getSQLState());
