@@ -37,8 +37,8 @@ class AssistantDispatchServiceTest {
 
     @Test
     void rejectsForeignMediaBeforeQuotaRoutingConversationOrPaidWork() {
-        org.mockito.Mockito.doThrow(new IllegalArgumentException("not found")).when(mediaService).requireOwnership(42L, 3L);
-        assertThatThrownBy(() -> service.dispatch(42L, 3L, new AssistantDispatchRequest("hello", "AUTO", null)))
+        org.mockito.Mockito.doThrow(new java.util.NoSuchElementException("not found")).when(mediaService).requireReadable(42L, null, 3L);
+        assertThatThrownBy(() -> service.dispatch(42L, 3L, new AssistantDispatchRequest("hello", "AUTO", null, null)))
             .isInstanceOf(java.util.NoSuchElementException.class);
         org.mockito.Mockito.verifyNoInteractions(modeRouter, conversationService, agentSubmissionService, agentRunService, rateLimitService);
     }
@@ -46,7 +46,7 @@ class AssistantDispatchServiceTest {
     @Test
     void createsAConversationAndDispatchesAQuickQuestion() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                " 主讲人是谁？ ", "AUTO", null
+                " 主讲人是谁？ ", "AUTO", null, null
         );
         VideoConversationResponse conversation = mock(VideoConversationResponse.class);
         ConversationTurnResponse turn = mock(ConversationTurnResponse.class);
@@ -56,7 +56,7 @@ class AssistantDispatchServiceTest {
                 new AssistantModeRouter.Decision("QUICK", "RULE", "普通问题")
         );
         when(conversation.id()).thenReturn(7L);
-        when(conversationService.create(42L, 3L)).thenReturn(conversation);
+        when(conversationService.create(42L, 3L, null)).thenReturn(conversation);
         when(conversationService.ask(42L, 7L, 3L, "主讲人是谁？")).thenReturn(turn);
         when(turn.conversation()).thenReturn(conversation);
         when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
@@ -73,7 +73,7 @@ class AssistantDispatchServiceTest {
     @Test
     void dispatchesADeepTaskToTheExistingAgentSubmissionService() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "AUTO", null
+                "整理整节课", "AUTO", null, null
         );
         VideoConversationResponse conversation = mock(VideoConversationResponse.class);
         ConversationMessagesResponse timeline = mock(ConversationMessagesResponse.class);
@@ -86,9 +86,9 @@ class AssistantDispatchServiceTest {
         when(modeRouter.route("AUTO", "整理整节课", true, false)).thenReturn(
                 new AssistantModeRouter.Decision("DEEP", "RULE", "结构化任务")
         );
-        when(agentRunService.findLatestActive(42L)).thenReturn(Optional.empty());
+        when(agentRunService.findLatestActive(7L, 3L)).thenReturn(Optional.empty());
         when(conversation.id()).thenReturn(7L);
-        when(conversationService.create(42L, 3L)).thenReturn(conversation);
+        when(conversationService.create(42L, 3L, null)).thenReturn(conversation);
         when(conversationService.get(42L, 7L, 3L)).thenReturn(conversation);
         when(conversationService.messages(7L, 3L)).thenReturn(timeline);
         when(agentSubmissionService.submit(42L, 3L, 7L, "整理整节课")).thenReturn(run);
@@ -104,13 +104,16 @@ class AssistantDispatchServiceTest {
     @Test
     void rejectsAnotherDeepTaskWhileOneIsRunning() {
         AssistantDispatchRequest request = new AssistantDispatchRequest(
-                "整理整节课", "DEEP", null
+                "整理整节课", "DEEP", null, null
         );
         when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
         when(modeRouter.route("DEEP", "整理整节课", true, false)).thenReturn(
                 new AssistantModeRouter.Decision("DEEP", "EXPLICIT", "用户选择")
         );
-        when(agentRunService.findLatestActive(42L)).thenReturn(Optional.of(new VideoAgentRun()));
+        var conversation = mock(VideoConversationResponse.class);
+        when(conversation.id()).thenReturn(7L);
+        when(conversationService.create(42L, 3L, null)).thenReturn(conversation);
+        when(agentRunService.findLatestActive(7L, 3L)).thenReturn(Optional.of(new VideoAgentRun()));
 
         assertThatThrownBy(() -> service.dispatch(42L, 3L, request))
                 .isInstanceOf(AssistantDispatchService.AgentRunBusyException.class);

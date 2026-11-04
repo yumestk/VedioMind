@@ -402,13 +402,13 @@ class SecurityIntegrationTest {
         when(uploads.createPartUrl("other", 1, 1L)).thenThrow(new NoSuchElementException());
         when(uploads.complete(eq("other"), any(), eq(1L))).thenThrow(new NoSuchElementException());
         doThrow(new NoSuchElementException()).when(uploads).abort("other", 1L);
-        when(conversations.list(99L, 1L)).thenThrow(new NoSuchElementException());
+        when(conversations.list(99L, 1L, null)).thenThrow(new NoSuchElementException());
         when(conversations.messages(999L, 1L)).thenThrow(new NoSuchElementException());
         when(assistant.dispatch(eq(99L), eq(1L), any())).thenThrow(new NoSuchElementException());
         var run = new com.example.server.entity.VideoAgentRun();
         run.setId("other");
         run.setMediaId(99L);
-        when(runs.getRequired("other")).thenReturn(run);
+        when(runs.getOwned("other", 1L)).thenThrow(new NoSuchElementException());
         var requests =
                 List.of(
                         get("/media/99"),

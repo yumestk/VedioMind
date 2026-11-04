@@ -4,6 +4,8 @@ public record VideoAgentRunMessage(
         String runId,
         Long mediaId,
         Long conversationId,
+        Long learnerId,
+        Long courseId,
         String goal,
         String contextVersion
 ) {

@@ -23,6 +23,7 @@
     <p v-if="currentRun.status === 'PARTIAL'" class="run-error" role="status">
       已交付有依据的部分笔记：{{ currentRun.errorMessage }}
     </p>
+    <p v-if="!currentRun.sourceAvailable" role="status">引用来源已失效，原文和播放不可用；已保留学习成果。</p>
     <p class="run-metrics">排队 {{ queueSeconds }} 秒<span v-if="currentRun.startedAt"> · 执行 {{ executionSeconds }} 秒（上限120秒）</span></p>
 
     <template v-if="currentRun.result">
@@ -57,7 +58,7 @@
         >
           <h3>{{ index + 1 }}. {{ point.title }}</h3>
           <p>{{ point.explanation }}</p>
-          <button :disabled="isRunning || busy" @click="followup(`展开知识点：${point.title}。只依据视频原文，详细说明条件与例子。`)">展开此知识点</button>
+          <button :disabled="isRunning || busy || !currentRun.sourceAvailable" @click="followup(`展开知识点：${point.title}。只依据视频原文，详细说明条件与例子。`)">展开此知识点</button>
           <details v-if="citationsFor(point.evidenceRefs).length" class="evidence-details">
             <summary>参考证据 · {{ citationsFor(point.evidenceRefs).length }} 条</summary>
             <div class="evidence-list">
@@ -74,7 +75,7 @@
         </article>
       </section>
 
-      <button v-if="!currentRun.result.quiz?.length" :disabled="isRunning || busy"
+      <button v-if="!currentRun.result.quiz?.length" :disabled="isRunning || busy || !currentRun.sourceAvailable"
         @click="followup(`针对主题「${currentRun.goal}」生成3道自测题，答案附视频原文依据。`)">按需生成自测题</button>
       <section v-if="currentRun.result.quiz?.length" class="result-block">
         <p class="run-kicker">SELF CHECK</p>

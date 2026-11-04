@@ -128,7 +128,7 @@ class AiServiceTest {
         verify(analysisJobService).markStage("job-1", AnalysisJobStatus.GENERATING_CHAPTERS, 95);
         verify(chapterService).replace(42L, chapterDrafts);
         verify(analysisJobService).markSucceeded("job-1", null);
-        verify(redisTemplate).delete("media:list:v3:user:7");
+        verify(redisTemplate).delete("media:list:v4:user:7");
     }
 
     @Test

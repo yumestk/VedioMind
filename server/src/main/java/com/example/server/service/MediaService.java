@@ -18,6 +18,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -27,8 +29,9 @@ import java.util.concurrent.TimeUnit;
 public class MediaService {
 
     private static final Logger log = LoggerFactory.getLogger(MediaService.class);
-    static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v3:user:";
+    static final String MEDIA_LIST_CACHE_PREFIX = "media:list:v4:user:";
 
+    private final StudyAccessService access;
     private final MediaFileMapper mediaFileMapper;
     private final ObjectStorageService objectStorageService;
     private final ExternalVideoImportService externalVideoImportService;
@@ -50,8 +53,10 @@ public class MediaService {
             ChapterService chapterService,
             VisualEvidenceService visualEvidenceService,
             RedissonClient redissonClient,
-            QdrantKnowledgeIndexService qdrantIndexService
+            QdrantKnowledgeIndexService qdrantIndexService,
+            StudyAccessService access
     ) {
+        this.access = access;
         this.mediaFileMapper = mediaFileMapper;
         this.objectStorageService = objectStorageService;
         this.externalVideoImportService = externalVideoImportService;
@@ -87,6 +92,7 @@ public class MediaService {
         List<MediaListItemResponse> result = mediaFileMapper.selectList(
                         new LambdaQueryWrapper<MediaFile>()
                                 .eq(MediaFile::getUserId, userId)
+                                .isNull(MediaFile::getDeletedAt)
                                 .orderByDesc(MediaFile::getId)
                 ).stream()
                 .map(MediaListItemResponse::from)
@@ -105,12 +111,13 @@ public class MediaService {
         return result;
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public MediaDetailResponse getDetail(Long mediaId, Long userId) {
-        MediaFile media = getOwnedMedia(mediaId, userId);
+        MediaFile media = getReadableMedia(mediaId, userId);
         String playbackUrl = media.getObjectKey() == null || media.getObjectKey().isBlank()
                 ? null
                 : objectStorageService.createReadUrl(media.getObjectKey());
-        return MediaDetailResponse.from(media, playbackUrl);
+        return MediaDetailResponse.from(media, playbackUrl, userId.equals(media.getUserId()));
     }
 
     public void requireOwnership(Long mediaId, Long userId) {
@@ -118,11 +125,12 @@ public class MediaService {
     }
 
     public boolean isStudyMode(Long mediaId, Long userId) {
-        return "STUDY".equals(getOwnedMedia(mediaId, userId).getAnalysisMode());
+        return "STUDY".equals(getReadableMedia(mediaId, userId).getAnalysisMode());
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public MediaTranscriptResponse getTranscript(Long mediaId, Long userId) {
-        getOwnedMedia(mediaId, userId);
+        getReadableMedia(mediaId, userId);
         return new MediaTranscriptResponse(
                 mediaId,
                 transcriptService.listByMediaId(mediaId).stream()
@@ -131,8 +139,9 @@ public class MediaService {
         );
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public MediaChaptersResponse getChapters(Long mediaId, Long userId) {
-        getOwnedMedia(mediaId, userId);
+        getReadableMedia(mediaId, userId);
         return new MediaChaptersResponse(
                 mediaId,
                 chapterService.listByMediaId(mediaId).stream()
@@ -142,7 +151,7 @@ public class MediaService {
     }
 
     public void delete(Long mediaId, Long userId) {
-        MediaFile media = getOwnedMedia(mediaId, userId);
+        MediaFile media = getDeletableMedia(mediaId, userId);
         if (media.getContentSha256() == null || media.getContentSha256().isBlank()) {
             deleteMedia(media, userId);
             return;
@@ -151,7 +160,7 @@ public class MediaService {
         RLock lock = redissonClient.getLock(contentLockKey(userId, media.getContentSha256()));
         lock.lock();
         try {
-            deleteMedia(getOwnedMedia(mediaId, userId), userId);
+            deleteMedia(getDeletableMedia(mediaId, userId), userId);
         } finally {
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
@@ -160,18 +169,25 @@ public class MediaService {
     }
 
     private void deleteMedia(MediaFile media, Long userId) {
-        if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
-            objectStorageService.remove(media.getObjectKey());
+        access.deleteSource(media.getId(), userId);
+        invalidateList(userId);
+        try {
+            if (media.getObjectKey() != null && !media.getObjectKey().isBlank()) {
+                objectStorageService.remove(media.getObjectKey());
+            }
+        } catch (RuntimeException error) {
+            log.warn("Deleted source {}: video cleanup requires a repeated DELETE", media.getId());
         }
-        visualEvidenceService.removeObjects(media.getId());
+        try {
+            visualEvidenceService.removeObjects(media.getId());
+        } catch (RuntimeException error) {
+            log.warn("Deleted source {}: visual cleanup requires a repeated DELETE", media.getId());
+        }
         try {
             qdrantIndexService.deleteMedia(media.getId());
-        } catch (QdrantKnowledgeIndexService.QdrantUnavailableException exception) {
-            log.warn("Qdrant cleanup unavailable for deleted media {}: {}",
-                    media.getId(), exception.getMessage());
+        } catch (RuntimeException error) {
+            log.warn("Deleted source {}: index cleanup requires a repeated DELETE", media.getId());
         }
-        mediaFileMapper.deleteById(media.getId());
-        invalidateList(userId);
     }
 
     MediaListItemResponse registerLocalUpload(
@@ -187,6 +203,7 @@ public class MediaService {
                 new LambdaQueryWrapper<MediaFile>().eq(MediaFile::getObjectKey, objectKey)
         );
         if (existing != null) {
+            if (existing.getDeletedAt() != null) throw new IllegalArgumentException("Upload source has been deleted");
             if (!userId.equals(existing.getUserId())) {
                 throw new IllegalStateException("Media object is owned by another user");
             }
@@ -221,6 +238,7 @@ public class MediaService {
         return mediaFileMapper.selectOne(
                 new LambdaQueryWrapper<MediaFile>()
                         .eq(MediaFile::getUserId, userId)
+                        .isNull(MediaFile::getDeletedAt)
                         .eq(MediaFile::getContentSha256, contentSha256)
         );
     }
@@ -229,16 +247,38 @@ public class MediaService {
         return "lock:media-content:" + userId + ":" + contentSha256;
     }
 
+    public void requireReadable(Long mediaId, Long courseId, Long userId) {
+        access.requireRead(mediaId, courseId, userId);
+    }
+
+    public boolean canRead(Long mediaId, Long courseId, Long userId) {
+        return access.canRead(mediaId, courseId, userId);
+    }
+
+    private MediaFile getReadableMedia(Long mediaId, Long userId) {
+        access.lockReadable(mediaId, null, userId);
+        return mediaFileMapper.selectById(mediaId);
+    }
+
     private MediaFile getOwnedMedia(Long mediaId, Long userId) {
         requireUserId(userId);
         MediaFile media = mediaFileMapper.selectOne(
                 new LambdaQueryWrapper<MediaFile>()
                         .eq(MediaFile::getId, mediaId)
                         .eq(MediaFile::getUserId, userId)
+                        .isNull(MediaFile::getDeletedAt)
         );
         if (media == null) {
             throw new IllegalArgumentException("Media does not exist: " + mediaId);
         }
+        return media;
+    }
+
+    private MediaFile getDeletableMedia(Long mediaId, Long userId) {
+        requireUserId(userId);
+        MediaFile media = mediaFileMapper.selectOne(new LambdaQueryWrapper<MediaFile>()
+                .eq(MediaFile::getId, mediaId).eq(MediaFile::getUserId, userId));
+        if (media == null) throw new IllegalArgumentException("Media does not exist: " + mediaId);
         return media;
     }
 

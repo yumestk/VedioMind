@@ -35,7 +35,7 @@ public class KnowledgeIndexPreparationService {
     @Transactional
     public AnalysisJob prepare(Long mediaId, Long userId, boolean retry) {
         // Lock before establishing a repeatable-read snapshot, so concurrent submissions see the committed task.
-        var rows = jdbc.queryForList("SELECT user_id FROM media_files WHERE id = ? FOR UPDATE", mediaId);
+        var rows = jdbc.queryForList("SELECT user_id FROM media_files WHERE id = ? AND deleted_at IS NULL FOR UPDATE", mediaId);
         if (rows.isEmpty() || userId == null || ((Number) rows.getFirst().get("user_id")).longValue() != userId) {
             throw new NoSuchElementException("Video does not exist or is not owned by this user");
         }

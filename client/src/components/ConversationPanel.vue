@@ -5,7 +5,8 @@
     <p>请先完成 AI 分析，问答会严格基于带时间戳的原始字幕证据。</p>
   </div>
   <section v-else class="conversation-panel">
-    <div class="conversation-toolbar">
+    <p v-if="!sourceAvailable" role="status">来源已失效，已保留学习成果；原文与播放不可用。</p>
+    <div v-if="!archivedConversation" class="conversation-toolbar">
       <select
         :value="activeConversationId || ''"
         :disabled="loading || busy"
@@ -83,6 +84,8 @@ import { errorMessage } from '../api/http'
 import AgentRunMessageCard from './AgentRunMessageCard.vue'
 
 const props = defineProps({
+  courseId: { type: Number, default: null },
+  archivedConversation: { type: Object, default: null },
   mediaId: { type: Number, required: true },
   userId: { type: Number, required: true },
   hasTranscript: { type: Boolean, default: false },
@@ -92,6 +95,7 @@ const props = defineProps({
 
 defineEmits(['seek', 'followup'])
 
+const sourceAvailable = ref(true)
 const conversations = ref([])
 const activeConversationId = ref(null)
 const messages = ref([])
@@ -106,6 +110,7 @@ const loadMessages = async (conversationId) => {
   }
   const result = await getConversationMessages(conversationId)
   messages.value = result.messages || []
+  sourceAvailable.value = result.sourceAvailable
 }
 
 const initialize = async () => {
@@ -113,7 +118,7 @@ const initialize = async () => {
   loading.value = true
   error.value = ''
   try {
-    conversations.value = await listVideoConversations(props.mediaId)
+    conversations.value = props.archivedConversation ? [props.archivedConversation] : await listVideoConversations(props.mediaId, props.courseId)
     activeConversationId.value = conversations.value[0]?.id || null
     await loadMessages(activeConversationId.value)
   } catch (requestError) {
@@ -170,7 +175,7 @@ const formatTime = (milliseconds) => {
   return hours ? `${hours}:${minuteText}:${secondText}` : `${minuteText}:${secondText}`
 }
 
-watch(() => [props.mediaId, props.userId, props.hasTranscript], initialize, { immediate: true })
+watch(() => [props.mediaId, props.courseId, props.userId, props.hasTranscript, props.archivedConversation?.id], initialize, { immediate: true })
 
 defineExpose({ acceptTimeline, dispatchContext })
 </script>

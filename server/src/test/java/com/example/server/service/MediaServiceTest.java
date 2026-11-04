@@ -31,6 +31,7 @@ class MediaServiceTest {
     private final VisualEvidenceService visualEvidenceService = mock(VisualEvidenceService.class);
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final QdrantKnowledgeIndexService qdrantIndexService = mock(QdrantKnowledgeIndexService.class);
+    private final StudyAccessService access = mock(StudyAccessService.class);
     private final MediaService mediaService = new MediaService(
             mediaFileMapper,
             objectStorageService,
@@ -41,15 +42,16 @@ class MediaServiceTest {
             chapterService,
             visualEvidenceService,
             redissonClient,
-            qdrantIndexService
+            qdrantIndexService, access
     );
 
     @Test
     void rejectsForeignMediaBeforeReadsDeletesAndStorageSigning() {
         when(mediaFileMapper.selectOne(any())).thenReturn(null);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getDetail(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getTranscript(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getChapters(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
+        doThrow(new java.util.NoSuchElementException()).when(access).lockReadable(42L, null, 99L);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getDetail(42L, 99L)).isInstanceOf(java.util.NoSuchElementException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getTranscript(42L, 99L)).isInstanceOf(java.util.NoSuchElementException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.getChapters(42L, 99L)).isInstanceOf(java.util.NoSuchElementException.class);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> mediaService.delete(42L, 99L)).isInstanceOf(IllegalArgumentException.class);
         org.mockito.Mockito.verifyNoInteractions(objectStorageService, transcriptService, chapterService, visualEvidenceService, redissonClient, qdrantIndexService);
     }
@@ -81,9 +83,11 @@ class MediaServiceTest {
         media.setFilename("lesson.mp4");
         media.setObjectKey("objects/lesson.mp4");
         when(mediaFileMapper.selectOne(any())).thenReturn(media);
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
         when(objectStorageService.createReadUrl("objects/lesson.mp4"))
                 .thenReturn("https://media.example/lesson.mp4?signature=temporary");
 
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
         MediaDetailResponse response = mediaService.getDetail(42L, 7L);
 
         assertThat(response.playbackUrl()).contains("signature=temporary");
@@ -99,6 +103,7 @@ class MediaServiceTest {
         media.setSourceType("EXTERNAL_URL");
         when(mediaFileMapper.selectOne(any())).thenReturn(media);
 
+        when(mediaFileMapper.selectById(42L)).thenReturn(media);
         MediaDetailResponse response = mediaService.getDetail(42L, 7L);
 
         assertThat(response.playbackUrl()).isNull();
@@ -119,7 +124,8 @@ class MediaServiceTest {
         verify(objectStorageService).remove("objects/lesson.mp4");
         verify(visualEvidenceService).removeObjects(42L);
         verify(qdrantIndexService).deleteMedia(42L);
-        verify(mediaFileMapper).deleteById(42L);
+        verify(access).deleteSource(42L, 7L);
+        verify(mediaFileMapper, never()).deleteById(42L);
     }
 
     @Test
@@ -153,6 +159,7 @@ class MediaServiceTest {
 
         mediaService.delete(42L, 7L);
 
-        verify(mediaFileMapper).deleteById(42L);
+        verify(access).deleteSource(42L, 7L);
+        verify(mediaFileMapper, never()).deleteById(42L);
     }
 }

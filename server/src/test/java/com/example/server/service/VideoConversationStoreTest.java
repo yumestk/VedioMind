@@ -28,7 +28,7 @@ class VideoConversationStoreTest {
     private final VideoMessageCitationMapper citationMapper = mock(VideoMessageCitationMapper.class);
     private final VideoAgentRunMapper runMapper = mock(VideoAgentRunMapper.class);
     private final VideoConversationStore store = new VideoConversationStore(
-            conversationMapper, messageMapper, citationMapper, runMapper
+            conversationMapper, messageMapper, citationMapper, runMapper, mock(StudyAccessService.class)
     );
 
     @Test
@@ -38,7 +38,7 @@ class VideoConversationStoreTest {
         when(messageMapper.selectList(any())).thenReturn(List.of(user, assistant));
         when(citationMapper.selectList(any())).thenReturn(List.of());
 
-        ConversationMessagesResponse timeline = store.listMessages(7L);
+        ConversationMessagesResponse timeline = store.listMessages(7L, true);
 
         assertThat(timeline.conversationId()).isEqualTo(7L);
         assertThat(timeline.messages()).extracting(message -> message.messageType())
@@ -60,7 +60,7 @@ class VideoConversationStoreTest {
         when(citationMapper.selectList(any())).thenReturn(List.of());
         when(runMapper.selectBatchIds(any())).thenReturn(List.of(run));
 
-        ConversationMessagesResponse timeline = store.listMessages(7L);
+        ConversationMessagesResponse timeline = store.listMessages(7L, true);
 
         assertThat(timeline.messages()).hasSize(2);
         assertThat(timeline.messages().get(0).messageType()).isEqualTo("USER");

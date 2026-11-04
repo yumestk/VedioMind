@@ -38,7 +38,7 @@ public class AnalysisJobService {
         }
 
         MediaFile media = mediaFileMapper.selectById(message.mediaId());
-        if (media == null) {
+        if (media == null || media.getDeletedAt() != null) {
             throw new IllegalArgumentException("Media does not exist: " + message.mediaId());
         }
 
@@ -102,7 +102,8 @@ public class AnalysisJobService {
                 .set(AnalysisJob::getStatus, status.name())
                 .set(AnalysisJob::getProgress, progress)
                 .set(AnalysisJob::getUpdatedAt, LocalDateTime.now());
-        analysisJobMapper.update(null, update);
+        if (analysisJobMapper.update(null, update) != 1)
+            throw new IllegalArgumentException("Analysis task is already stopped");
     }
 
     public void markSucceeded(String jobId, String warningMessage) {

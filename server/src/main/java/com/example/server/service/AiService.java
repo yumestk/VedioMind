@@ -88,7 +88,7 @@ public class AiService {
 
             AnalysisJob job = analysisJobService.getRequired(jobId);
             MediaFile mediaFile = mediaFileMapper.selectById(job.getMediaId());
-            if (mediaFile == null) {
+            if (mediaFile == null || mediaFile.getDeletedAt() != null) {
                 throw new IllegalArgumentException("Media does not exist: " + job.getMediaId());
             }
 
@@ -164,7 +164,7 @@ public class AiService {
                     throw new IllegalStateException("The language model returned an empty summary");
                 }
                 UpdateWrapper<MediaFile> update = new UpdateWrapper<MediaFile>()
-                        .eq("id", mediaFile.getId())
+                        .eq("id", mediaFile.getId()).isNull("deleted_at")
                         .set("ai_summary", summary);
                 if (summaryContextVersion != null) {
                     update.set("ai_summary_context_version", summaryContextVersion);

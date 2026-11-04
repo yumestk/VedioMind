@@ -1,0 +1,54 @@
+{
+  "fixtureVersion": "study-agent-p0-v1",
+  "synthetic": true,
+  "purpose": "P1-P7 shared scenario; not imported into the application database",
+  "actors": ["author-a", "student-b", "student-c"],
+  "course": {
+    "key": "course-db-review",
+    "owner": "author-a",
+    "visibility": "PUBLISHED",
+    "structureVersion": "structure-v1",
+    "sections": [{"key": "chapter-3", "title": "第三章：事务", "materials": ["lecture-3a", "lecture-3b"]}]
+  },
+  "materials": [
+    {
+      "key": "lecture-3a", "owner": "author-a", "contextVersion": "transcript-v1-ocr-v0",
+      "evidence": [
+        {"type": "TRANSCRIPT", "sourceId": 1, "startMs": 0, "endMs": 10000, "text": "事务的原子性要求一组操作全部完成，或者全部不生效。"},
+        {"type": "TRANSCRIPT", "sourceId": 2, "startMs": 295000, "endMs": 299000, "text": "隔离级别描述并发事务之间可以观察到哪些变化。"},
+        {"type": "TRANSCRIPT", "sourceId": 3, "startMs": 300000, "endMs": 307000, "text": "这里的隔离并不意味着所有隔离级别都会完全串行执行。"}
+      ]
+    },
+    {
+      "key": "lecture-3b", "owner": "author-a", "contextVersion": "transcript-v1-ocr-v1",
+      "evidence": [
+        {"type": "TRANSCRIPT", "sourceId": 1, "startMs": 0, "endMs": 10000, "text": "脏读是读取到了其他事务尚未提交的修改。"},
+        {"type": "TRANSCRIPT", "sourceId": 2, "startMs": 10000, "endMs": 22000, "text": "不可重复读指同一事务中再次读取同一记录时，观察到了其他事务已提交的变化。"},
+        {"type": "OCR", "sourceId": 1, "startMs": 20000, "endMs": 22000, "text": "复习：原子性、隔离性、脏读、不可重复读", "confidence": 0.99}
+      ]
+    }
+  ],
+  "privateOutsideScope": {"key": "private-other-video", "owner": "student-c", "visibility": "PRIVATE"},
+  "request": {
+    "actor": "student-b",
+    "text": "整理第三章的简明笔记，再出三道单选题",
+    "taskTypes": ["NOTES", "QUIZ"],
+    "allowedMaterials": ["lecture-3a", "lecture-3b"],
+    "deliverables": [
+      {"slotId": "note-1", "kind": "NOTE"},
+      {"slotId": "quiz-1", "kind": "QUIZ", "count": 3, "questionType": "SINGLE_CHOICE"}
+    ]
+  },
+  "checks": [
+    "student-b and student-c can read published course materials",
+    "author-a and student-c cannot read student-b learning records",
+    "private-other-video cannot enter retrieval or TaskScope",
+    "same sourceId across materials or modalities has distinct evidence identity",
+    "cross-boundary subtitle condition is preserved",
+    "NOTE alone does not complete NOTE plus QUIZ",
+    "quiz answers do not appear before a real submission",
+    "objective scores are computed from the saved quiz version",
+    "source withdrawal keeps student artifacts but disables original reads and playback"
+  ],
+  "evaluationBoundary": "Synthetic engineering fixture only; does not measure real lecture coverage or teaching quality"
+}

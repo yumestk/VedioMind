@@ -58,14 +58,14 @@ public class VideoConversationService {
         this.evidenceContextService = evidenceContextService;
     }
 
-    public List<VideoConversationResponse> list(Long mediaId, Long userId) {
-        requireMediaOwnership(mediaId, userId);
-        return store.listByMediaId(mediaId);
+    public List<VideoConversationResponse> list(Long mediaId, Long userId, Long courseId) {
+        mediaService.requireReadable(mediaId, courseId, userId);
+        return store.listByMediaId(mediaId, userId, courseId);
     }
 
-    public VideoConversationResponse create(Long mediaId, Long userId) {
-        requireMediaOwnership(mediaId, userId);
-        return store.create(mediaId);
+    public VideoConversationResponse create(Long mediaId, Long userId, Long courseId) {
+        mediaService.requireReadable(mediaId, courseId, userId);
+        return store.create(mediaId, userId, courseId);
     }
 
     public VideoConversationResponse get(Long mediaId, Long conversationId, Long userId) {
@@ -76,7 +76,7 @@ public class VideoConversationService {
 
     public ConversationMessagesResponse messages(Long conversationId, Long userId) {
         VideoConversation conversation = requireOwnedConversation(conversationId, userId);
-        return store.listMessages(conversation.getId());
+        return store.listMessages(conversation.getId(), mediaService.canRead(conversation.getMediaId(), conversation.getCourseId(), userId));
     }
 
     public ConversationTurnResponse ask(Long mediaId, Long conversationId, Long userId, String question) {
@@ -92,6 +92,7 @@ public class VideoConversationService {
             }
 
             VideoConversation conversation = requireConversationForMedia(mediaId, conversationId, userId);
+            mediaService.requireReadable(mediaId, conversation.getCourseId(), userId);
             MediaTranscriptResponse transcript = mediaService.getTranscript(conversation.getMediaId(), userId);
             if (transcript.segments().isEmpty()) {
                 throw new ConversationNotReadyException("Analyze the video before asking questions");
@@ -125,6 +126,7 @@ public class VideoConversationService {
                     history,
                     agentContext
             );
+            mediaService.requireReadable(mediaId, conversation.getCourseId(), userId);
             return store.saveTurn(conversation, normalizedQuestion, answer);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -138,7 +140,8 @@ public class VideoConversationService {
 
     private VideoConversation requireOwnedConversation(Long conversationId, Long userId) {
         VideoConversation conversation = store.getRequired(conversationId);
-        requireMediaOwnership(conversation.getMediaId(), userId);
+        if (userId == null || !userId.equals(conversation.getLearnerId()))
+            throw new NoSuchElementException("Study conversation not found");
         return conversation;
     }
 
@@ -154,12 +157,11 @@ public class VideoConversationService {
         return conversation;
     }
 
-    private void requireMediaOwnership(Long mediaId, Long userId) {
-        try {
-            mediaService.requireOwnership(mediaId, userId);
-        } catch (IllegalArgumentException exception) {
-            throw new NoSuchElementException(exception.getMessage(), exception);
-        }
+    public List<VideoConversationResponse> personal(Long userId) {
+        return store.listPersonal(userId).stream().map(conversation -> new VideoConversationResponse(
+                conversation.getId(), conversation.getMediaId(), conversation.getCourseId(),
+                mediaService.canRead(conversation.getMediaId(), conversation.getCourseId(), userId),
+                conversation.getTitle(), conversation.getCreatedAt(), conversation.getUpdatedAt())).toList();
     }
 
     private String normalizeQuestion(String question) {
@@ -197,6 +199,10 @@ public class VideoConversationService {
             var result = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
             return evidenceContextService.rankForQuestion(question, evidenceContextService.expand(result.context(), result.hits(), false));
         } catch (VideoKnowledgeIndexService.KnowledgeIndexNotReadyException exception) {
+            try { mediaService.requireOwnership(mediaId, userId); }
+            catch (IllegalArgumentException denied) {
+                throw new ConversationNotReadyException("课程问答资料尚未就绪，请联系课程作者完成准备");
+            }
             throw new KnowledgeIndexPreparationService.IndexPreparationException(
                     indexPreparation.prepare(mediaId, userId, false));
         }

@@ -15,6 +15,7 @@ public class MediaFile {
     private Long id;
 
     private Long userId;
+    private LocalDateTime deletedAt;
     private String filename;
     private String status;
     private String sourceType;

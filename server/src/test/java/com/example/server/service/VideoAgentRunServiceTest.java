@@ -28,17 +28,18 @@ class VideoAgentRunServiceTest {
     private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
     private final VideoConversationStore conversationStore = mock(VideoConversationStore.class);
     private final VideoAgentRunService service = new VideoAgentRunService(
-            runMapper, stepMapper, mediaFileMapper, conversationStore
+            runMapper, stepMapper, mediaFileMapper, conversationStore, mock(StudyAccessService.class)
     );
 
     @Test
     void createsTheRunAndTimelineMessagesInOneServiceTransaction() {
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, "整理整节课", "context-v1"
+                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
         );
         MediaFile media = new MediaFile();
         VideoConversation conversation = new VideoConversation();
         conversation.setId(7L);
+        conversation.setLearnerId(3L);
         conversation.setMediaId(42L);
         when(mediaFileMapper.selectById(42L)).thenReturn(media);
         when(conversationStore.getRequired(7L)).thenReturn(conversation);
@@ -59,7 +60,7 @@ class VideoAgentRunServiceTest {
         VideoAgentRun existing = new VideoAgentRun();
         when(runMapper.selectById("run-1")).thenReturn(existing);
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, "整理整节课", "context-v1"
+                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
         );
 
         service.createQueuedRun(command);
@@ -74,11 +75,12 @@ class VideoAgentRunServiceTest {
     void rejectsAConversationFromAnotherVideo() {
         VideoConversation conversation = new VideoConversation();
         conversation.setId(7L);
+        conversation.setLearnerId(3L);
         conversation.setMediaId(99L);
         when(mediaFileMapper.selectById(42L)).thenReturn(new MediaFile());
         when(conversationStore.getRequired(7L)).thenReturn(conversation);
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, "整理整节课", "context-v1"
+                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
         );
 
         assertThatThrownBy(() -> service.createQueuedRun(command))

@@ -37,19 +37,11 @@ public class VideoAgentController {
     ) {
         VideoAgentRun run;
         try {
-            run = runService.getRequired(runId);
+            run = runService.getOwned(runId, userId);
         } catch (NoSuchElementException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }
-        requireOwnership(run.getMediaId(), userId);
-        return VideoAgentRunResponse.from(run);
+        return VideoAgentRunResponse.from(run, mediaService.canRead(run.getMediaId(), run.getCourseId(), userId));
     }
 
-    private void requireOwnership(Long mediaId, Long userId) {
-        try {
-            mediaService.requireOwnership(mediaId, userId);
-        } catch (IllegalArgumentException exception) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
-        }
-    }
 }

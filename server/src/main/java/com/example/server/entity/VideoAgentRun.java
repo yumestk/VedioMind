@@ -13,6 +13,10 @@ public class VideoAgentRun {
     @TableId
     private String id;
     private Long mediaId;
+    private Long learnerId;
+    private Long courseId;
+    private Long conversationId;
+    private String taskScope;
     private String goal;
     private String contextVersion;
     private String status;

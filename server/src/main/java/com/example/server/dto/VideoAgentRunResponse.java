@@ -9,6 +9,9 @@ import java.util.List;
 public record VideoAgentRunResponse(
         String id,
         Long mediaId,
+        Long conversationId,
+        Long courseId,
+        boolean sourceAvailable,
         String goal,
         String contextVersion,
         String status,
@@ -27,7 +30,7 @@ public record VideoAgentRunResponse(
         LocalDateTime startedAt,
         LocalDateTime finishedAt
 ) {
-    public static VideoAgentRunResponse from(VideoAgentRun run) {
+    public static VideoAgentRunResponse from(VideoAgentRun run, boolean sourceAvailable) {
         VideoAgentResult result = run.getResultJson() == null
                 ? null
                 : JSON.parseObject(run.getResultJson(), VideoAgentResult.class);
@@ -35,10 +38,10 @@ public record VideoAgentRunResponse(
                 ? List.of()
                 : JSON.parseArray(run.getCitationsJson(), VideoAgentCitation.class);
         return new VideoAgentRunResponse(
-                run.getId(), run.getMediaId(), run.getGoal(), run.getContextVersion(),
+                run.getId(), run.getMediaId(), run.getConversationId(), run.getCourseId(), sourceAvailable, run.getGoal(), run.getContextVersion(),
                 run.getStatus(), run.getProgress(), run.getRetryCount(), run.getNextAttemptAt(),
                 run.getGenerationCalls(), run.getRetrievalCalls(), run.getInputTokens(),
-                run.getOutputTokens(), run.getTokenUsageKnown(), result, citations,
+                run.getOutputTokens(), run.getTokenUsageKnown(), result, sourceAvailable ? citations : List.of(),
                 run.getErrorMessage(),
                 run.getCreatedAt(), run.getStartedAt(), run.getFinishedAt()
         );

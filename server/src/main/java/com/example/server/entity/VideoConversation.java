@@ -15,6 +15,8 @@ public class VideoConversation {
     private Long id;
 
     private Long mediaId;
+    private Long learnerId;
+    private Long courseId;
     private String title;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

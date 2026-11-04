@@ -21,28 +21,34 @@ public class VideoAgentSubmissionService {
     private final MediaService mediaService;
     private final VideoKnowledgeIndexService indexService;
     private final VideoAgentRunService runService;
+    private final VideoConversationStore conversations;
 
     public VideoAgentSubmissionService(
             RocketMQTemplate rocketMQTemplate,
             MediaService mediaService,
             VideoKnowledgeIndexService indexService,
-            VideoAgentRunService runService
+            VideoAgentRunService runService,
+            VideoConversationStore conversations
     ) {
         this.rocketMQTemplate = rocketMQTemplate;
         this.mediaService = mediaService;
         this.indexService = indexService;
         this.runService = runService;
+        this.conversations = conversations;
     }
 
     public VideoAgentRun submit(Long mediaId, Long userId, Long conversationId, String goal) {
         String normalizedGoal = normalizeGoal(goal);
-        mediaService.requireOwnership(mediaId, userId);
+        var conversation = conversations.getRequired(conversationId);
+        if (!userId.equals(conversation.getLearnerId()) || !mediaId.equals(conversation.getMediaId()))
+            throw new java.util.NoSuchElementException("Study conversation not found");
+        mediaService.requireReadable(mediaId, conversation.getCourseId(), userId);
         if (!mediaService.isStudyMode(mediaId, userId)) {
             throw new IllegalArgumentException("Learning Agent is only available in Study Mode");
         }
         String contextVersion = indexService.requireReady(mediaId).context().version();
         VideoAgentRunMessage command = new VideoAgentRunMessage(
-                UUID.randomUUID().toString(), mediaId, conversationId,
+                UUID.randomUUID().toString(), mediaId, conversationId, userId, conversation.getCourseId(),
                 normalizedGoal, contextVersion
         );
         TransactionSendResult result = rocketMQTemplate.sendMessageInTransaction(

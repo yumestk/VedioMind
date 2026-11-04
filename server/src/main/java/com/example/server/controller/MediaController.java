@@ -55,6 +55,11 @@ public class MediaController {
         return problem;
     }
 
+    @ExceptionHandler(java.util.NoSuchElementException.class)
+    public void missing(java.util.NoSuchElementException error) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, error.getMessage());
+    }
+
     @GetMapping
     public List<MediaListItemResponse> list(@CurrentUserId Long userId) {
         return mediaService.list(userId);

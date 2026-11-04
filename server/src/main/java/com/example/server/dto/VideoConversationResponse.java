@@ -7,6 +7,8 @@ import java.time.LocalDateTime;
 public record VideoConversationResponse(
         Long id,
         Long mediaId,
+        Long courseId,
+        boolean sourceAvailable,
         String title,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
@@ -15,6 +17,8 @@ public record VideoConversationResponse(
         return new VideoConversationResponse(
                 conversation.getId(),
                 conversation.getMediaId(),
+                conversation.getCourseId(),
+                true,
                 conversation.getTitle(),
                 conversation.getCreatedAt(),
                 conversation.getUpdatedAt()

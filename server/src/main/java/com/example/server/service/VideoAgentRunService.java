@@ -30,21 +30,25 @@ public class VideoAgentRunService {
     private final VideoAgentStepMapper stepMapper;
     private final MediaFileMapper mediaFileMapper;
     private final VideoConversationStore conversationStore;
+    private final StudyAccessService access;
 
     public VideoAgentRunService(
             VideoAgentRunMapper runMapper,
             VideoAgentStepMapper stepMapper,
             MediaFileMapper mediaFileMapper,
-            VideoConversationStore conversationStore
+            VideoConversationStore conversationStore,
+            StudyAccessService access
     ) {
         this.runMapper = runMapper;
         this.stepMapper = stepMapper;
         this.mediaFileMapper = mediaFileMapper;
         this.conversationStore = conversationStore;
+        this.access = access;
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void createQueuedRun(VideoAgentRunMessage message) {
+        access.lockReadable(message.mediaId(), message.courseId(), message.learnerId());
         if (runMapper.selectById(message.runId()) != null) {
             return;
         }
@@ -52,6 +56,12 @@ public class VideoAgentRunService {
             throw new IllegalArgumentException("Media does not exist: " + message.mediaId());
         }
         var conversation = conversationStore.getRequired(message.conversationId());
+        access.requireLearner(conversation.getLearnerId(), message.learnerId());
+        access.requireRead(message.mediaId(), conversation.getCourseId(), message.learnerId());
+        if (!java.util.Objects.equals(message.courseId(), conversation.getCourseId()))
+            throw new IllegalArgumentException("Course context mismatch");
+        if (findLatestActive(conversation.getId(), message.learnerId()).isPresent())
+            throw new IllegalArgumentException("Conversation already has an active Agent task");
         if (!message.mediaId().equals(conversation.getMediaId())) {
             throw new IllegalArgumentException("Conversation does not belong to the Agent media");
         }
@@ -59,6 +69,10 @@ public class VideoAgentRunService {
         VideoAgentRun run = new VideoAgentRun();
         run.setId(message.runId());
         run.setMediaId(message.mediaId());
+        run.setLearnerId(message.learnerId());
+        run.setCourseId(conversation.getCourseId());
+        run.setConversationId(conversation.getId());
+        run.setTaskScope(JSON.toJSONString(java.util.Map.of("type", "VIDEO", "mediaIds", List.of(message.mediaId()))));
         run.setGoal(message.goal());
         run.setContextVersion(message.contextVersion());
         run.setStatus("QUEUED");
@@ -86,10 +100,11 @@ public class VideoAgentRunService {
                 .orElseThrow(() -> new NoSuchElementException("Agent run does not exist: " + runId));
     }
 
-    public Optional<VideoAgentRun> findLatestActive(Long mediaId) {
+    public Optional<VideoAgentRun> findLatestActive(Long conversationId, Long learnerId) {
         return Optional.ofNullable(runMapper.selectOne(
                 new LambdaQueryWrapper<VideoAgentRun>()
-                        .eq(VideoAgentRun::getMediaId, mediaId)
+                        .eq(VideoAgentRun::getConversationId, conversationId)
+                        .eq(VideoAgentRun::getLearnerId, learnerId)
                         .notIn(VideoAgentRun::getStatus, TERMINAL)
                         .orderByDesc(VideoAgentRun::getCreatedAt)
                         .last("LIMIT 1")
@@ -101,6 +116,7 @@ public class VideoAgentRunService {
         if (TERMINAL.contains(run.getStatus())) {
             return false;
         }
+        requireSource(run);
         LocalDateTime now = LocalDateTime.now();
         LambdaUpdateWrapper<VideoAgentRun> update = new LambdaUpdateWrapper<VideoAgentRun>()
                 .eq(VideoAgentRun::getId, runId)
@@ -211,6 +227,7 @@ public class VideoAgentRunService {
     }
 
     public void saveUsableResult(String runId, VideoAgentResult result, List<VideoAgentCitation> citations) {
+        ensureWithinDeadline(runId);
         runMapper.update(null, new LambdaUpdateWrapper<VideoAgentRun>()
                 .eq(VideoAgentRun::getId, runId).notIn(VideoAgentRun::getStatus, TERMINAL)
                 .set(VideoAgentRun::getResultJson, JSON.toJSONString(result))
@@ -250,8 +267,24 @@ public class VideoAgentRunService {
 
     private void ensureWithinDeadline(String runId) {
         VideoAgentRun run = getRequired(runId);
+        requireSource(run);
+        if (TERMINAL.contains(run.getStatus())) throw new IllegalArgumentException("Agent task is already stopped");
         if (run.getDeadlineAt() != null && LocalDateTime.now().isAfter(run.getDeadlineAt())) {
             throw new com.example.server.service.ai.AiPromptBudget.PromptBudgetExceededException("Agent run exceeded its 120 second deadline");
+        }
+    }
+
+    public VideoAgentRun getOwned(String runId, Long learnerId) {
+        VideoAgentRun run = getRequired(runId);
+        access.requireLearner(run.getLearnerId(), learnerId);
+        return run;
+    }
+
+    private void requireSource(VideoAgentRun run) {
+        try { access.requireRead(run.getMediaId(), run.getCourseId(), run.getLearnerId()); }
+        catch (NoSuchElementException denied) {
+            finishStopped(run.getId(), "来源已撤回或删除，任务已停止");
+            throw new IllegalArgumentException("Source is unavailable");
         }
     }
 

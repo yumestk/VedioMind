@@ -9,6 +9,8 @@
           <small>LAB</small>
         </router-link>
         <nav class="header-actions">
+          <router-link to="/courses">课程</router-link>
+          <router-link to="/study-history">我的学习</router-link>
           <span class="system-state"><i></i> SYSTEM READY</span>
           <button v-if="!currentUser" class="secondary-button compact" @click="openAuth">登录 / 注册</button>
           <div v-else class="account-chip">
@@ -20,7 +22,7 @@
     </header>
 
     <p v-if="sessionStatus === 'unavailable'" class="session-warning">登录服务暂时不可用，请稍后重试。<button class="text-button" @click="retrySession">重试恢复</button></p>
-    <router-view />
+    <router-view :key="$route.path" />
 
     <AuthDialog v-if="authOpen" @close="closeAuth" />
     <transition name="toast">

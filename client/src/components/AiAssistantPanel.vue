@@ -3,6 +3,7 @@
     <ConversationPanel
       ref="conversationPanel"
       :media-id="mediaId"
+      :course-id="courseId"
       :user-id="userId"
       :has-transcript="hasTranscript"
       :analysis-mode="analysisMode"
@@ -18,7 +19,7 @@
       </div>
       <div v-if="indexJob" class="route-info" role="status">
         {{ indexStatusText(indexJob) }}
-        <button v-if="indexJob.status === 'FAILED'" type="button" @click="retryIndex" :disabled="submitting">重试准备</button>
+        <button v-if="canManage && indexJob.status === 'FAILED'" type="button" @click="retryIndex" :disabled="submitting">重试准备</button>
       </div>
       <textarea
         v-model="content"
@@ -52,6 +53,8 @@ import ConversationPanel from './ConversationPanel.vue'
 
 const props = defineProps({
   mediaId: { type: Number, required: true },
+  courseId: { type: Number, default: null },
+  canManage: { type: Boolean, default: false },
   userId: { type: Number, required: true },
   hasTranscript: { type: Boolean, default: false },
   analysisMode: { type: String, default: '' }
@@ -133,7 +136,8 @@ const submit = async () => {
     const response = await dispatchAssistantMessage(props.mediaId, {
       content: value,
       mode: requestedMode.value,
-      conversationId: conversationContext.conversationId
+      conversationId: conversationContext.conversationId,
+      courseId: props.courseId
     })
     if (mediaId !== props.mediaId) return
     followIndexJob(null)
@@ -160,6 +164,7 @@ watch(() => props.mediaId, async mediaId => {
   requestedMode.value = 'AUTO'
   routeInfo.value = null
   error.value = ''
+  if (!props.canManage) return
   try {
     const job = await getLatestKnowledgeIndexJob(mediaId)
     if (props.mediaId === mediaId && job && job.status !== 'SUCCEEDED') followIndexJob(job)

@@ -2,7 +2,7 @@
 
 面向长视频的 AI 内容理解平台。用户可以上传本地视频，或粘贴 Bilibili/YouTube 公共视频链接；系统复用本地 ASR 或平台字幕完成内容总结、章节生成和带引用问答，并在前端展示可恢复的任务进度。
 
-> 当前重点是项目演示与异步架构闭环。完整鉴权、精细用量计费和第三方平台长期治理仍在 Roadmap 中，不建议直接部署到公网。
+> 当前为单体原型，已接入 Spring Security 登录认证、个人资源隔离，以及课程作者/学习者权限。
 
 ## 核心能力
 
@@ -19,7 +19,7 @@
 - 供应商瞬时故障先在客户端有限重试，耗尽后再由 RocketMQ 恢复当前任务阶段；鉴权和参数等永久错误直接标记 `FAILED`，不做无效重投。
 - Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
 - Redis / Redisson 用户级、全局和供应商级分布式限流限制 AI 请求；DeepSeek、阿里云 ASR 与 Embedding 共用轻量重试器，仅对网络错误、408、429 和 5xx 使用带抖动的指数退避，总尝试次数最多 3 次。
-- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟，Agent 沿用首次启动后的 10 分钟总时限。
+- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟，Agent 沿用首次启动后的 120 秒总时限。
 - 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
 - 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
 - URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
@@ -44,6 +44,36 @@
 - 用户可在深度任务完成后继续留在原会话快速追问；Agent 结果只辅助理解追问和改写检索，最终回答仍必须由原始字幕证据支持。
 - 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击后按来源跳转本地播放器或平台嵌入播放器。
 - 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
+
+## 课程与个人学习空间（P1）
+
+- 导航“课程”支持创建课程、添加课程章节、将本人视频加入章节、发布和撤回；章节按添加时的位置排序。课程章节与视频时间轴章节是两种不同结构。
+- 登录用户可读取已发布课程的视频、字幕与时间轴，复用原有工作区提问。作者管理本人材料；观看权不授予重新分析或付费索引准备权，资料未就绪时需由作者准备。
+- 会话与 Agent Run 直接记录 learnerId、courseId、conversationId 和单视频 taskScope。会话、消息、任务与成果只对所属学生开放，课程作者也不能查看其他学生的私人学习记录。
+- 同一会话最多一个活动深度任务，数据库唯一约束防止并发重复；不同学生学习同一视频互不占用该约束。
+- “我的学习”保留个人记录。撤回课程或移除视频会禁用失去访问权者的来源，并停止相关活动任务；视频删除使用来源墓碑，保留学生成果和任务历史，原文证据快照不再返回，引用显示来源失效。已签发的对象地址仍有到期窗口。
+- 对象或向量清理失败会记录媒体 ID；作者可重复调用 `DELETE /media/{mediaId}` 重试清理。撤权已经在数据库生效，不因清理服务故障恢复来源访问。
+- 当前任务仍执行单视频问答/笔记流程；跨视频检索、工具循环、真实答卷等属于后续阶段。
+
+新增 API：`GET/POST /courses`、`GET /courses/{id}`、`POST /courses/{id}/sections`、`POST /courses/{id}/sections/{sectionId}/materials`、`DELETE /courses/{id}/materials/{materialId}`、`PUT /courses/{id}/visibility`（`{published:true|false}`）、`GET /conversations`（本人记录）。课程对话列表接受 `courseId` 查询参数，助手请求需携带同一 `courseId`；身份始终来自签名凭据。
+
+### 既有 V18 数据升级
+
+新空库可直接运行 Flyway 至 V20。有历史学习记录的数据库必须先停止后端、盘点并备份，执行显式转换后再启动；应用启动不会推断旧记录归属。V19 只加结构，V20 强制学生归属和会话关联，不能带空归属运行。
+
+```sh
+# 仓库根目录；只读盘点，不输出原文或凭据
+bash scripts/study-agent-p0-audit.sh
+# 仅用于已确认所有旧材料属于同一用户的数据库。
+# 参数为明确确认的用户 ID、盘点得到的无会话旧 Run 数；多用户历史须单独制定转换清单。
+bash scripts/study-agent-p1-upgrade.sh <confirmed-owner-id> <expected-unlinked-run-count>
+```
+
+转换脚本先将整个数据库加密备份至 `~/.vediomind/backups/`（目录 700、文件 600，使用原有外部认证密钥），然后运行 V19、事务写入已确认的归属，并完成 V20。无会话的旧任务分别进入标注“导入的历史任务”的私人会话，只添加历史任务卡，不伪造旧聊天；不创建课程或公开材料。密钥与备份需分别妥善保管。
+
+脚本默认 Docker 容器 `mysql-media`、数据库 `media_db`，可使用 `P1_MYSQL_CONTAINER` / `P1_MYSQL_DATABASE` / `P1_BACKUP_DIR` 覆盖，离线数据库配置沿用 `AUTH_DB_*`。如在 V19 转换后中断，先重新盘点；数据事务会回滚未提交的部分，已经提交的转换需要用新的实际无会话 Run 数重新执行。已到 V20 时重复执行只校验，不重复创建会话。DDL 失败不要直接执行 Flyway repair，应先在隔离库从加密备份恢复核查。
+
+`python3 scripts/test-study-agent-p1.py` 会创建临时 MySQL 库，执行真实 Flyway 新建/升级/重复验证，以及学生隔离、无副作用拒绝、撤权保留、外键/唯一约束和事务测试，并在结束时删除临时库；依赖本地 Docker MySQL 容器。未配置专用数据库时，普通 Maven 测试会明确跳过 MySQL 专用检查。
 
 ## 异步分析链路
 
@@ -260,7 +290,7 @@ export TESSERACT_PATH=/path/to/tesseract
 export YTDLP_PATH=/path/to/yt-dlp
 ```
 
-后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 的 10 分钟总时限在首次启动时确定，恢复不会重置。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
+后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 的 120 秒总时限在首次启动时确定，恢复不会重置。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
 
 数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。AI 入口默认限制为单用户每分钟 5 次、全局每分钟 30 次，供应商调用额度可通过 `AI_RATE_LIMIT_*` 环境变量调整。
 

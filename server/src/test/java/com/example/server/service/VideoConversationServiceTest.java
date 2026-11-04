@@ -212,11 +212,11 @@ class VideoConversationServiceTest {
     @Test
     void createsAConversationWithoutAgentSpecificState() {
         VideoConversationResponse created = mock(VideoConversationResponse.class);
-        when(store.create(42L)).thenReturn(created);
+        when(store.create(42L, 3L, null)).thenReturn(created);
 
-        assertThat(service.create(42L, 3L)).isSameAs(created);
+        assertThat(service.create(42L, 3L, null)).isSameAs(created);
 
-        verify(store).create(42L);
+        verify(store).create(42L, 3L, null);
     }
 
     @Test
@@ -240,6 +240,7 @@ class VideoConversationServiceTest {
     private VideoConversation conversation() {
         VideoConversation conversation = new VideoConversation();
         conversation.setId(7L);
+        conversation.setLearnerId(3L);
         conversation.setMediaId(42L);
         conversation.setTitle("对话");
         conversation.setCreatedAt(LocalDateTime.now());

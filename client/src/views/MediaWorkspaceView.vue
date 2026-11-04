@@ -1,7 +1,7 @@
 <template>
   <main class="page workspace-page">
     <div class="workspace-topbar">
-      <router-link class="back-link" to="/">← 返回内容列表</router-link>
+      <router-link class="back-link" :to="courseId ? `/courses/${courseId}` : '/'">← 返回内容列表</router-link>
       <span v-if="media" class="media-state">{{ media.status }}</span>
     </div>
 
@@ -46,7 +46,7 @@
             :start-ms="externalStartMs"
           />
           <VideoPlayer v-else :poster="media.coverUrl" />
-          <AnalysisPanel
+          <AnalysisPanel v-if="media.canManage"
             :job="job"
             :running="running"
             :submitting="submitting"
@@ -76,6 +76,8 @@
             <AiAssistantPanel
               v-show="activeTab === 'assistant'"
               :media-id="numericMediaId"
+              :course-id="courseId ? Number(courseId) : null"
+              :can-manage="media.canManage"
               :user-id="currentUser.id"
               :has-transcript="Boolean(transcriptSegments.length)"
               :analysis-mode="media.analysisMode"
@@ -91,6 +93,7 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
+import { getCourse } from '../api/courses'
 import { errorMessage } from '../api/http'
 import AiAssistantPanel from '../components/AiAssistantPanel.vue'
 import AnalysisPanel from '../components/AnalysisPanel.vue'
@@ -103,7 +106,7 @@ import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { buildExternalEmbedUrl } from '../utils/externalVideoEmbed'
 
-const props = defineProps({ mediaId: { type: String, required: true } })
+const props = defineProps({ mediaId: { type: String, required: true }, courseId: { type: String, default: null } })
 const { currentUser, openAuth } = useSession()
 const { showToast } = useToast()
 const media = ref(null)
@@ -122,6 +125,11 @@ const loadDetail = async () => {
   loading.value = true
   loadError.value = ''
   try {
+    if (props.courseId) {
+      const course = await getCourse(props.courseId)
+      if (!course.sections.some(section => section.materials.some(item => item.mediaId === numericMediaId)))
+        throw new Error('视频不在当前课程中')
+    }
     const [detail, transcript, chapterResult] = await Promise.all([
       getMediaDetail(numericMediaId),
       getMediaTranscript(numericMediaId),
@@ -152,7 +160,7 @@ const initialize = async () => {
     return
   }
   await loadDetail()
-  if (media.value) await restore()
+  if (media.value?.canManage) await restore()
 }
 
 const startAnalysis = async () => {

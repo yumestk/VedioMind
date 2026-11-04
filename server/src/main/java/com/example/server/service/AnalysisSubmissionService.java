@@ -44,7 +44,7 @@ public class AnalysisSubmissionService {
 
     public AnalysisJob submit(Long mediaId, Long userId) {
         MediaFile mediaFile = mediaFileMapper.selectById(mediaId);
-        if (mediaFile == null || !java.util.Objects.equals(userId, mediaFile.getUserId())) {
+        if (mediaFile == null || mediaFile.getDeletedAt() != null || !java.util.Objects.equals(userId, mediaFile.getUserId())) {
             throw new IllegalArgumentException("Media does not exist: " + mediaId);
         }
 

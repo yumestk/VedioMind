@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -28,13 +29,19 @@ public class VideoConversationController {
     @GetMapping("/media/{mediaId}/conversations")
     public List<VideoConversationResponse> list(
             @PathVariable Long mediaId,
-            @CurrentUserId Long userId
+            @CurrentUserId Long userId,
+            @RequestParam(required = false) Long courseId
     ) {
         try {
-            return conversationService.list(mediaId, userId);
+            return conversationService.list(mediaId, userId, courseId);
         } catch (NoSuchElementException exception) {
             throw notFound(exception);
         }
+    }
+
+    @GetMapping("/conversations")
+    public List<VideoConversationResponse> personal(@CurrentUserId Long userId) {
+        return conversationService.personal(userId);
     }
 
     @GetMapping("/conversations/{conversationId}/messages")

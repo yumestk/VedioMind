@@ -35,31 +35,31 @@ public class AssistantDispatchService {
 
     public AssistantDispatchResponse dispatch(Long mediaId, Long userId, AssistantDispatchRequest request) {
         String content = normalizeContent(request == null ? null : request.content());
-        try { mediaService.requireOwnership(mediaId, userId); }
-        catch (IllegalArgumentException exception) { throw new java.util.NoSuchElementException("Media not found"); }
+        mediaService.requireReadable(mediaId, request.courseId(), userId);
         boolean studyMode = mediaService.isStudyMode(mediaId, userId);
-        rateLimitService.requireRequest(userId);
 
         Long requestedConversationId = request.conversationId();
         VideoConversationResponse conversation = requestedConversationId == null
                 ? null
                 : conversationService.get(mediaId, requestedConversationId, userId);
+        if (conversation != null && !java.util.Objects.equals(conversation.courseId(), request.courseId()))
+            throw new java.util.NoSuchElementException("Conversation does not belong to this course context");
+        rateLimitService.requireRequest(userId);
         boolean followingAgentRun = conversation != null
                 && conversationService.hasCompletedAgentRun(conversation.id());
         AssistantModeRouter.Decision decision = modeRouter.route(
                 request.mode(), content, studyMode, followingAgentRun
         );
         if ("DEEP".equals(decision.mode())) {
-            if (agentRunService.findLatestActive(mediaId).isPresent()) {
-                throw new AgentRunBusyException("当前视频已有正在执行的深度任务");
-            }
             if (conversation == null) {
-                conversation = conversationService.create(mediaId, userId);
+                conversation = conversationService.create(mediaId, userId, request.courseId());
             }
+            if (agentRunService.findLatestActive(conversation.id(), userId).isPresent())
+                throw new AgentRunBusyException("当前对话已有正在执行的深度任务");
             agentSubmissionService.submit(mediaId, userId, conversation.id(), content);
         } else {
             if (conversation == null) {
-                conversation = conversationService.create(mediaId, userId);
+                conversation = conversationService.create(mediaId, userId, request.courseId());
             }
             ConversationTurnResponse turn = conversationService.ask(
                     mediaId, conversation.id(), userId, content

@@ -39,23 +39,28 @@ public class VideoConversationStore {
     private final VideoMessageMapper messageMapper;
     private final VideoMessageCitationMapper citationMapper;
     private final VideoAgentRunMapper agentRunMapper;
+    private final StudyAccessService access;
 
     public VideoConversationStore(
             VideoConversationMapper conversationMapper,
             VideoMessageMapper messageMapper,
             VideoMessageCitationMapper citationMapper,
-            VideoAgentRunMapper agentRunMapper
+            VideoAgentRunMapper agentRunMapper,
+            StudyAccessService access
     ) {
         this.conversationMapper = conversationMapper;
         this.messageMapper = messageMapper;
         this.citationMapper = citationMapper;
         this.agentRunMapper = agentRunMapper;
+        this.access = access;
     }
 
-    public VideoConversationResponse create(Long mediaId) {
+    public VideoConversationResponse create(Long mediaId, Long learnerId, Long courseId) {
         LocalDateTime now = LocalDateTime.now();
         VideoConversation conversation = new VideoConversation();
         conversation.setMediaId(mediaId);
+        conversation.setLearnerId(learnerId);
+        conversation.setCourseId(courseId);
         conversation.setTitle(DEFAULT_TITLE);
         conversation.setCreatedAt(now);
         conversation.setUpdatedAt(now);
@@ -63,15 +68,24 @@ public class VideoConversationStore {
         return VideoConversationResponse.from(conversation);
     }
 
-    public List<VideoConversationResponse> listByMediaId(Long mediaId) {
+    public List<VideoConversationResponse> listByMediaId(Long mediaId, Long learnerId, Long courseId) {
         return conversationMapper.selectList(
                         new LambdaQueryWrapper<VideoConversation>()
                                 .eq(VideoConversation::getMediaId, mediaId)
+                                .eq(VideoConversation::getLearnerId, learnerId)
+                                .eq(courseId != null, VideoConversation::getCourseId, courseId)
+                                .isNull(courseId == null, VideoConversation::getCourseId)
                                 .orderByDesc(VideoConversation::getUpdatedAt)
                                 .orderByDesc(VideoConversation::getId)
                 ).stream()
                 .map(VideoConversationResponse::from)
                 .toList();
+    }
+
+    public List<VideoConversation> listPersonal(Long learnerId) {
+        return conversationMapper.selectList(new LambdaQueryWrapper<VideoConversation>()
+                .eq(VideoConversation::getLearnerId, learnerId).orderByDesc(VideoConversation::getUpdatedAt)
+                .orderByDesc(VideoConversation::getId));
     }
 
     public VideoConversation getRequired(Long conversationId) {
@@ -82,14 +96,14 @@ public class VideoConversationStore {
         return conversation;
     }
 
-    public ConversationMessagesResponse listMessages(Long conversationId) {
+    public ConversationMessagesResponse listMessages(Long conversationId, boolean sourceAvailable) {
         List<VideoMessage> messages = messageMapper.selectList(
                 new LambdaQueryWrapper<VideoMessage>()
                         .eq(VideoMessage::getConversationId, conversationId)
                         .orderByAsc(VideoMessage::getId)
         );
         if (messages.isEmpty()) {
-            return new ConversationMessagesResponse(conversationId, List.of());
+            return new ConversationMessagesResponse(conversationId, sourceAvailable, List.of());
         }
 
         List<Long> messageIds = messages.stream().map(VideoMessage::getId).toList();
@@ -113,15 +127,16 @@ public class VideoConversationStore {
                 : agentRunMapper.selectBatchIds(runIds).stream()
                 .collect(Collectors.toMap(
                         VideoAgentRun::getId,
-                        run -> VideoAgentRunResponse.from(run)
+                        run -> VideoAgentRunResponse.from(run, sourceAvailable)
                 ));
 
         return new ConversationMessagesResponse(
                 conversationId,
+                sourceAvailable,
                 messages.stream()
                         .map(message -> ConversationMessageResponse.from(
                                 message,
-                                citationsByMessage.getOrDefault(message.getId(), List.of()),
+                                sourceAvailable ? citationsByMessage.getOrDefault(message.getId(), List.of()) : List.of(),
                                 message.getAgentRunId() == null ? null : runsById.get(message.getAgentRunId())
                         ))
                         .toList()
@@ -140,12 +155,13 @@ public class VideoConversationStore {
         return messages;
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public ConversationTurnResponse saveTurn(
             VideoConversation conversation,
             String question,
             VideoQuestionResponse answer
     ) {
+        access.lockReadable(conversation.getMediaId(), conversation.getCourseId(), conversation.getLearnerId());
         LocalDateTime now = LocalDateTime.now();
         VideoMessage userMessage = newMessage(conversation.getId(), "USER", question, null, now);
         messageMapper.insert(userMessage);

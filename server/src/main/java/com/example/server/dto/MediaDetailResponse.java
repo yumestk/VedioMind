@@ -13,6 +13,7 @@ public record MediaDetailResponse(
         String coverUrl,
         String playbackUrl,
         boolean localPlaybackAvailable,
+        boolean canManage,
         String sourceType,
         String analysisMode,
         String sourcePlatform,
@@ -23,7 +24,7 @@ public record MediaDetailResponse(
         String summary,
         LocalDateTime uploadTime
 ) {
-    public static MediaDetailResponse from(MediaFile media, String playbackUrl) {
+    public static MediaDetailResponse from(MediaFile media, String playbackUrl, boolean canManage) {
         return new MediaDetailResponse(
                 media.getId(),
                 media.getFilename(),
@@ -33,6 +34,7 @@ public record MediaDetailResponse(
                 media.getCoverUrl(),
                 playbackUrl,
                 media.getObjectKey() != null && !media.getObjectKey().isBlank(),
+                canManage,
                 media.getSourceType(),
                 media.getAnalysisMode(),
                 media.getSourcePlatform(),
