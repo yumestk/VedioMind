@@ -75,7 +75,7 @@ public class DeepSeekChatClient {
                         null);
         log.info(
                 "AI context budget estimatedInputTokens={} actualInputTokens={}"
-                    + " actualOutputTokens={}",
+                        + " actualOutputTokens={}",
                 estimated,
                 result.inputTokens(),
                 result.outputTokens());
@@ -123,6 +123,110 @@ public class DeepSeekChatClient {
         }
         JSONObject bodyJson = AiPromptBudget.request(systemPrompt, conversation, maxOutputTokens);
 
+        JSONObject reply = exchange(bodyJson, beforeAttempt, deadline);
+        JSONObject message =
+                reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+        String content = message.getString("content");
+        if (content == null
+                || content.isBlank()
+                || (message.getJSONArray("tool_calls") != null
+                        && !message.getJSONArray("tool_calls").isEmpty()))
+            throw new AiProviderException("Language model returned no text answer", null, false, 0);
+        var usage = reply.getJSONObject("usage");
+        return new ChatResult(
+                content,
+                usage == null ? null : usage.getInteger("prompt_tokens"),
+                usage == null ? null : usage.getInteger("completion_tokens"));
+    }
+
+    /** The exact native message (including provider call IDs) is checkpointed and replayed. */
+    public JSONObject tools(
+            java.util.List<JSONObject> messages,
+            java.util.List<JSONObject> tools,
+            Runnable beforeAttempt,
+            Instant deadline) {
+        validateMessages(messages);
+        var body =
+                JSONObject.of(
+                        "model",
+                        AiPromptBudget.MODEL,
+                        "stream",
+                        false,
+                        "thinking",
+                        JSONObject.of("type", "disabled"),
+                        "messages",
+                        messages,
+                        "tools",
+                        tools);
+        body.put("max_tokens", promptBudget.outputTokens());
+        if (promptBudget.estimateRequest(body) > promptBudget.inputLimit())
+            throw new AiPromptBudget.PromptBudgetExceededException("工具会话超过输入预算");
+        JSONObject reply = exchange(body, beforeAttempt, deadline);
+        JSONObject message =
+                reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+        if (!"assistant".equals(message.getString("role")))
+            throw new AiProviderException("Invalid assistant role", null, false, 0);
+        var calls = message.getJSONArray("tool_calls");
+        if (calls == null || calls.isEmpty()) {
+            if (message.getString("content") == null || message.getString("content").isBlank())
+                throw new AiProviderException("Empty assistant response", null, false, 0);
+        } else {
+            var ids = new java.util.HashSet<String>();
+            for (int i = 0; i < calls.size(); i++) {
+                var call = calls.getJSONObject(i);
+                String id = call.getString("id");
+                var function = call.getJSONObject("function");
+                if (id == null
+                        || id.isBlank()
+                        || id.length() > 200
+                        || !ids.add(id)
+                        || !"function".equals(call.getString("type"))
+                        || function == null
+                        || !(function.get("name") instanceof String name)
+                        || name.isBlank()
+                        || !(function.get("arguments") instanceof String))
+                    throw new AiProviderException("Malformed native tool call", null, false, 0);
+            }
+        }
+        return message;
+    }
+
+    static void validateMessages(java.util.List<JSONObject> messages) {
+        if (messages == null
+                || messages.size() < 2
+                || !"system".equals(messages.getFirst().getString("role")))
+            throw new IllegalArgumentException("Missing tool conversation");
+        var pending = new java.util.LinkedHashSet<String>();
+        var used = new java.util.HashSet<String>();
+        for (var message : messages) {
+            String role = message.getString("role");
+            if ("tool".equals(role)) {
+                if (!pending.remove(message.getString("tool_call_id"))
+                        || !(message.get("content") instanceof String))
+                    throw new IllegalArgumentException("Unpaired tool observation");
+                continue;
+            }
+            if (!pending.isEmpty() || !Set.of("system", "user", "assistant").contains(role))
+                throw new IllegalArgumentException("Unresolved tool calls");
+            var calls = message.getJSONArray("tool_calls");
+            if (calls != null && !calls.isEmpty()) {
+                if (!"assistant".equals(role))
+                    throw new IllegalArgumentException("Invalid tool caller");
+                for (int i = 0; i < calls.size(); i++) {
+                    String id = calls.getJSONObject(i).getString("id");
+                    if (id == null || !used.add(id))
+                        throw new IllegalArgumentException("Duplicate tool call ID");
+                    pending.add(id);
+                }
+            } else if (!(message.get("content") instanceof String text) || text.isBlank())
+                throw new IllegalArgumentException("Empty native message");
+        }
+        if (!pending.isEmpty()) throw new IllegalArgumentException("Missing tool observation");
+    }
+
+    private JSONObject exchange(JSONObject body, Runnable beforeAttempt, Instant deadline) {
+        if (apiKey == null || apiKey.isBlank())
+            throw new IllegalStateException("DEEPSEEK_API_KEY is not configured");
         Request request =
                 new Request.Builder()
                         .url(baseUrl + "/chat/completions")
@@ -130,52 +234,48 @@ public class DeepSeekChatClient {
                         .addHeader("Content-Type", "application/json")
                         .post(
                                 RequestBody.create(
-                                        bodyJson.toString(),
+                                        body.toJSONString(),
                                         MediaType.parse("application/json; charset=utf-8")))
                         .build();
-
+        var response =
+                ledger.exchange(
+                        AiRateLimitService.DEEPSEEK,
+                        "GENERATION",
+                        body,
+                        beforeAttempt,
+                        deadline,
+                        effective -> {
+                            var call = CLIENT.newCall(request);
+                            call.timeout()
+                                    .timeout(
+                                            AiRetryExecutor.remainingMillis(effective),
+                                            TimeUnit.MILLISECONDS);
+                            try (var binding = ledger.bind(call);
+                                    var reply = call.execute()) {
+                                return new AiCallLedger.WireResponse(
+                                        reply.code(),
+                                        reply.body() == null ? "" : reply.body().string(),
+                                        parseRetryAfterMillis(
+                                                reply.header("Retry-After"), Instant.now()));
+                            }
+                        });
         try {
-            var response =
-                    ledger.exchange(
-                            AiRateLimitService.DEEPSEEK,
-                            "GENERATION",
-                            bodyJson,
-                            beforeAttempt,
-                            deadline,
-                            effective -> {
-                                var call = CLIENT.newCall(request);
-                                call.timeout()
-                                        .timeout(
-                                                AiRetryExecutor.remainingMillis(effective),
-                                                TimeUnit.MILLISECONDS);
-                                try (var binding = ledger.bind(call);
-                                        var reply = call.execute()) {
-                                    return new AiCallLedger.WireResponse(
-                                            reply.code(),
-                                            reply.body() == null ? "" : reply.body().string(),
-                                            parseRetryAfterMillis(
-                                                    reply.header("Retry-After"), Instant.now()));
-                                }
-                            });
-            JSONObject json = JSONObject.parseObject(response.body());
-            JSONObject usage = json.getJSONObject("usage");
-            Integer input = usage == null ? null : usage.getInteger("prompt_tokens");
-            Integer output = usage == null ? null : usage.getInteger("completion_tokens");
-            JSONObject choice = json.getJSONArray("choices").getJSONObject(0);
-            String finish = choice.getString("finish_reason");
-            String content = choice.getJSONObject("message").getString("content");
-            if ("length".equals(finish))
+            var reply = JSONObject.parseObject(response.body());
+            if ("length"
+                    .equals(
+                            reply.getJSONArray("choices")
+                                    .getJSONObject(0)
+                                    .getString("finish_reason")))
                 throw new AiPromptBudget.PromptBudgetExceededException(
                         "AI output reached max-output-tokens");
-            if (content == null || content.isBlank())
-                throw new AiProviderException(
-                        "Language model returned an empty response", null, false, 0);
-            return new ChatResult(content, input, output);
-        } catch (RuntimeException failure) {
-            if (failure instanceof IllegalArgumentException
-                    || failure instanceof AiProviderException) throw failure;
+            if (reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message") == null)
+                throw new IllegalArgumentException("Missing assistant message");
+            return reply;
+        } catch (AiPromptBudget.PromptBudgetExceededException e) {
+            throw e;
+        } catch (RuntimeException e) {
             throw new AiProviderException(
-                    "Language model returned an invalid response", failure, false, 0);
+                    "Language model returned an invalid response", e, false, 0);
         }
     }
 

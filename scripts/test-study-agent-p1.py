@@ -12,7 +12,7 @@ def mysql(sql):
         'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot --batch --skip-column-names'],
         input=sql,text=True,capture_output=True,check=True)
 def main():
-    databases = ['vediomind_auth_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex]
+    databases = ['vediomind_auth_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex, 'vediomind_study_test_'+uuid.uuid4().hex]
     created=[]
     try:
         for database in databases:
@@ -25,6 +25,8 @@ def main():
             'STUDY_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[2]+'?allowPublicKeyRetrieval=true&useSSL=false',
             'STUDY_P2_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[3]+'?allowPublicKeyRetrieval=true&useSSL=false',
             'STUDY_EXECUTION_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[4]+'?allowPublicKeyRetrieval=true&useSSL=false',
+            'STUDY_P4_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[7]+'?allowPublicKeyRetrieval=true&useSSL=false',
+            'STUDY_P4_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[6]+'?allowPublicKeyRetrieval=true&useSSL=false',
             'STUDY_P3_UPGRADE_MYSQL_URL':'jdbc:mysql://127.0.0.1:3307/'+databases[5]+'?allowPublicKeyRetrieval=true&useSSL=false'}
         # Maven removes deleted test classes, but leaves their old reports behind.
         shutil.rmtree(ROOT/'server/target/surefire-reports', ignore_errors=True)

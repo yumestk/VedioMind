@@ -22,7 +22,7 @@ class AuthMigrationMySqlTest {
                         .load();
         flyway.migrate();
         flyway.validate();
-        assertThat(flyway.info().current().getVersion().toString()).isEqualTo("22");
+        assertThat(flyway.info().current().getVersion().toString()).isEqualTo("23");
         assertThat(flyway.migrate().migrationsExecuted).isZero();
     }
 }

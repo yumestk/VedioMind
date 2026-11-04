@@ -16,10 +16,12 @@ test('run card polls once, accepts parent updates, cancels, and stops polling at
     getVideoAgentRun: async () => { gets++; return { ...initial } },
     cancelVideoAgentRun: async () => { cancels++; initial.status = 'CANCELLED'; initial.terminal = true; return { ...initial } },
     getVideoAgentRunEvents: async (id, after) => { cursors.push(after); return after ? [] : [{ sequence: 1, type: 'EXECUTION_STARTED', data: {} }] },
+    getStudyArtifacts: async () => [],
     errorMessage: error => error.message
   }
   const code = script.content
-    .replace(/import \{[^}]+\} from ['"]\.\.\/api\/media['"]/, 'const { getVideoAgentRun, cancelVideoAgentRun, getVideoAgentRunEvents } = globalThis.__runCardApi')
+    .replace(/import \{[^}]+\} from ['"]\.\.\/api\/media['"]/, 'const { getVideoAgentRun, cancelVideoAgentRun, getVideoAgentRunEvents, getStudyArtifacts } = globalThis.__runCardApi')
+    .replace(/import StudyNoteArtifactCard from [^\n]+/, 'const StudyNoteArtifactCard = { render: () => null }')
     .replace(/import \{ errorMessage \} from ['"]\.\.\/api\/http['"]/, 'const { errorMessage } = globalThis.__runCardApi')
   const component = (await import(`data:text/javascript,${encodeURIComponent(code.replace(/from ["']vue["']/g, `from '${import.meta.resolve('vue')}'`))}`)).default
   const element = type => ({ type, children: [], props: {}, text: '' })

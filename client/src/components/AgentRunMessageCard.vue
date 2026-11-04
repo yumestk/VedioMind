@@ -30,10 +30,11 @@
     <p v-if="currentRun.stopCode" class="run-metrics">停止原因：{{ currentRun.stopCode }}</p>
     <details v-if="events.length" class="evidence-details">
       <summary>执行记录 · {{ events.length }} 条</summary>
-      <ol><li v-for="event in events" :key="event.sequence">#{{ event.sequence }} {{ eventLabel(event.type) }}<span v-if="event.data.elapsedMs != null"> · {{ event.data.elapsedMs }} ms</span><span v-if="event.data.code"> · {{ event.data.code }}</span></li></ol>
+      <ol><li v-for="event in events" :key="event.sequence">#{{ event.sequence }} {{ eventLabel(event.type) }}<span v-if="event.data.elapsedMs != null"> · {{ event.data.elapsedMs }} ms</span><span v-if="event.data.tool"> · {{ event.data.tool }}</span><span v-if="event.data.code"> · {{ event.data.code }}</span></li></ol>
     </details>
 
-    <template v-if="currentRun.result">
+    <StudyNoteArtifactCard v-for="artifact in artifacts" :key="artifact.id" :artifact="artifact" @seek="$emit('seek', $event)" />
+    <template v-if="currentRun.result && !artifacts.length">
       <section class="result-block result-core">
         <p class="run-kicker">CORE CONCLUSION</p>
         <h2>{{ currentRun.result.title }}</h2>
@@ -114,7 +115,8 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { getVideoAgentRun, cancelVideoAgentRun, getVideoAgentRunEvents } from '../api/media'
+import { getVideoAgentRun, cancelVideoAgentRun, getVideoAgentRunEvents, getStudyArtifacts } from '../api/media'
+import StudyNoteArtifactCard from './StudyNoteArtifactCard.vue'
 import { errorMessage } from '../api/http'
 
 const props = defineProps({
@@ -125,6 +127,7 @@ const props = defineProps({
 
 const emit = defineEmits(['seek', 'run-change', 'followup'])
 const events = ref([])
+const artifacts = ref([])
 const controlError = ref('')
 const cancelPending = ref(false)
 let eventCursor = 0
@@ -145,6 +148,7 @@ const refresh = async () => {
   if (!currentRun.value) return
   try {
     currentRun.value = await getVideoAgentRun(currentRun.value.id)
+    artifacts.value = await getStudyArtifacts(currentRun.value.id)
     const batch = await getVideoAgentRunEvents(currentRun.value.id, eventCursor)
     if (batch.length) { events.value = [...events.value, ...batch].slice(-100); eventCursor = batch.at(-1).sequence }
     emit('run-change', currentRun.value)
@@ -162,7 +166,7 @@ const cancelRun = async () => {
   catch (error) { controlError.value = errorMessage(error, '取消失败，请稍后重试') }
   finally { cancelPending.value = false }
 }
-const eventLabel = type => ({ TASK_QUEUED: '任务入队', PREPARATION_ACCOUNTED: '准备阶段用量已计入', RESULT_SAVED: '已保存可用笔记', EXECUTION_STARTED: '开始执行', PHASE_CHANGED: '进入新阶段', CALL_RESERVED: '预留调用预算', CALL_SETTLED: '供应商调用已记录', CALL_OUTCOME_UNKNOWN: '供应商结果未知', CHECKPOINT_SAVED: '检查点已保存', QUOTA_WAIT: '等待额度', RETRY_SCHEDULED: '安排恢复', TASK_COMPLETED: '任务完成', TASK_STOPPED: '任务停止' })[type] || type
+const eventLabel = type => ({ TASK_QUEUED: '任务入队', PREPARATION_ACCOUNTED: '准备阶段用量已计入', RESULT_SAVED: '已保存可用笔记', EXECUTION_STARTED: '开始执行', PHASE_CHANGED: '进入新阶段', CALL_RESERVED: '预留调用预算', CALL_SETTLED: '供应商调用已记录', CALL_OUTCOME_UNKNOWN: '供应商结果未知', CHECKPOINT_SAVED: '检查点已保存', QUOTA_WAIT: '等待额度', RETRY_SCHEDULED: '安排恢复', TOOL_COMPLETED: '工具观察已保存', TOOL_REJECTED: '工具参数未通过校验', ARTIFACT_CANDIDATE_SAVED: '候选笔记已保存', ARTIFACT_DELIVERED: '学习笔记已交付', TASK_COMPLETED: '任务完成', TASK_STOPPED: '任务停止' })[type] || type
 
 const citationsFor = (refs = []) => refs
   .map(ref => currentRun.value.citations?.find(citation => citation.ref === ref))
@@ -177,7 +181,7 @@ const statusLabel = status => ({
 const stageDescription = status => ({
   WAITING_FOR_QUOTA: '额度恢复后会自动继续，无需重新提交',
   QUEUED: '任务已进入队列', RETRIEVING: '正在检索相关证据',
-  DRAFTING: '正在整理知识点',
+  AGENT_DECISION: '正在调用工具整理课程笔记', DRAFTING: '正在整理知识点',
   REVISING: '正在按检查意见修订', RETRY_WAIT: '任务将从已保存响应和检查点恢复'
 })[status] || '正在处理'
 
@@ -193,7 +197,7 @@ const formatTime = milliseconds => {
 
 watch(() => props.run, run => {
   const changed = observedId !== run.id
-  if (changed) { observedId = run.id; events.value = []; eventCursor = 0 }
+  if (changed) { observedId = run.id; events.value = []; artifacts.value = []; eventCursor = 0 }
   currentRun.value = run
   if (changed) refresh()
   else schedulePoll()

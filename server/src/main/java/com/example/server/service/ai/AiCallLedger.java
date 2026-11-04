@@ -82,6 +82,35 @@ public class AiCallLedger {
     }
 
     /**
+     * Host routing seals the execution profile once, before a Run exists; paid routing is never
+     * reset.
+     */
+    public void selectProfile(PreparedStudyTask task) {
+        if (!"BOUNDED_AGENT".equals(task.executionStrategy())) return;
+        tasks.assertCurrent(task);
+        durable.executeWithoutResult(
+                s -> {
+                    var r = request(task.requestId(), true);
+                    if (!Objects.equals(number(r, "learner_id"), task.learnerId())
+                            || r.get("run_id") != null)
+                        throw new GovernanceException("TASK_INVALID", "不能变更已执行任务的预算");
+                    if (number(r, "unknown_calls") > 0
+                            || number(r, "accounted_tokens") > task.budget().maxAccountedTokens()
+                            || number(r, "generation_calls") >= task.budget().generationCalls())
+                        throw new GovernanceException("TASK_BUDGET_EXHAUSTED", "准备阶段已耗尽任务预算");
+                    jdbc.update(
+                            "UPDATE study_ai_requests SET"
+                                + " profile=?,max_generation_calls=?,max_retrieval_calls=?,max_accounted_tokens=?"
+                                + " WHERE id=?",
+                            task.executionStrategy(),
+                            task.budget().generationCalls(),
+                            task.budget().retrievalCalls(),
+                            task.budget().maxAccountedTokens(),
+                            task.requestId());
+                });
+    }
+
+    /**
      * Joins the Run creation transaction, including its FK; routing cost is carried into this run.
      */
     public void attach(PreparedStudyTask task, String runId) {
@@ -169,7 +198,7 @@ public class AiCallLedger {
         }
         var ctx = StudyExecutionContext.require();
         String serialized = body.toJSONString();
-        String fingerprint = sha256(JSON.toJSONString(canonical(body)));
+        String fingerprint = sha256(canonicalJson(body));
         guard();
         var replay =
                 jdbc.query(
@@ -559,6 +588,10 @@ public class AiCallLedger {
                 learner);
     }
 
+    public static String canonicalJson(Object value) {
+        return JSON.toJSONString(canonical(value));
+    }
+
     private static Object canonical(Object value) {
         if (value instanceof Map<?, ?> map) {
             var sorted = new TreeMap<String, Object>();
@@ -570,7 +603,7 @@ public class AiCallLedger {
         return value;
     }
 
-    private static String sha256(String s) {
+    public static String sha256(String s) {
         try {
             return HexFormat.of()
                     .formatHex(

@@ -55,6 +55,7 @@ class SecurityIntegrationTest {
         AssistantController.class,
         VideoConversationController.class,
         VideoAgentController.class,
+        StudyArtifactController.class,
         KnowledgeIndexController.class
     })
     static class Config {
@@ -144,11 +145,17 @@ class SecurityIntegrationTest {
         }
 
         @Bean
+        StudyArtifactService artifacts() {
+            return mock(StudyArtifactService.class);
+        }
+
+        @Bean
         AnalysisJobService jobs() {
             return mock(AnalysisJobService.class);
         }
     }
 
+    @Autowired StudyArtifactService artifacts;
     @Autowired WebApplicationContext context;
     @Autowired JdbcTemplate jdbc;
     @Autowired PasswordEncoder passwords;
@@ -187,6 +194,7 @@ class SecurityIntegrationTest {
                 "INSERT INTO users(id,username,password,role) VALUES(1,'alice',?,'USER')",
                 passwords.encode("correct-password"));
         reset(
+                artifacts,
                 limits,
                 media,
                 submission,
@@ -386,6 +394,38 @@ class SecurityIntegrationTest {
                                 .cookie(new Cookie("vm_refresh", grant.refreshToken()))
                                 .header("X-Refresh-Request", UUID.randomUUID()))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void artifactsUseOnlySignedIdentityAndRejectMissingAuthentication() throws Exception {
+        mvc.perform(get("/agent-runs/r/artifacts")).andExpect(status().isUnauthorized());
+        String token = access();
+        when(artifacts.list("r", 1L)).thenReturn(List.of());
+        mvc.perform(
+                        get("/agent-runs/r/artifacts")
+                                .param("userId", "2")
+                                .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        verify(artifacts).list("r", 1L);
+        mvc.perform(
+                        put("/study-artifacts/n")
+                                .with(csrfToken())
+                                .contentType("application/json")
+                                .content("{\"baseVersion\":1,\"content\":{}}"))
+                .andExpect(status().isUnauthorized());
+        when(artifacts.edit(eq("n"), eq(1L), any()))
+                .thenThrow(
+                        new com.example.server.service.ai.StudyExecutionContext.GovernanceException(
+                                "ARTIFACT_WRITE_CONFLICT", "refresh"));
+        mvc.perform(
+                        put("/study-artifacts/n")
+                                .with(csrfToken())
+                                .param("userId", "2")
+                                .header("Authorization", "Bearer " + token)
+                                .contentType("application/json")
+                                .content("{\"baseVersion\":1,\"content\":{}}"))
+                .andExpect(status().isConflict());
+        verify(artifacts).edit(eq("n"), eq(1L), any());
     }
 
     @Test

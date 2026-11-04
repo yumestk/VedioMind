@@ -105,3 +105,5 @@ export const deleteMedia = async (mediaId) => {
 
 export const cancelVideoAgentRun = async (runId) => (await http.post(`/agent-runs/${runId}/cancel`)).data
 export const getVideoAgentRunEvents = async (runId, after = 0) => (await http.get(`/agent-runs/${runId}/events`, { params: { after }, sessionActivity: false })).data
+export const getStudyArtifacts = async (runId) => (await http.get(`/agent-runs/${runId}/artifacts`, { sessionActivity: false })).data
+export const editStudyArtifact = async (id, edit) => (await http.put(`/study-artifacts/${id}`, edit)).data
