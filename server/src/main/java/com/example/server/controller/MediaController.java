@@ -68,10 +68,11 @@ public class MediaController {
     @GetMapping("/{mediaId}")
     public MediaDetailResponse getDetail(
             @PathVariable Long mediaId,
-            @CurrentUserId Long userId
+            @CurrentUserId Long userId,
+            @org.springframework.web.bind.annotation.RequestParam(required=false) Long courseId
     ) {
         try {
-            return mediaService.getDetail(mediaId, userId);
+            return mediaService.getDetail(mediaId, userId, courseId);
         } catch (IllegalArgumentException exception) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, exception.getMessage(), exception);
         }

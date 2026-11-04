@@ -31,21 +31,23 @@
 
       <div class="workspace-grid">
         <div class="player-column">
+          <p v-if="playbackMedia" class="playback-source">正在查看引用：{{ playbackMedia.filename }} <button @click="seekTo(0)">返回当前视频</button></p>
           <VideoPlayer
-            v-if="media.localPlaybackAvailable"
+            v-if="playingMedia.localPlaybackAvailable"
             ref="player"
-            :src="media.playbackUrl"
-            :poster="media.coverUrl"
+            :initial-start-ms="currentTimeMs"
+            :src="playingMedia.playbackUrl"
+            :poster="playingMedia.coverUrl"
             @time-update="currentTimeMs = $event"
           />
           <ExternalVideoPlayer
-            v-else-if="media.sourceType === 'EXTERNAL_URL'"
-            :cover-url="media.coverUrl"
-            :platform="media.sourcePlatform"
-            :source-url="media.sourceUrl"
+            v-else-if="playingMedia.sourceType === 'EXTERNAL_URL'"
+            :cover-url="playingMedia.coverUrl"
+            :platform="playingMedia.sourcePlatform"
+            :source-url="playingMedia.sourceUrl"
             :start-ms="externalStartMs"
           />
-          <VideoPlayer v-else :poster="media.coverUrl" />
+          <VideoPlayer v-else :poster="playingMedia.coverUrl" />
           <AnalysisPanel v-if="media.canManage"
             :job="job"
             :running="running"
@@ -68,15 +70,16 @@
               v-show="activeTab === 'timeline'"
               :chapters="chapters"
               :segments="transcriptSegments"
-              :current-time-ms="currentTimeMs"
+              :current-time-ms="playbackMedia ? -1 : currentTimeMs"
               :filename="media.filename"
-              :playback-sync-enabled="media.localPlaybackAvailable"
+              :playback-sync-enabled="media.localPlaybackAvailable && !playbackMedia"
               @seek="seekTo"
             />
             <AiAssistantPanel
               v-show="activeTab === 'assistant'"
               :media-id="numericMediaId"
               :course-id="courseId ? Number(courseId) : null"
+              :course-sections="courseDetail?.sections || []"
               :can-manage="media.canManage"
               :user-id="currentUser.id"
               :has-transcript="Boolean(transcriptSegments.length)"
@@ -91,7 +94,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { getMediaChapters, getMediaDetail, getMediaTranscript } from '../api/media'
 import { getCourse } from '../api/courses'
 import { errorMessage } from '../api/http'
@@ -110,6 +113,10 @@ const props = defineProps({ mediaId: { type: String, required: true }, courseId:
 const { currentUser, openAuth } = useSession()
 const { showToast } = useToast()
 const media = ref(null)
+const courseDetail = ref(null)
+const playbackMedia = ref(null)
+const playingMedia = computed(() => playbackMedia.value || media.value)
+let seekRevision = 0
 const loading = ref(false)
 const loadError = ref('')
 const activeTab = ref('summary')
@@ -127,11 +134,12 @@ const loadDetail = async () => {
   try {
     if (props.courseId) {
       const course = await getCourse(props.courseId)
+      courseDetail.value = course
       if (!course.sections.some(section => section.materials.some(item => item.mediaId === numericMediaId)))
         throw new Error('视频不在当前课程中')
     }
     const [detail, transcript, chapterResult] = await Promise.all([
-      getMediaDetail(numericMediaId),
+      getMediaDetail(numericMediaId, props.courseId),
       getMediaTranscript(numericMediaId),
       getMediaChapters(numericMediaId)
     ])
@@ -173,12 +181,16 @@ const startAnalysis = async () => {
 
 watch(currentUser, (user, previous) => {
   if (user && user.id !== previous?.id) {
+    playbackMedia.value = null
+    ++seekRevision
     media.value = null
     transcriptSegments.value = []
     chapters.value = []
     initialize()
   }
   if (!user) {
+    playbackMedia.value = null
+    ++seekRevision
     media.value = null
     transcriptSegments.value = []
     chapters.value = []
@@ -187,23 +199,38 @@ watch(currentUser, (user, previous) => {
 
 onMounted(initialize)
 
-const seekTo = (milliseconds) => {
-  currentTimeMs.value = milliseconds
-  if (media.value?.localPlaybackAvailable) {
-    player.value?.seekTo(milliseconds)
-    return
+const seekTo = async (target) => {
+  const revision = ++seekRevision
+  const userId = currentUser.value?.id
+  const requested = typeof target === 'number' ? { materialId: numericMediaId, startMs: target } : target
+  const materialId = Number(requested?.materialId || numericMediaId)
+  const milliseconds = Number(requested?.startMs)
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return
+  try {
+    if (materialId !== numericMediaId) {
+      if (!props.courseId) throw new Error('引用不属于当前视频')
+      // Refresh structure before signing/loading a different source. Keep the learning conversation mounted.
+      const course = await getCourse(props.courseId)
+      if (!course.sections.some(section => section.materials.some(item => item.mediaId === materialId)))
+        throw new Error('来源已撤回或不在当前课程中')
+      const detail = await getMediaDetail(materialId, props.courseId)
+      if (revision !== seekRevision || userId !== currentUser.value?.id) return
+      playbackMedia.value = detail
+    } else {
+      const detail = await getMediaDetail(numericMediaId, props.courseId)
+      if (revision !== seekRevision || userId !== currentUser.value?.id) return
+      media.value = detail
+      playbackMedia.value = null
+    }
+    currentTimeMs.value = milliseconds
+    externalStartMs.value = milliseconds
+    await nextTick()
+    if (playingMedia.value?.localPlaybackAvailable) player.value?.seekTo(milliseconds)
+    else if (!buildExternalEmbedUrl(playingMedia.value?.sourcePlatform, playingMedia.value?.sourceUrl, milliseconds))
+      showToast('无法加载平台播放器，请使用“打开原视频”按钮', 'error')
+  } catch (error) {
+    if (revision === seekRevision) showToast(errorMessage(error, '引用跳转失败'), 'error')
   }
-
-  const embedUrl = buildExternalEmbedUrl(
-    media.value?.sourcePlatform,
-    media.value?.sourceUrl,
-    milliseconds
-  )
-  if (!embedUrl) {
-    showToast('无法加载平台播放器，请使用“打开原视频”按钮', 'error')
-    return
-  }
-  externalStartMs.value = milliseconds
 }
 
 const formatDate = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '--'
@@ -231,6 +258,7 @@ const transcriptSourceLabel = (source) => ({
 .media-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .media-meta span { padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font: 10px var(--mono); }
 .workspace-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(360px, .8fr); gap: 22px; align-items: start; }
+.playback-source { color:var(--muted); font-size:13px; } .playback-source button { color:var(--accent); background:transparent; border:0; }
 .player-column { display: grid; gap: 18px; }
 .content-column { overflow: hidden; min-height: 640px; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); }
 .content-tabs { display: flex; gap: 4px; padding: 10px; border-bottom: 1px solid var(--border); }

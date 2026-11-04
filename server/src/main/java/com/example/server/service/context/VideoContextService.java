@@ -86,11 +86,19 @@ public class VideoContextService {
 
     /** Version checks must not reload every subtitle before each paid indexing call. */
     public String currentVersion(Long mediaId) {
-        MediaFile media = mediaFileMapper.selectById(mediaId);
+        MediaFile media = mediaFileMapper.selectVersionSource(mediaId);
         if (media == null) throw new IllegalArgumentException("Media does not exist: " + mediaId);
         MediaVisualEvidence manifest = "EXTERNAL_URL".equals(media.getSourceType())
-                ? null : visualEvidenceMapper.selectById(mediaId);
+                ? null : visualEvidenceMapper.selectVersionSource(mediaId);
         return version(value(media.getTranscriptRevision()), media, manifest);
+    }
+
+    /** Availability transitions are also frozen: processing may replace frames before revision increments. */
+    public String currentVisualState(Long mediaId) {
+        MediaFile media = mediaFileMapper.selectVersionSource(mediaId);
+        if (media == null) throw new IllegalArgumentException("Media does not exist: " + mediaId);
+        var manifest = "EXTERNAL_URL".equals(media.getSourceType()) ? null : visualEvidenceMapper.selectVersionSource(mediaId);
+        return visualModality(media, manifest).state();
     }
 
     private VideoContext.Modality visualModality(MediaFile media, MediaVisualEvidence evidence) {

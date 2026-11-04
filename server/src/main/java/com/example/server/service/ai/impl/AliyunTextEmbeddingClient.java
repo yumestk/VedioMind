@@ -1,157 +1,126 @@
 package com.example.server.service.ai.impl;
 
-import com.alibaba.dashscope.embeddings.TextEmbedding;
-import com.alibaba.dashscope.embeddings.TextEmbeddingOutput;
-import com.alibaba.dashscope.embeddings.TextEmbeddingParam;
-import com.alibaba.dashscope.embeddings.TextEmbeddingResult;
-import com.alibaba.dashscope.embeddings.TextEmbeddingResultItem;
-import com.alibaba.dashscope.exception.ApiException;
-import com.example.server.service.ai.AiProviderException;
-import com.example.server.service.ai.AiRateLimitService;
-import com.example.server.service.ai.AiRetryExecutor;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
+import com.example.server.service.ai.*;
+
+import okhttp3.*;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
+/** Direct HTTP makes all actual attempts visible to the same ledger; no SDK-internal retry. */
 @Component
 public class AliyunTextEmbeddingClient {
-
     public static final String MODEL = "text-embedding-v4";
     public static final int DIMENSION = 1024;
     public static final int MAX_BATCH_SIZE = 10;
-
-    private final String apiKey;
-    private final TextEmbedding textEmbedding = new TextEmbedding();
-    private final AiRetryExecutor retryExecutor;
+    private static final OkHttpClient HTTP =
+            new OkHttpClient.Builder().retryOnConnectionFailure(false).build();
+    private final String apiKey, baseUrl;
+    private final AiCallLedger ledger;
 
     public AliyunTextEmbeddingClient(
             @Value("${ai.aliyun.api-key}") String apiKey,
-            AiRetryExecutor retryExecutor
-    ) {
+            @Value("${ai.aliyun.embedding-base-url:https://dashscope.aliyuncs.com/api/v1}")
+                    String baseUrl,
+            AiCallLedger ledger) {
         this.apiKey = apiKey;
-        this.retryExecutor = retryExecutor;
+        this.baseUrl = baseUrl;
+        this.ledger = ledger;
     }
 
     public EmbeddingBatch embedDocuments(List<String> texts) {
-        return embed(texts, TextEmbeddingParam.TextType.DOCUMENT);
+        return embed(texts, "document", () -> {}, null);
     }
 
     public List<Double> embedQuery(String text) {
         return embedQuery(text, () -> {});
     }
 
-    public List<Double> embedQuery(String text, Runnable beforeFirstAttempt) {
-        if (text == null || text.isBlank()) {
-            throw new IllegalArgumentException("Embedding query must not be empty");
-        }
-        return embed(List.of(text), TextEmbeddingParam.TextType.QUERY, beforeFirstAttempt).vectors().get(0);
+    public List<Double> embedQuery(String text, Runnable beforeAttempt) {
+        return embedQuery(text, beforeAttempt, null);
     }
 
-    /** A per-call HTTP deadline is required for interactive learning tasks; SDK defaults are global. */
-    public List<Double> embedQuery(String text, Runnable beforeAttempt, java.time.Instant deadline) {
-        if (text == null || text.isBlank()) throw new IllegalArgumentException("Embedding query must not be empty");
-        if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("ALIYUN_API_KEY is not configured");
-        var body = com.alibaba.fastjson2.JSONObject.of("model", MODEL,
-                "input", com.alibaba.fastjson2.JSONObject.of("texts", List.of(text)),
-                "parameters", com.alibaba.fastjson2.JSONObject.of("text_type", "query", "dimension", DIMENSION));
-        var request = new okhttp3.Request.Builder()
-                .url(com.alibaba.dashscope.utils.Constants.baseHttpApiUrl + "/services/embeddings/text-embedding/text-embedding")
-                .header("Authorization", "Bearer " + apiKey)
-                .post(okhttp3.RequestBody.create(body.toJSONString(), okhttp3.MediaType.parse("application/json"))).build();
-        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING, beforeAttempt, () -> {
-            var call = QUERY_HTTP.newCall(request);
-            call.timeout().timeout(AiRetryExecutor.remainingMillis(deadline), java.util.concurrent.TimeUnit.MILLISECONDS);
-            try (var response = call.execute()) {
-                if (!response.isSuccessful()) throw AiProviderException.forStatus("Embedding request failed: " + response.code(),
-                        null, response.code(), 0);
-                var json = com.alibaba.fastjson2.JSON.parseObject(response.body().string());
-                var vector = json.getJSONObject("output").getJSONArray("embeddings").getJSONObject(0)
-                        .getJSONArray("embedding").toJavaList(Double.class);
-                if (vector.size() != DIMENSION) throw new IllegalArgumentException("Invalid embedding dimension");
-                return List.copyOf(vector);
-            } catch (java.io.IOException exception) {
-                throw new AiProviderException("Embedding connection failed", exception, true, 0);
-            }
-        }, deadline);
+    public List<Double> embedQuery(String text, Runnable beforeAttempt, Instant deadline) {
+        if (text == null) throw new IllegalArgumentException("Query must not be null");
+        return embed(List.of(text), "query", beforeAttempt, deadline).vectors().getFirst();
     }
 
-    private static final okhttp3.OkHttpClient QUERY_HTTP = new okhttp3.OkHttpClient.Builder()
-            .retryOnConnectionFailure(false).build();
-
-    private EmbeddingBatch embed(List<String> texts, TextEmbeddingParam.TextType textType) {
-        return embed(texts, textType, () -> {});
-    }
-
-    private EmbeddingBatch embed(List<String> texts, TextEmbeddingParam.TextType textType, Runnable beforeFirstAttempt) {
-        if (texts == null || texts.isEmpty() || texts.size() > MAX_BATCH_SIZE
-                || texts.stream().anyMatch(text -> text == null || text.isBlank())) {
-            throw new IllegalArgumentException("Embedding batch must contain 1 to 10 non-empty texts");
-        }
-        if (apiKey == null || apiKey.isBlank()) {
+    private EmbeddingBatch embed(
+            List<String> texts, String type, Runnable beforeAttempt, Instant deadline) {
+        if (texts == null
+                || texts.isEmpty()
+                || texts.size() > MAX_BATCH_SIZE
+                || texts.stream().anyMatch(t -> t == null || t.isBlank()))
+            throw new IllegalArgumentException(
+                    "Embedding batch must contain 1 to 10 non-empty texts");
+        if (apiKey == null || apiKey.isBlank())
             throw new IllegalStateException("ALIYUN_API_KEY is not configured");
+        var body =
+                JSONObject.of(
+                        "model",
+                        MODEL,
+                        "input",
+                        JSONObject.of("texts", texts),
+                        "parameters",
+                        JSONObject.of("text_type", type, "dimension", DIMENSION));
+        var request =
+                new Request.Builder()
+                        .url(baseUrl + "/services/embeddings/text-embedding/text-embedding")
+                        .header("Authorization", "Bearer " + apiKey)
+                        .post(
+                                RequestBody.create(
+                                        body.toJSONString(), MediaType.parse("application/json")))
+                        .build();
+        var reply =
+                ledger.exchange(
+                        AiRateLimitService.ALIYUN_EMBEDDING,
+                        "RETRIEVAL",
+                        body,
+                        beforeAttempt,
+                        deadline,
+                        effective -> {
+                            var call = HTTP.newCall(request);
+                            call.timeout()
+                                    .timeout(
+                                            AiRetryExecutor.remainingMillis(effective),
+                                            TimeUnit.MILLISECONDS);
+                            try (var binding = ledger.bind(call);
+                                    var response = call.execute()) {
+                                return new AiCallLedger.WireResponse(
+                                        response.code(),
+                                        response.body() == null ? "" : response.body().string(),
+                                        DeepSeekChatClient.parseRetryAfterMillis(
+                                                response.header("Retry-After"), Instant.now()));
+                            }
+                        });
+        var json = JSON.parseObject(reply.body());
+        var values =
+                json.getJSONObject("output")
+                        .getJSONArray("embeddings")
+                        .toJavaList(JSONObject.class);
+        if (values.size() != texts.size())
+            throw new IllegalArgumentException("Incomplete embedding batch");
+        values.sort(Comparator.comparingInt(v -> v.getIntValue("text_index")));
+        List<List<Double>> vectors = new ArrayList<>();
+        for (int i = 0; i < values.size(); i++) {
+            var value = values.get(i);
+            var vector = value.getJSONArray("embedding").toJavaList(Double.class);
+            if (value.getIntValue("text_index") != i
+                    || vector.size() != DIMENSION
+                    || vector.stream().anyMatch(v -> v == null || !Double.isFinite(v)))
+                throw new IllegalArgumentException("Invalid embedding result");
+            vectors.add(List.copyOf(vector));
         }
-
-        return retryExecutor.execute(AiRateLimitService.ALIYUN_EMBEDDING, beforeFirstAttempt,
-                () -> execute(texts, textType));
+        var usage = json.getJSONObject("usage");
+        return new EmbeddingBatch(
+                List.copyOf(vectors), usage == null ? 0 : usage.getIntValue("total_tokens"));
     }
 
-    private EmbeddingBatch execute(List<String> texts, TextEmbeddingParam.TextType textType) {
-        try {
-            TextEmbeddingParam parameter = TextEmbeddingParam.builder()
-                    .apiKey(apiKey)
-                    .model(MODEL)
-                    .texts(texts)
-                    .textType(textType)
-                    .parameter("dimension", DIMENSION)
-                    .build();
-            TextEmbeddingResult result = textEmbedding.call(parameter);
-            TextEmbeddingOutput output = result == null ? null : result.getOutput();
-            List<TextEmbeddingResultItem> items = output == null ? null : output.getEmbeddings();
-            if (items == null || items.size() != texts.size()) {
-                throw new IllegalStateException("Aliyun embedding returned an incomplete batch");
-            }
-
-            List<TextEmbeddingResultItem> ordered = new ArrayList<>(items);
-            ordered.sort(Comparator.comparingInt(TextEmbeddingResultItem::getTextIndex));
-            List<List<Double>> vectors = ordered.stream().map(item -> {
-                List<Double> vector = item.getEmbedding();
-                if (vector == null || vector.size() != DIMENSION) {
-                    throw new IllegalStateException("Aliyun embedding returned an invalid vector dimension");
-                }
-                return List.copyOf(vector);
-            }).toList();
-            int totalTokens = result.getUsage() == null || result.getUsage().getTotalTokens() == null
-                    ? 0 : result.getUsage().getTotalTokens();
-            return new EmbeddingBatch(vectors, totalTokens);
-        } catch (ApiException exception) {
-            int statusCode = exception.getStatus() == null ? -1 : exception.getStatus().getStatusCode();
-            throw AiProviderException.forStatus(
-                    "Aliyun text embedding failed: " + conciseMessage(exception),
-                    exception,
-                    statusCode,
-                    0
-            );
-        } catch (Exception exception) {
-            throw new AiProviderException(
-                    "Aliyun text embedding failed: " + conciseMessage(exception),
-                    exception,
-                    false,
-                    0
-            );
-        }
-    }
-
-    private String conciseMessage(Throwable throwable) {
-        String message = throwable.getMessage();
-        return message == null || message.isBlank() ? throwable.getClass().getSimpleName() : message;
-    }
-
-    public record EmbeddingBatch(List<List<Double>> vectors, int totalTokens) {
-        public EmbeddingBatch {
-            vectors = List.copyOf(vectors);
-        }
-    }
+    public record EmbeddingBatch(List<List<Double>> vectors, int totalTokens) {}
 }

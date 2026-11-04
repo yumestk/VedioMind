@@ -21,6 +21,13 @@
         {{ indexStatusText(indexJob) }}
         <button v-if="canManage && indexJob.status === 'FAILED'" type="button" @click="retryIndex" :disabled="submitting">重试准备</button>
       </div>
+      <select v-if="courseId" v-model="selectedScope" :disabled="submitting" aria-label="选择学习范围">
+        <option value="AUTO">按问题确定范围（默认当前视频）</option>
+        <option value="VIDEO">当前视频</option>
+        <option value="COURSE">整门课程（最多 12 个视频）</option>
+        <option v-for="section in courseSections" :key="section.id" :value="`SECTION:${section.id}`">{{ section.title }}</option>
+      </select>
+      <div v-if="routeInfo?.task" class="route-info">本次范围：{{ routeInfo.task.materials.map(item => item.title).join('、') }}</div>
       <textarea
         v-model="content"
         maxlength="500"
@@ -54,6 +61,7 @@ import ConversationPanel from './ConversationPanel.vue'
 const props = defineProps({
   mediaId: { type: Number, required: true },
   courseId: { type: Number, default: null },
+  courseSections: { type: Array, default: () => [] },
   canManage: { type: Boolean, default: false },
   userId: { type: Number, required: true },
   hasTranscript: { type: Boolean, default: false },
@@ -65,6 +73,7 @@ defineEmits(['seek'])
 const conversationPanel = ref(null)
 const content = ref('')
 const requestedMode = ref('AUTO')
+const selectedScope = ref('AUTO')
 const submitting = ref(false)
 const routeInfo = ref(null)
 const error = ref('')
@@ -137,9 +146,16 @@ const submit = async () => {
       content: value,
       mode: requestedMode.value,
       conversationId: conversationContext.conversationId,
-      courseId: props.courseId
+      courseId: props.courseId,
+      scope: selectedScope.value === 'AUTO' ? null : selectedScope.value.startsWith('SECTION:')
+        ? { type: 'SECTION', sectionId: Number(selectedScope.value.split(':')[1]) }
+        : { type: selectedScope.value }
     })
     if (mediaId !== props.mediaId) return
+    if (response.preparationStatus === 'NEEDS_INPUT') {
+      error.value = response.reason
+      return
+    }
     followIndexJob(null)
     routeInfo.value = response
     conversationPanel.value?.acceptTimeline(response.conversation, response.timeline)
@@ -182,6 +198,7 @@ watch(isStudyMode, studyMode => {
 <style scoped>
 .assistant-panel { display: flex; min-height: 526px; flex-direction: column; }
 .assistant-composer { position: sticky; bottom: -26px; z-index: 2; display: grid; gap: 8px; margin-top: 20px; padding: 18px 0 0; background: linear-gradient(transparent, var(--panel) 14%); }
+.assistant-composer > select { padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); }
 .assistant-composer textarea { width: 100%; min-height: 88px; resize: vertical; padding: 12px 13px; border: 1px solid var(--border); border-radius: 11px; outline: none; background: #0e1014; color: var(--text); font: inherit; line-height: 1.5; }
 .assistant-composer textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(197, 249, 70, .08); }
 .composer-actions { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }

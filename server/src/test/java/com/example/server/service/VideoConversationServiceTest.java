@@ -44,14 +44,20 @@ class VideoConversationServiceTest {
     private final RedissonClient redissonClient = mock(RedissonClient.class);
     private final RLock lock = mock(RLock.class);
     private final KnowledgeIndexPreparationService indexPreparation = mock(KnowledgeIndexPreparationService.class);
+    private final StudyTaskPreparationService tasks = mock(StudyTaskPreparationService.class);
     private final VideoConversationService service = new VideoConversationService(
             store,
             mediaService,
             questionService,
             knowledgeRetriever,
             redissonClient,
-            new VideoEvidenceContextService(3, 30), indexPreparation
+            new VideoEvidenceContextService(3, 30), indexPreparation, tasks, mock(StudyEvidenceService.class),mock(com.example.server.service.ai.AiCallLedger.class)
     );
+
+    @org.junit.jupiter.api.BeforeEach void preparedTask() {
+        when(tasks.prepare(any(),any(),any(),any(),any(),any())).thenAnswer(call ->
+            StudyTaskFixtures.video(call.getArgument(0),call.getArgument(1),call.getArgument(2),call.getArgument(3),call.getArgument(5),"v"));
+    }
 
     @Test
     void usesPersistedHistoryAndSavesTheCompletedTurn() throws InterruptedException {
@@ -79,21 +85,21 @@ class VideoConversationServiceTest {
         when(lock.isHeldByCurrentThread()).thenReturn(true);
         when(mediaService.getTranscript(42L, 3L)).thenReturn(new MediaTranscriptResponse(42L, segments));
         when(store.listRecentMessages(7L, 12)).thenReturn(history);
-        when(questionService.fitsFull(any(), any(), any(), any())).thenReturn(true);
-        when(questionService.answerFull(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), any(), eq(""))).thenReturn(answer);
-        when(store.saveTurn(conversation, "继续说说", answer)).thenReturn(saved);
+        when(questionService.fitsPrepared(any(), any(), any(), any())).thenReturn(true);
+        when(questionService.answerPrepared(argThat(t -> t.goal().equals("继续说说")), eq(segments.stream().map(this::candidate).toList()), any(), eq(""), eq(false))).thenReturn(answer);
+        when(store.savePreparedTurn(eq(conversation), org.mockito.ArgumentMatchers.argThat(t -> t.goal().equals("继续说说")), eq(answer))).thenReturn(saved);
 
         assertThat(service.ask(42L, 7L, 3L, " 继续说说 ")).isSameAs(saved);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DeepSeekMessage>> context = ArgumentCaptor.forClass(List.class);
-        verify(questionService).answerFull(eq("继续说说"), eq(segments.stream().map(this::candidate).toList()), context.capture(), eq(""));
+        verify(questionService).answerPrepared(argThat(t -> t.goal().equals("继续说说")), eq(segments.stream().map(this::candidate).toList()), context.capture(), eq(""), eq(false));
         assertThat(context.getValue()).containsExactly(
                 new DeepSeekMessage("user", "上一问"),
                 new DeepSeekMessage("assistant", "上一答")
         );
-        verify(store).saveTurn(conversation, "继续说说", answer);
-        verify(knowledgeRetriever, never()).search(any(), any());
+        verify(store).savePreparedTurn(eq(conversation), org.mockito.ArgumentMatchers.argThat(t -> t.goal().equals("继续说说")), eq(answer));
+        verify(knowledgeRetriever, never()).search(any(), any(), any(Runnable.class));
         verify(lock).unlock();
     }
 
@@ -131,25 +137,19 @@ class VideoConversationServiceTest {
                         && query.contains("知识点 2：PostgreSQL")
                         && query.contains("上一答：视频介绍了 MySQL 和 PostgreSQL")
                         && query.endsWith("当前问题：第二个有什么优点？")
-        ))).thenReturn(new VideoKnowledgeRetriever.SearchResult(context(List.of(first, second)), List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
+        ), any(Runnable.class))).thenReturn(new VideoKnowledgeRetriever.SearchResult(context(List.of(first, second)), List.of(new VideoKnowledgeRetriever.KnowledgeSearchHit(
                 1, 300_000, 600_000, "摘要", List.of("PostgreSQL"), 0.9,
                 List.of(10L), List.of()
         ))));
-        when(questionService.answer(
-                eq("第二个有什么优点？"), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
-                        candidate(first).evidence(), false, 1000))), any(),
-                argThat(context -> context.contains("知识点 2：PostgreSQL"))
-        )).thenReturn(answer);
-        when(store.saveTurn(conversation, "第二个有什么优点？", answer)).thenReturn(saved);
+        when(questionService.answerPrepared(argThat(t -> t.goal().equals("第二个有什么优点？")), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
+                        candidate(first).evidence(), false, 1000))), any(), argThat(context -> context.contains("知识点 2：PostgreSQL")), eq(true))).thenReturn(answer);
+        when(store.savePreparedTurn(eq(conversation), org.mockito.ArgumentMatchers.argThat(t -> t.goal().equals("第二个有什么优点？")), eq(answer))).thenReturn(saved);
 
         assertThat(service.ask(42L, 7L, 3L, "第二个有什么优点？")).isSameAs(saved);
 
-        verify(questionService).answer(
-                eq("第二个有什么优点？"), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
-                        candidate(first).evidence(), false, 1000))), any(),
-                argThat(context -> context.contains("知识点 2：PostgreSQL"))
-        );
-        verify(store).saveTurn(conversation, "第二个有什么优点？", answer);
+        verify(questionService).answerPrepared(argThat(t -> t.goal().equals("第二个有什么优点？")), eq(List.of(candidate(second), new VideoEvidenceContextService.Candidate(
+                        candidate(first).evidence(), false, 1000))), any(), argThat(context -> context.contains("知识点 2：PostgreSQL")), eq(true));
+        verify(store).savePreparedTurn(eq(conversation), org.mockito.ArgumentMatchers.argThat(t -> t.goal().equals("第二个有什么优点？")), eq(answer));
         verify(lock).unlock();
     }
 
@@ -168,7 +168,7 @@ class VideoConversationServiceTest {
         );
         when(mediaService.isStudyMode(42L, 3L)).thenReturn(true);
         when(store.listRecentMessages(7L, 12)).thenReturn(List.of());
-        when(knowledgeRetriever.search(42L, "当前问题：问题")).thenThrow(
+        when(knowledgeRetriever.search(eq(42L), eq("当前问题：问题"), any(Runnable.class))).thenThrow(
                 new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready")
         );
 
@@ -180,8 +180,8 @@ class VideoConversationServiceTest {
                 .isInstanceOf(KnowledgeIndexPreparationService.IndexPreparationException.class)
                 .hasMessageContaining("正在准备");
 
-        verify(questionService, never()).answer(any(), any(), any(), anyString());
-        verify(store, never()).saveTurn(any(), any(), any());
+        verify(questionService, never()).answerPrepared(any(), any(), any(), anyString(), eq(true));
+        verify(store, never()).savePreparedTurn(any(), any(), any());
         verify(lock).unlock();
     }
 
@@ -194,8 +194,8 @@ class VideoConversationServiceTest {
         assertThatThrownBy(() -> service.ask(42L, 7L, 3L, "问题"))
                 .isInstanceOf(VideoConversationService.ConversationBusyException.class);
 
-        verify(questionService, never()).answer(any(), any(), any(), anyString());
-        verify(store, never()).saveTurn(any(), any(), any());
+        verify(questionService, never()).answerPrepared(any(), any(), any(), anyString(), eq(true));
+        verify(store, never()).savePreparedTurn(any(), any(), any());
     }
 
     @Test

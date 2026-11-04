@@ -6,8 +6,8 @@ export const listMedia = async () => {
   return response.data
 }
 
-export const getMediaDetail = async (mediaId) => {
-  const response = await http.get(`/media/${mediaId}`)
+export const getMediaDetail = async (mediaId, courseId = null) => {
+  const response = await http.get(`/media/${mediaId}`, { params: { courseId } })
   return response.data
 }
 
@@ -102,3 +102,6 @@ export const importMediaUrl = async (url) => {
 export const deleteMedia = async (mediaId) => {
   await http.delete(`/media/${mediaId}`)
 }
+
+export const cancelVideoAgentRun = async (runId) => (await http.post(`/agent-runs/${runId}/cancel`)).data
+export const getVideoAgentRunEvents = async (runId, after = 0) => (await http.get(`/agent-runs/${runId}/events`, { params: { after }, sessionActivity: false })).data

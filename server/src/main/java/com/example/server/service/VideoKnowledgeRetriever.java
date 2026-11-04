@@ -36,9 +36,9 @@ public class VideoKnowledgeRetriever {
         this.qdrantIndexService = qdrantIndexService;
     }
 
-    public SearchResult search(Long mediaId, String query) {
+    public SearchResult search(Long mediaId, String query, Runnable beforeEmbedding) {
         var index = indexService.requireReady(mediaId);
-        return new SearchResult(index.context(), searchMultimodal(index, query).stream()
+        return new SearchResult(index.context(), searchMultimodal(index, query, beforeEmbedding).stream()
                 .filter(hit -> !hit.transcriptSegmentIds().isEmpty()).toList());
     }
 
@@ -72,6 +72,20 @@ public class VideoKnowledgeRetriever {
         String normalizedQuery = query.trim();
         List<Double> queryVector = deadline == null ? embeddingClient.embedQuery(query.trim(), beforeEmbedding)
                 : embeddingClient.embedQuery(query.trim(), beforeEmbedding, deadline);
+        return searchWithVector(index, normalizedQuery, queryVector, deadline, startedAt);
+    }
+
+    /** Embed one query once; SQL/Qdrant still receive an individual authorized media/version filter. */
+    public List<List<KnowledgeSearchHit>> searchMaterials(List<VideoKnowledgeIndexService.IndexSnapshot> indexes,
+            String query, Runnable beforeEmbedding) {
+        if (indexes.isEmpty() || indexes.size() > StudyTaskPreparationService.MAX_MATERIALS || query == null || query.isBlank())
+            throw new IllegalArgumentException("Invalid bounded course search");
+        var vector = embeddingClient.embedQuery(query.trim(), beforeEmbedding);
+        return indexes.stream().map(index -> searchWithVector(index, query.trim(), vector, null, System.nanoTime())).toList();
+    }
+
+    private List<KnowledgeSearchHit> searchWithVector(VideoKnowledgeIndexService.IndexSnapshot index,
+            String normalizedQuery, List<Double> queryVector, java.time.Instant deadline, long startedAt) {
         // Single-video learning has at most ~24 chunks: exact scan avoids an extra remote hop under its deadline.
         CandidateSelection candidates = deadline == null ? candidates(index, normalizedQuery, queryVector)
                 : new CandidateSelection(index.chunks(), "bounded-single-video-exact");

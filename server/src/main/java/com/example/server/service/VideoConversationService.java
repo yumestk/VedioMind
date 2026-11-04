@@ -32,6 +32,9 @@ public class VideoConversationService {
     static final int MAX_AGENT_RETRIEVAL_CONTEXT_CHARACTERS = 800;
     static final int MAX_PREVIOUS_TURN_RETRIEVAL_CHARACTERS = 600;
 
+    private final StudyTaskPreparationService tasks;
+    private final com.example.server.service.ai.AiCallLedger ledger;
+    private final StudyEvidenceService studyEvidence;
     private final KnowledgeIndexPreparationService indexPreparation;
     private final VideoConversationStore store;
     private final MediaService mediaService;
@@ -47,8 +50,9 @@ public class VideoConversationService {
             VideoKnowledgeRetriever knowledgeRetriever,
             RedissonClient redissonClient,
             VideoEvidenceContextService evidenceContextService,
-            KnowledgeIndexPreparationService indexPreparation
+            KnowledgeIndexPreparationService indexPreparation, StudyTaskPreparationService tasks, StudyEvidenceService studyEvidence, com.example.server.service.ai.AiCallLedger ledger
     ) {
+        this.tasks = tasks; this.studyEvidence = studyEvidence;this.ledger=ledger;
         this.indexPreparation = indexPreparation;
         this.store = store;
         this.mediaService = mediaService;
@@ -80,9 +84,21 @@ public class VideoConversationService {
     }
 
     public ConversationTurnResponse ask(Long mediaId, Long conversationId, Long userId, String question) {
-        String normalizedQuestion = normalizeQuestion(question);
-        requireConversationForMedia(mediaId, conversationId, userId);
+        var conversation = requireConversationForMedia(mediaId, conversationId, userId);
+        var task = tasks.prepare(mediaId, userId, conversationId, conversation.getCourseId(),
+                new com.example.server.dto.PreparedStudyTask.Scope("VIDEO", null, List.of(mediaId)), normalizeQuestion(question));
+        return askPrepared(task);
+    }
 
+    public ConversationTurnResponse askPrepared(com.example.server.dto.PreparedStudyTask task) {
+        try(var context=ledger.open(task)) {return askWithinRequest(task);}
+    }
+    private ConversationTurnResponse askWithinRequest(com.example.server.dto.PreparedStudyTask task) {
+        Long mediaId = task.anchorMediaId(), conversationId = task.conversationId(), userId = task.learnerId();
+        String normalizedQuestion = normalizeQuestion(task.goal());
+        var owned = requireConversationForMedia(mediaId, conversationId, userId);
+        if (!java.util.Objects.equals(owned.getCourseId(), task.courseId())) throw new NoSuchElementException("Course context mismatch");
+        tasks.assertCurrent(task);
         RLock lock = redissonClient.getLock("lock:video-conversation:" + conversationId);
         boolean locked = false;
         try {
@@ -93,6 +109,22 @@ public class VideoConversationService {
 
             VideoConversation conversation = requireConversationForMedia(mediaId, conversationId, userId);
             mediaService.requireReadable(mediaId, conversation.getCourseId(), userId);
+            if (!"VIDEO".equals(task.scope().type())) {
+                List<DeepSeekMessage> history = trimHistory(store.listRecentMessages(conversationId, MAX_HISTORY_MESSAGES));
+                String agentContext = linkedAgentContext(conversationId);
+                var evidence = studyEvidence.full(task);
+                if (evidence.isEmpty()) throw new ConversationNotReadyException("所选材料尚无原文，请联系课程作者完成准备");
+                boolean full = questionService.fitsPrepared(task, evidence, history, agentContext);
+                if (!full) {
+                    if (List.of("总结", "概括", "所有", "全部", "完整", "核心观点", "核心知识点").stream().anyMatch(normalizedQuestion::contains))
+                        throw new ConversationNotReadyException("所选范围的原文超出输入预算，无法保证完整概括；请缩小范围，或按具体主题提问");
+                    evidence = studyEvidence.search(task, retrievalQuery(agentContext, history, normalizedQuestion));
+                }
+                tasks.assertCurrent(task);
+                var answer = questionService.answerPrepared(task, evidence, history, agentContext, !full);
+                tasks.assertCurrent(task);
+                return store.savePreparedTurn(conversation, task, answer);
+            }
             MediaTranscriptResponse transcript = mediaService.getTranscript(conversation.getMediaId(), userId);
             if (transcript.segments().isEmpty()) {
                 throw new ConversationNotReadyException("Analyze the video before asking questions");
@@ -106,7 +138,7 @@ public class VideoConversationService {
                     .map(segment -> new VideoEvidenceContextService.Candidate(new VideoAgentCitation(
                             "TRANSCRIPT:" + segment.id(), "TRANSCRIPT", segment.id(),
                             segment.startMs(), segment.endMs(), segment.text()), true, 0)).toList();
-            boolean full = questionService.fitsFull(normalizedQuestion, evidence, history, agentContext);
+            boolean full = questionService.fitsPrepared(task, evidence, history, agentContext);
             if (!full) {
                 if (List.of("总结整段", "总结整个", "全片总结", "整段视频的核心观点", "视频提出了哪些核心观点", "整节课总结")
                         .stream().anyMatch(normalizedQuestion::contains)) {
@@ -116,18 +148,14 @@ public class VideoConversationService {
                 }
                 evidence = retrieveEvidence(
                         conversation.getMediaId(), normalizedQuestion, history,
-                        agentContext, userId
+                        agentContext, userId, task
                 );
             }
-            VideoQuestionResponse answer = full ? questionService.answerFull(
-                    normalizedQuestion, evidence, history, agentContext) : questionService.answer(
-                    normalizedQuestion,
-                    evidence,
-                    history,
-                    agentContext
-            );
+            tasks.assertCurrent(task);
+            VideoQuestionResponse answer = questionService.answerPrepared(task, evidence, history, agentContext, !full);
             mediaService.requireReadable(mediaId, conversation.getCourseId(), userId);
-            return store.saveTurn(conversation, normalizedQuestion, answer);
+            tasks.assertCurrent(task);
+            return store.savePreparedTurn(conversation, task, answer);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while acquiring conversation lock", exception);
@@ -194,9 +222,9 @@ public class VideoConversationService {
 
     private List<VideoEvidenceContextService.Candidate> retrieveEvidence(
             Long mediaId, String question, List<DeepSeekMessage> history,
-            String agentContext, Long userId) {
+            String agentContext, Long userId, com.example.server.dto.PreparedStudyTask task) {
         try {
-            var result = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question));
+            var result = knowledgeRetriever.search(mediaId, retrievalQuery(agentContext, history, question), () -> tasks.assertCurrent(task));
             return evidenceContextService.rankForQuestion(question, evidenceContextService.expand(result.context(), result.hits(), false));
         } catch (VideoKnowledgeIndexService.KnowledgeIndexNotReadyException exception) {
             try { mediaService.requireOwnership(mediaId, userId); }

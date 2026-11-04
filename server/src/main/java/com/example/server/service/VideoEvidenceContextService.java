@@ -147,7 +147,9 @@ public class VideoEvidenceContextService {
     static List<Candidate> questionWindow(List<Candidate> chronological, int anchor) {
         Candidate center = chronological.get(anchor);
         if (!"TRANSCRIPT".equals(center.evidence().type())) return List.of(center);
-        var subtitles = chronological.stream().filter(v -> "TRANSCRIPT".equals(v.evidence().type())).toList();
+        var subtitles = chronological.stream().filter(v -> "TRANSCRIPT".equals(v.evidence().type())
+                && Objects.equals(v.evidence().materialId(), center.evidence().materialId())
+                && Objects.equals(v.evidence().contextVersion(), center.evidence().contextVersion())).toList();
         int position = subtitles.indexOf(center);
         long start = center.evidence().startMs();
         return subtitles.subList(Math.max(0, position - 3), Math.min(subtitles.size(), position + 4))

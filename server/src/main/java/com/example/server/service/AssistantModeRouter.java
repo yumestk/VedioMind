@@ -74,7 +74,7 @@ public class AssistantModeRouter {
             return new Decision("QUICK", "RULE", "请求属于局部查询或概念解释");
         }
 
-        try {
+        try (var purpose=com.example.server.service.ai.StudyExecutionContext.purposeIfPresent("ROUTING")) {
             JSONObject result = parse(chatClient.chat(
                     SYSTEM_PROMPT,
                     List.of(new DeepSeekMessage("user", content))
@@ -88,6 +88,8 @@ public class AssistantModeRouter {
             String reason = result.getString("reason");
             return new Decision(routedMode, "MODEL",
                     reason == null || reason.isBlank() ? "模型完成模式识别" : reason.trim());
+        } catch (com.example.server.service.ai.StudyExecutionContext.GovernanceException stopped) {
+            throw stopped;
         } catch (RuntimeException exception) {
             log.warn("Assistant mode routing failed, falling back to QUICK: {}", exception.getMessage());
             return fallback("模式识别暂时不可用，已使用快速问答");

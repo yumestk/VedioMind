@@ -28,14 +28,12 @@ class VideoAgentRunServiceTest {
     private final MediaFileMapper mediaFileMapper = mock(MediaFileMapper.class);
     private final VideoConversationStore conversationStore = mock(VideoConversationStore.class);
     private final VideoAgentRunService service = new VideoAgentRunService(
-            runMapper, stepMapper, mediaFileMapper, conversationStore, mock(StudyAccessService.class)
+            runMapper, stepMapper, mediaFileMapper, conversationStore, mock(StudyAccessService.class),mock(StudyTaskPreparationService.class),mock(StudyRunControl.class),mock(com.example.server.service.ai.AiCallLedger.class)
     );
 
     @Test
     void createsTheRunAndTimelineMessagesInOneServiceTransaction() {
-        VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
-        );
+        VideoAgentRunMessage command = new VideoAgentRunMessage("run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1", com.example.server.service.StudyTaskFixtures.video(42L,3L,7L,null,"整理整节课","context-v1"));
         MediaFile media = new MediaFile();
         VideoConversation conversation = new VideoConversation();
         conversation.setId(7L);
@@ -59,9 +57,7 @@ class VideoAgentRunServiceTest {
     void ignoresARepeatedRocketMqLocalTransactionCallback() {
         VideoAgentRun existing = new VideoAgentRun();
         when(runMapper.selectById("run-1")).thenReturn(existing);
-        VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
-        );
+        VideoAgentRunMessage command = new VideoAgentRunMessage("run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1", com.example.server.service.StudyTaskFixtures.video(42L,3L,7L,null,"整理整节课","context-v1"));
 
         service.createQueuedRun(command);
 
@@ -79,9 +75,7 @@ class VideoAgentRunServiceTest {
         conversation.setMediaId(99L);
         when(mediaFileMapper.selectById(42L)).thenReturn(new MediaFile());
         when(conversationStore.getRequired(7L)).thenReturn(conversation);
-        VideoAgentRunMessage command = new VideoAgentRunMessage(
-                "run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1"
-        );
+        VideoAgentRunMessage command = new VideoAgentRunMessage("run-1", 42L, 7L, 3L, null, "整理整节课", "context-v1", com.example.server.service.StudyTaskFixtures.video(42L,3L,7L,null,"整理整节课","context-v1"));
 
         assertThatThrownBy(() -> service.createQueuedRun(command))
                 .isInstanceOf(IllegalArgumentException.class)

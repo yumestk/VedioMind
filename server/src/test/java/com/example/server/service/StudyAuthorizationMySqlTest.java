@@ -44,7 +44,7 @@ class StudyAuthorizationMySqlTest {
     @Configuration @EnableTransactionManagement
     @Import({StudyAccessService.class, CourseService.class, MediaService.class, VideoConversationStore.class,
             VideoConversationService.class, VideoAgentRunService.class, VideoAgentSubmissionService.class,
-            AssistantDispatchService.class, AssistantModeRouter.class})
+            AssistantDispatchService.class, AssistantModeRouter.class, StudyTaskPreparationService.class, StudyEvidenceService.class,StudyRunControl.class})
     static class Config {
         @Bean DataSource dataSource() {
             String url=System.getenv("STUDY_TEST_MYSQL_URL");
@@ -60,10 +60,12 @@ class StudyAuthorizationMySqlTest {
             var c=new MybatisConfiguration(); c.setMapUnderscoreToCamelCase(true);
             c.setEnvironment(new Environment("study-test",new SpringManagedTransactionFactory(),ds));
             for (var type:List.of(MediaFileMapper.class,VideoConversationMapper.class,VideoMessageMapper.class,
-                    VideoMessageCitationMapper.class,VideoAgentRunMapper.class,VideoAgentStepMapper.class)) c.addMapper(type);
+                    VideoMessageCitationMapper.class,VideoAgentRunMapper.class,VideoAgentStepMapper.class,MediaVisualEvidenceMapper.class,VideoKeyframeMapper.class)) c.addMapper(type);
             return new MybatisSqlSessionFactoryBuilder().build(c);
         }
         @Bean SqlSessionTemplate sql(SqlSessionFactory factory) { return new SqlSessionTemplate(factory); }
+        @Bean MediaVisualEvidenceMapper manifestMapper(SqlSessionTemplate sql) { return sql.getMapper(MediaVisualEvidenceMapper.class); }
+        @Bean VideoKeyframeMapper keyframeMapper(SqlSessionTemplate sql) { return sql.getMapper(VideoKeyframeMapper.class); }
         @Bean MediaFileMapper mediaMapper(SqlSessionTemplate sql) { return sql.getMapper(MediaFileMapper.class); }
         @Bean VideoConversationMapper conversationMapper(SqlSessionTemplate sql) { return sql.getMapper(VideoConversationMapper.class); }
         @Bean VideoMessageMapper messageMapper(SqlSessionTemplate sql) { return sql.getMapper(VideoMessageMapper.class); }
@@ -83,6 +85,8 @@ class StudyAuthorizationMySqlTest {
             when(client.getLock(anyString())).thenReturn(lock); when(lock.tryLock(0,TimeUnit.SECONDS)).thenReturn(true);
             when(lock.isHeldByCurrentThread()).thenReturn(true); return client;
         }
+        @Bean com.example.server.service.context.VideoContextService contexts() { return mock(com.example.server.service.context.VideoContextService.class); }
+        @Bean com.example.server.service.ai.AiPromptBudget budget() { return new com.example.server.service.ai.AiPromptBudget(64000,8192); }
         @Bean VideoQuestionService questions() { return mock(VideoQuestionService.class); }
         @Bean VideoKnowledgeRetriever retrieval() { return mock(VideoKnowledgeRetriever.class); }
         @Bean VideoEvidenceContextService evidence() { return new VideoEvidenceContextService(3,30); }
@@ -90,6 +94,7 @@ class StudyAuthorizationMySqlTest {
         @Bean VideoKnowledgeIndexService index() { return mock(VideoKnowledgeIndexService.class); }
         @Bean RocketMQTemplate messages() { return mock(RocketMQTemplate.class); }
         @Bean AiRateLimitService quota() { return mock(AiRateLimitService.class); }
+        @Bean com.example.server.service.ai.AiCallLedger ledger(){return mock(com.example.server.service.ai.AiCallLedger.class);}
         @Bean DeepSeekChatClient model() { return mock(DeepSeekChatClient.class); }
     }
     @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
@@ -111,10 +116,14 @@ class StudyAuthorizationMySqlTest {
     @Autowired AiRateLimitService quota;
     @Autowired VideoKnowledgeIndexService index;
     @Autowired DeepSeekChatClient model;
+    @Autowired StudyTaskPreparationService tasks;
+    @Autowired com.example.server.service.context.VideoContextService contexts;
     Long courseId, sectionId;
 
     @BeforeEach void sample() {
-        reset(storage,mq,questions,transcript,retrieval,preparation,quota,index,model);
+        reset(storage,mq,questions,transcript,retrieval,preparation,quota,index,model,contexts);
+        when(contexts.currentVisualState(anyLong())).thenReturn("AVAILABLE");
+        when(contexts.currentVersion(anyLong())).thenReturn("v");
         for (long id:List.of(1L,2L,3L)) jdbc.update("INSERT INTO users(id,username,password) VALUES (?,?,'test-hash')",id,"actor-"+id);
         jdbc.update("INSERT INTO media_files(id,user_id,filename,status,analysis_mode,object_key,content_sha256) VALUES (10,1,'Lecture 1','COMPLETED','STUDY','private/video','abc')");
         jdbc.update("INSERT INTO media_files(id,user_id,filename,status,analysis_mode) VALUES (11,1,'Private lecture','COMPLETED','STUDY'),(12,2,'B private','COMPLETED','STUDY')");
@@ -156,10 +165,10 @@ class StudyAuthorizationMySqlTest {
         courses.publish(courseId,1L,true);
         var b=conversations.create(10L,2L,courseId);
         var c=conversations.create(10L,3L,courseId);
-        assertThatThrownBy(() -> dispatch.dispatch(11L,2L,new AssistantDispatchRequest("解释","QUICK",null,courseId))).isInstanceOf(NoSuchElementException.class);
-        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释","QUICK",c.id(),courseId))).isInstanceOf(NoSuchElementException.class);
-        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释","QUICK",b.id(),null))).isInstanceOf(NoSuchElementException.class);
-        assertThatThrownBy(() -> submissions.submit(10L,3L,b.id(),"notes")).isInstanceOf(NoSuchElementException.class);
+        assertThatThrownBy(() -> dispatch.dispatch(11L,2L,new AssistantDispatchRequest("解释", "QUICK", null, courseId, null))).isInstanceOf(NoSuchElementException.class);
+        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释", "QUICK", c.id(), courseId, null))).isInstanceOf(NoSuchElementException.class);
+        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释", "QUICK", b.id(), null, null))).isInstanceOf(NoSuchElementException.class);
+        assertThatThrownBy(() -> submissions.submit(StudyTaskFixtures.video(10L,3L,b.id(),courseId,"notes","v"))).isInstanceOf(NoSuchElementException.class);
         assertThatThrownBy(() -> courses.addMaterial(courseId,sectionId,12L,1L,1)).isInstanceOf(NoSuchElementException.class);
         var other=courses.create(1L,"Other","");
         assertThatThrownBy(() -> courses.addMaterial(other.course().id(),sectionId,10L,1L,0)).isInstanceOf(NoSuchElementException.class);
@@ -171,18 +180,18 @@ class StudyAuthorizationMySqlTest {
     @Test void withdrawalAndDeletionPreserveResultsHideEvidenceAndStopAffectedRuns() {
         courses.publish(courseId,1L,true);
         var b=conversations.create(10L,2L,courseId);
-        store.saveTurn(store.getRequired(b.id()),"question",new VideoQuestionResponse("saved answer",List.of(new VideoQuestionCitationResponse(99L,100L,200L,"secret source text"))));
+        store.savePreparedTurn(store.getRequired(b.id()),tasks.prepare(10L,2L,b.id(),courseId,null,"question"),new VideoQuestionResponse("saved answer",List.of(new VideoQuestionCitationResponse(99L,100L,200L,"secret source text"))));
         runs.createQueuedRun(command("done",b.id(),2L));
         jdbc.update("UPDATE video_agent_runs SET status='SUCCEEDED',result_json=?,citations_json=? WHERE id='done'", resultJson(),citationsJson());
         runs.createQueuedRun(command("active",b.id(),2L));
         courses.publish(courseId,1L,false);
         assertThat(runs.getRequired("active").getStatus()).isEqualTo("FAILED");
-        assertThat(runs.beginAttempt("active",0)).isFalse();
+        assertThat(runs.beginAttempt("active",0)).isEmpty();
         assertThatThrownBy(() -> media.getDetail(10L,2L)).isInstanceOf(NoSuchElementException.class);
         var timeline=conversations.messages(b.id(),2L);
         assertThat(timeline.sourceAvailable()).isFalse();
         assertThat(timeline.messages()).allSatisfy(message -> {
-            assertThat(message.citations()).isEmpty();
+            assertThat(message.citations()).allSatisfy(c -> { assertThat(c.sourceAvailable()).isFalse(); assertThat(c.text()).isNull(); });
             if(message.agentRun()!=null) assertThat(message.agentRun().citations()).isEmpty();
         });
         assertThat(timeline.messages()).anySatisfy(m -> assertThat(m.content()).isEqualTo("saved answer"));
@@ -205,15 +214,15 @@ class StudyAuthorizationMySqlTest {
     @Test void singleVideoQuickPathRemainsAvailableAndStudentCannotStartPaidPreparation() throws Exception {
         var segment=new TranscriptSegment(); segment.setId(99L); segment.setStartMs(100L); segment.setEndMs(200L);segment.setText("source");segment.setSegmentIndex(0);
         when(transcript.listByMediaId(10L)).thenReturn(List.of(segment));
-        when(questions.fitsFull(any(),any(),any(),any())).thenReturn(true);
-        when(questions.answerFull(any(),any(),any(),any())).thenReturn(new VideoQuestionResponse("answer",List.of()));
-        var response=dispatch.dispatch(10L,1L,new AssistantDispatchRequest("解释","QUICK",null,null));
+        when(questions.fitsPrepared(any(),any(),any(),any())).thenReturn(true);
+        when(questions.answerPrepared(any(), any(), any(), any(), eq(false))).thenReturn(new VideoQuestionResponse("answer",List.of()));
+        var response=dispatch.dispatch(10L,1L,new AssistantDispatchRequest("解释", "QUICK", null, null, null));
         assertThat(response.timeline().messages()).hasSize(2);
         assertThat(store.getRequired(response.conversation().id()).getLearnerId()).isEqualTo(1);
         courses.publish(courseId,1L,true);
-        when(questions.fitsFull(any(),any(),any(),any())).thenReturn(false);
-        when(retrieval.search(any(),any())).thenThrow(new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready"));
-        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释","QUICK",null,courseId)))
+        when(questions.fitsPrepared(any(),any(),any(),any())).thenReturn(false);
+        when(retrieval.search(any(),any(),any(Runnable.class))).thenThrow(new VideoKnowledgeIndexService.KnowledgeIndexNotReadyException("not ready"));
+        assertThatThrownBy(() -> dispatch.dispatch(10L,2L,new AssistantDispatchRequest("解释", "QUICK", null, courseId, null)))
                 .isInstanceOf(VideoConversationService.ConversationNotReadyException.class).hasMessageContaining("课程作者");
         verifyNoInteractions(preparation,mq,index);
     }
@@ -221,7 +230,7 @@ class StudyAuthorizationMySqlTest {
     @Test void rollbackDoesNotLeaveHalfACreatedRunOrTimeline() {
         courses.publish(courseId,1L,true);
         var b=conversations.create(10L,2L,courseId);
-        var invalid=new VideoAgentRunMessage("invalid",10L,b.id(),3L,courseId,"notes","v");
+        var invalid=new VideoAgentRunMessage("invalid", 10L, b.id(), 3L, courseId, "notes", "v", com.example.server.service.StudyTaskFixtures.video(10L,3L,b.id(),courseId,"notes","v"));
         assertThatThrownBy(() -> runs.createQueuedRun(invalid)).isInstanceOf(NoSuchElementException.class);
         assertThat(store.listMessages(b.id(),true).messages()).isEmpty();
         assertThat(runs.findById("invalid")).isEmpty();
@@ -234,15 +243,35 @@ class StudyAuthorizationMySqlTest {
             jdbc.update("INSERT INTO media_files(id,user_id,filename) VALUES (99,99,'rollback source')");
             var conversation = conversations.create(99L,99L,null);
             // The citation fails only after both messages have been inserted.
-            store.saveTurn(store.getRequired(conversation.id()),"question",new VideoQuestionResponse("answer",
+            store.savePreparedTurn(store.getRequired(conversation.id()),tasks.prepare(99L,99L,conversation.id(),null,null,"question"),new VideoQuestionResponse("answer",
                     List.of(new VideoQuestionCitationResponse(null,0L,1L,"invalid citation"))));
         })).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM users WHERE id=99",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_conversations WHERE learner_id=99",Integer.class)).isZero();
     }
 
+    @Test void cancelledLeaseCannotPersistAnyCheckpointPartialOrFinalResult() {
+        courses.publish(courseId,1L,true);
+        var conversation=conversations.create(10L,2L,courseId);
+        var command=command("cancel-test",conversation.id(),2L);
+        runs.createQueuedRun(command);
+        jdbc.update("UPDATE video_agent_runs SET deadline_at=DATE_ADD(NOW(),INTERVAL 10 MINUTE) WHERE id='cancel-test'");
+        long epoch=runs.beginAttempt("cancel-test",0).orElseThrow();
+        try(var context=com.example.server.service.ai.StudyExecutionContext.open(command.preparedTask(),"cancel-test",epoch)) {
+            runs.cancel("cancel-test",2L);
+            var result=com.alibaba.fastjson2.JSON.parseObject(resultJson(),VideoAgentResult.class);
+            assertThatThrownBy(()->runs.saveCompletedStep("cancel-test","NOTES",0,"input",result)).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+            assertThatThrownBy(()->runs.saveUsableResult("cancel-test",result,List.of())).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+            assertThatThrownBy(()->runs.markSucceeded("cancel-test",result,List.of())).isInstanceOf(com.example.server.service.ai.StudyExecutionContext.GovernanceException.class);
+        }
+        assertThat(runs.getRequired("cancel-test").getStatus()).isEqualTo("CANCELLED");
+        assertThat(runs.getRequired("cancel-test").getResultJson()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_steps WHERE run_id='cancel-test'",Integer.class)).isZero();
+        assertThat(runs.events("cancel-test",2L,0)).extracting(e->e.get("type")).containsExactly("TASK_QUEUED","EXECUTION_STARTED","TASK_STOPPED");
+    }
+
     private VideoAgentRunMessage command(String id,Long conversationId,Long learnerId) {
-        return new VideoAgentRunMessage(id,10L,conversationId,learnerId,courseId,"notes","v");
+        return new VideoAgentRunMessage(id,10L,conversationId,learnerId,courseId,"notes","v",tasks.prepare(10L,learnerId,conversationId,courseId,null,"notes"));
     }
     private String resultJson() { return "{\"title\":\"Saved notes\",\"coreConclusion\":\"conclusion\",\"coreEvidenceRefs\":[],\"knowledgePoints\":[],\"quiz\":[],\"gaps\":[]}"; }
     private String citationsJson() { return "[{\"ref\":\"TRANSCRIPT:99\",\"type\":\"TRANSCRIPT\",\"id\":99,\"startMs\":100,\"endMs\":200,\"text\":\"secret source text\"}]"; }

@@ -19,7 +19,7 @@ class VideoAgentConsumerTest {
     private final VideoAgentConsumer consumer = new VideoAgentConsumer(service, recovery, new ObjectMapper());
 
     @Test
-    void delegatesWithDatabaseFailureCountInsteadOfBrokerRedeliveryCount() {
+    void delegatesWithDispatchVersionInsteadOfBrokerOrFailureCount() {
         doAnswer(call -> {
             call.getArgument(3, IntConsumer.class).accept(2);
             return null;
@@ -29,7 +29,7 @@ class VideoAgentConsumerTest {
 
         consumer.onMessage(message);
 
-        verify(service).process("task-1", 2);
+        verify(service).process("task-1", 0L);
     }
 
     @Test

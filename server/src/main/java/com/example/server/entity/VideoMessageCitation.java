@@ -15,6 +15,10 @@ public class VideoMessageCitation {
     private Long messageId;
     private Integer citationIndex;
     private Long segmentId;
+    private Long materialId;
+    private String contextVersion;
+    private String evidenceRef;
+    private String type;
     private Long startMs;
     private Long endMs;
     private String text;
