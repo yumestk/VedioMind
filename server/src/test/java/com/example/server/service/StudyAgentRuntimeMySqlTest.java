@@ -924,7 +924,7 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @Test
-    void decisionRoundsAreBoundedEvenWhenEachToolRequestIsDifferent() {
+    void noReadEvidenceStopsBeforeFinalizationWithoutFabricatingANote() {
         provider.call("read_skill", Map.of("name", "course-notes"));
         provider.call("get_course_structure", Map.of());
         provider.call("get_learning_state", Map.of());
@@ -932,8 +932,193 @@ class StudyAgentRuntimeMySqlTest {
         provider.call("search_course_evidence", Map.of("query", "事务定义"));
         provider.call("search_course_evidence", Map.of("query", "事务条件"));
         workflow.process("run", 0);
-        assertThat(runs.getRequired("run").getStopCode()).isEqualTo("TASK_BUDGET_EXHAUSTED");
+        assertThat(runs.getRequired("run").getStopCode()).isEqualTo("INSUFFICIENT_EVIDENCE");
+        assertThat(provider.requests).hasSize(4);
+        assertThat(artifacts.list("run", 2L)).isEmpty();
+        verifyNoInteractions(retriever);
+    }
+
+    @Test
+    void finalizationRejectsFurtherSearchAndStillAllowsSavingOnTheLastDecision() {
+        script();
+        provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
+        provider.call("search_course_evidence", Map.of("query", "继续展开"));
+        provider.call(
+                "save_note",
+                Map.of(
+                        "slotId",
+                        task.deliverables().getFirst().slotId(),
+                        "note",
+                        note(),
+                        "coverageMaterialIds",
+                        List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
         assertThat(provider.requests).hasSize(6);
+        verify(retriever, times(1)).searchMaterials(anyList(), anyString(), any(Runnable.class));
+        assertThat(provider.requests.get(4).getJSONArray("tools").toList(JSONObject.class))
+                .extracting(t -> t.getJSONObject("function").getString("name"))
+                .containsExactly("save_note");
+        assertThat(
+                        provider.requests
+                                .get(4)
+                                .getJSONArray("messages")
+                                .getJSONObject(
+                                        provider.requests.get(4).getJSONArray("messages").size()
+                                                - 1)
+                                .getString("content"))
+                .contains("FINALIZE", "decisionsRemaining\":2", "readEvidenceCount\":2");
+        assertThat(artifacts.list("run", 2L)).hasSize(1);
+    }
+
+    @Test
+    void malformedClosingSaveCanBeRepairedAndDeliversHonestPartialCoverage() {
+        script();
+        provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId()));
+        var partial = note();
+        partial.put("coreEvidenceRefs", List.of(originals.getFirst().ref()));
+        partial.getJSONArray("knowledgePoints")
+                .getJSONObject(0)
+                .put("evidenceRefs", List.of(originals.getFirst().ref()));
+        partial.put("gaps", List.of("另一材料的相关结论尚未确认"));
+        provider.call(
+                "save_note",
+                Map.of(
+                        "slotId",
+                        task.deliverables().getFirst().slotId(),
+                        "note",
+                        partial,
+                        "coverageMaterialIds",
+                        List.of(10L)));
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(6);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("PARTIAL");
+        assertThat(artifacts.list("run", 2L))
+                .singleElement()
+                .satisfies(
+                        a -> {
+                            assertThat(a.coverageMaterialIds()).containsExactly(10L);
+                            assertThat(a.content().gaps()).hasSize(1);
+                        });
+    }
+
+    @Test
+    void unreadCitationFeedbackNamesRejectedAndAllowedRefsBeforeAValidRepair() {
+        script();
+        provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
+        String unread = "11:TRANSCRIPT:999:t1-v1-p1";
+        var invalid = note();
+        invalid.getJSONArray("coreEvidenceRefs").add(unread);
+        provider.call(
+                "save_note",
+                Map.of(
+                        "slotId",
+                        task.deliverables().getFirst().slotId(),
+                        "note",
+                        invalid,
+                        "coverageMaterialIds",
+                        List.of(10L, 11L)));
+        provider.call(
+                "save_note",
+                Map.of(
+                        "slotId",
+                        task.deliverables().getFirst().slotId(),
+                        "note",
+                        note(),
+                        "coverageMaterialIds",
+                        List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(6);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        var messages = provider.requests.get(5).getJSONArray("messages").toList(JSONObject.class);
+        assertThat(
+                        messages.stream()
+                                .filter(m -> "tool".equals(m.getString("role")))
+                                .map(m -> m.getString("content"))
+                                .toList())
+                .anySatisfy(
+                        error ->
+                                assertThat(error)
+                                        .contains(
+                                                unread,
+                                                "本任务允许引用",
+                                                "不要只替换引用ID",
+                                                originals.getFirst().ref(),
+                                                originals.getLast().ref()));
+        assertThat(messages.getLast().getString("content"))
+                .contains(
+                        "allowedEvidenceRefs",
+                        originals.getFirst().ref(),
+                        originals.getLast().ref())
+                .doesNotContain(unread);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM study_artifacts WHERE run_id='run'",
+                                Integer.class))
+                .isEqualTo(1);
+        assertThat(artifacts.list("run", 2L))
+                .singleElement()
+                .satisfies(
+                        a ->
+                                assertThat(a.citations())
+                                        .extracting(c -> c.evidence().ref())
+                                        .doesNotContain(unread));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"tokens", "time", "generation"})
+    void lowResourcesEnterFinalizationBeforeTheRoundLimit(String resource) {
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "事务定义"));
+        provider.call(
+                "read_evidence",
+                Map.of("refs", originals.stream().map(VideoAgentCitation::ref).toList()));
+        provider.call(
+                "save_note",
+                Map.of(
+                        "slotId",
+                        task.deliverables().getFirst().slotId(),
+                        "note",
+                        note(),
+                        "coverageMaterialIds",
+                        List.of(10L, 11L)));
+        provider.beforeReply =
+                () -> {
+                    if (provider.requests.size() != 3) return;
+                    if (resource.equals("tokens")) {
+                        jdbc.update(
+                                "UPDATE video_agent_runs SET accounted_tokens=70000 WHERE"
+                                        + " id='run'");
+                        jdbc.update(
+                                "UPDATE study_ai_requests SET accounted_tokens=70000 WHERE"
+                                        + " run_id='run'");
+                    } else if (resource.equals("time")) {
+                        jdbc.update(
+                                "UPDATE video_agent_runs SET active_remaining_ms=30000 WHERE"
+                                        + " id='run'");
+                    } else {
+                        jdbc.update(
+                                "UPDATE video_agent_runs SET generation_calls=6 WHERE id='run'");
+                        jdbc.update(
+                                "UPDATE study_ai_requests SET generation_calls=6 WHERE"
+                                        + " run_id='run'");
+                    }
+                };
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(provider.requests).hasSize(4);
+        assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
+                .extracting(t -> t.getJSONObject("function").getString("name"))
+                .containsExactly("save_note");
+    }
+
+    @Test
+    void insufficientGenerationBudgetStopsBeforeSendingAnotherRequest() {
+        jdbc.update("UPDATE video_agent_runs SET generation_calls=8 WHERE id='run'");
+        jdbc.update("UPDATE study_ai_requests SET generation_calls=8 WHERE run_id='run'");
+        workflow.process("run", 0);
+        assertThat(provider.requests).isEmpty();
         assertThat(artifacts.list("run", 2L)).isEmpty();
     }
 }

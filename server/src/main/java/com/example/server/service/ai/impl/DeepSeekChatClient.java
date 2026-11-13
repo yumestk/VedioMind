@@ -144,8 +144,23 @@ public class DeepSeekChatClient {
             java.util.List<JSONObject> messages,
             java.util.List<JSONObject> tools,
             Runnable beforeAttempt,
-            Instant deadline) {
+            Instant deadline,
+            int outputTokens) {
         validateMessages(messages);
+        if (outputTokens < 1 || outputTokens > promptBudget.outputTokens())
+            throw new IllegalArgumentException("Invalid tool output budget");
+        var body = toolRequest(messages, tools, outputTokens);
+        if (promptBudget.estimateRequest(body) > promptBudget.inputLimit())
+            throw new AiPromptBudget.PromptBudgetExceededException("工具会话超过输入预算");
+        JSONObject reply = exchange(body, beforeAttempt, deadline);
+        JSONObject message =
+                reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+        validateToolReply(message);
+        return message;
+    }
+
+    public static JSONObject toolRequest(
+            java.util.List<JSONObject> messages, java.util.List<JSONObject> tools, int outputTokens) {
         var body =
                 JSONObject.of(
                         "model",
@@ -158,12 +173,11 @@ public class DeepSeekChatClient {
                         messages,
                         "tools",
                         tools);
-        body.put("max_tokens", promptBudget.outputTokens());
-        if (promptBudget.estimateRequest(body) > promptBudget.inputLimit())
-            throw new AiPromptBudget.PromptBudgetExceededException("工具会话超过输入预算");
-        JSONObject reply = exchange(body, beforeAttempt, deadline);
-        JSONObject message =
-                reply.getJSONArray("choices").getJSONObject(0).getJSONObject("message");
+        body.put("max_tokens", outputTokens);
+        return body;
+    }
+
+    private static void validateToolReply(JSONObject message) {
         if (!"assistant".equals(message.getString("role")))
             throw new AiProviderException("Invalid assistant role", null, false, 0);
         var calls = message.getJSONArray("tool_calls");
@@ -188,7 +202,6 @@ public class DeepSeekChatClient {
                     throw new AiProviderException("Malformed native tool call", null, false, 0);
             }
         }
-        return message;
     }
 
     static void validateMessages(java.util.List<JSONObject> messages) {

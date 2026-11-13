@@ -49,12 +49,20 @@ public class StudyArtifactService {
             throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "笔记字段、类型、长度或知识点数量不符合约定");
         var note = payload.toJavaObject(VideoAgentResult.class);
         var refs = refs(note);
-        if (refs.stream().anyMatch(ref -> !evidence.containsKey(ref))
-                || note.title().isBlank()
+        var unread = refs.stream().filter(ref -> !evidence.containsKey(ref)).toList();
+        if (!unread.isEmpty())
+            throw new GovernanceException(
+                    "INVALID_TOOL_ARGUMENTS",
+                    "引用未读取的原文："
+                            + JSON.toJSONString(unread)
+                            + "；本任务允许引用："
+                            + JSON.toJSONString(new ArrayList<>(evidence.keySet()))
+                            + "。请移除无已读原文支持的结论及对应引用，并把未完成目标列入gaps；不要只替换引用ID。");
+        if (note.title().isBlank()
                 || note.coreConclusion().isBlank()
                 || note.knowledgePoints().stream()
                         .anyMatch(p -> p.title().isBlank() || p.explanation().isBlank()))
-            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "只能引用本任务已读取的原文，内容不能为空");
+            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "笔记标题、核心结论及知识点内容不能为空");
         return note;
     }
 
