@@ -359,7 +359,7 @@ class StudyAgentRuntimeMySqlTest {
                 for (var gap : note.getList("gaps", String.class))
                     goals.add(JSONObject.of("requirement", "尚未完成的必要目标", "pointIndexes", List.of(), "gap", gap));
                 note.remove("gaps");
-                note.put("goalCoverage", goals);
+                note.putIfAbsent("goalCoverage", goals);
             }
             var m =
                     JSONObject.of(
@@ -554,7 +554,7 @@ class StudyAgentRuntimeMySqlTest {
                         });
         assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
                 .extracting(t -> t.getJSONObject("function").getString("name"))
-                .containsExactly("read_evidence", "save_note");
+                .containsExactly("read_evidence");
         assertThat(provider.requests).allSatisfy(r -> assertThat(r.getIntValue("max_tokens")).isLessThanOrEqualTo(4096));
         assertThatThrownBy(() -> artifacts.list("run", 3L))
                 .isInstanceOf(NoSuchElementException.class);
@@ -1157,7 +1157,7 @@ class StudyAgentRuntimeMySqlTest {
         assertThat(provider.requests).hasSize(5);
         assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
                 .extracting(t -> t.getJSONObject("function").getString("name"))
-                .containsExactly("read_evidence", "save_note");
+                .containsExactly("read_evidence");
     }
 
     @Test
@@ -1188,4 +1188,52 @@ class StudyAgentRuntimeMySqlTest {
         assertThat(first).extracting(VideoAgentCitation::sourceId).contains(43L).doesNotContain(44L);
         assertThat(second).extracting(VideoAgentCitation::sourceId).contains(44L);
     }
+    @Test void supportedGoalWithAGapDeliversPartialInsteadOfExhaustingCorrections() {
+        script();
+        provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
+        var partial = note();
+        partial.put("goalCoverage", List.of(JSONObject.of("requirement", "事务定义与例外",
+                "pointIndexes", List.of(0), "gap", "尚未读取例外情形")));
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", partial,
+                "coverageMaterialIds", List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("PARTIAL");
+        assertThat(provider.requests).hasSize(5);
+        assertThat(artifacts.list("run", 2L)).singleElement().satisfies(a -> {
+            assertThat(a.content().gaps()).containsExactly("事务定义与例外：尚未读取例外情形");
+            assertThat(a.content().knowledgePoints()).hasSize(1);
+        });
+    }
+
+    @Test void windowCapacityRecoveryDoesNotSpendArgumentCorrections() {
+        for (long id : List.of(10L, 11L)) {
+            var m = new VideoContext.Modality("AVAILABLE", 1, 2, 2, null);
+            var c = new VideoContext(id, "t1-v1-p1", "TEST", m, m,
+                    List.of(new VideoContext.TranscriptEvidence(42L, 0, 1000, "长".repeat(5000)),
+                            new VideoContext.TranscriptEvidence(43L, 301000, 302000, "核心定义")), List.of());
+            when(contexts.build(id)).thenReturn(c);
+            when(indexes.requireReady(id)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(c, List.of(), ""));
+        }
+        var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 0, 600000, "", List.of(), 1,
+                List.of(42L, 43L), List.of());
+        when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class))).thenReturn(List.of(List.of(hit), List.of(hit)));
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "事务"));
+        provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:42:t1-v1-p1")));
+        provider.call("read_evidence", Map.of("refs", originals.stream().map(VideoAgentCitation::ref).toList()));
+        var invalid = Provider.message("invalid-one", "save_note", Map.of("slotId", task.deliverables().getFirst().slotId()));
+        invalid.getJSONArray("tool_calls").addAll(Provider.message("invalid-two", "save_note",
+                Map.of("slotId", task.deliverables().getFirst().slotId())).getJSONArray("tool_calls"));
+        provider.replies.add(invalid);
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note(),
+                "coverageMaterialIds", List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(6);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(artifacts.list("run", 2L)).hasSize(1);
+        var capacity = jdbc.queryForObject("SELECT output_json FROM video_agent_steps WHERE run_id='run' AND stage='AGENT_TOOL_0' AND round_no=2", String.class);
+        assertThat(JSON.parseObject(capacity).getString("error")).isEqualTo("EVIDENCE_WINDOW_TOO_LARGE");
+        assertThat(provider.requests.get(3).getIntValue("max_tokens")).isEqualTo(1024);
+    }
+
 }

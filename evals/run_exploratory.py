@@ -65,7 +65,8 @@ def prepare():
         raise RuntimeError("Exploration database already exists; no automatic reset")
     prior_held = 0
     parent_id = {"notes-exploration-002": "notes-exploration-001",
-                 "notes-exploration-003": "notes-exploration-002"}.get(EXPERIMENT)
+                 "notes-exploration-003": "notes-exploration-002",
+                 "notes-exploration-004": "notes-exploration-003"}.get(EXPERIMENT)
     if parent_id:
         previous = RESULTS / parent_id
         parent = json.loads((previous / "manifest.json").read_text())
@@ -83,7 +84,7 @@ def prepare():
             data.append(dump("--no-create-info", "--skip-triggers", "media_db", table, f"--where={field} IN (42,43,44)"))
         seed = b"INSERT INTO users(id,username,password,nickname) VALUES (1,'eval-local-no-login','!disabled','Eval');\n"
         snapshot = schema + seed + b"\n".join(data)
-    batch_limit = min(1_000_000 if EXPERIMENT == "notes-exploration-003" else 3_000_000,
+    batch_limit = min(1_000_000 if EXPERIMENT == "notes-exploration-003" else 2_000_000 if EXPERIMENT == "notes-exploration-004" else 3_000_000,
                       10_000_000 - prior_held)
     if batch_limit <= 0:
         raise RuntimeError("No remaining round budget")
@@ -99,7 +100,7 @@ def prepare():
     diff = subprocess.check_output(["git", "diff", "--", "server/src/main"], cwd=ROOT)
     (OUTPUT / "agent.diff").write_bytes(diff)
     manifest = {
-        "experimentId": EXPERIMENT, "type": "EXPLORATORY_NOT_BASELINE", "preparedOn": "2026-11-13",
+        "experimentId": EXPERIMENT, "type": "EXPLORATORY_NOT_BASELINE", "preparedOn": "2026-11-15",
         "methodologyVersion": "1.1.0", "planVersion": re.search(r"计划版本：`([^`]+)`", (ROOT / "evals/PLAN.md").read_text()).group(1), "datasetVersion": "0.1.0-draft",
         "rubricVersion": "NONE_EXPLORATORY", "groundTruthStatus": "UNVERIFIED", "agentSha": sha,
         "agentDirtyDiffSha256": hashlib.sha256(diff).hexdigest(), "materialsSha256": hashlib.sha256(snapshot).hexdigest(),
@@ -112,7 +113,7 @@ def prepare():
                          for name in ["run_exploratory.py", "ExploratoryTrial.java"]},
         "ratesCnyPerMillion": {"deepseekInputCacheMissPeak": 2, "deepseekOutputPeak": 8, "embeddingBeijingInput": 0.5},
         "rateSources": ["https://api-docs.deepseek.com/zh-cn/quick_start/pricing/", "https://help.aliyun.com/zh/model-studio/text-embedding-synchronous-api/"],
-        "rateCheckedOn": "2026-11-13", "reservationPolicy": "UTF-8 bytes for estimated input, maximum output; no refunds within batch; stop on unknown usage",
+        "rateCheckedOn": "2026-11-15", "reservationPolicy": "UTF-8 bytes for estimated input, maximum output; no refunds within batch; stop on unknown usage",
         "execution": "direct serial workflow; no web auth, MQ, scheduling, or automatic trial rerun",
         "learningIsolation": "empty private course per case in isolated MySQL; existing Qdrant index is read-only",
         "rawDataPrivate": True, "judgeCalls": 0,
@@ -155,7 +156,7 @@ if __name__ == "__main__":
     self_check()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["prepare", "preflight", "run"])
-    parser.add_argument("--experiment", required=True, choices=["notes-exploration-001", "notes-exploration-002", "notes-exploration-003"])
+    parser.add_argument("--experiment", required=True, choices=["notes-exploration-001", "notes-exploration-002", "notes-exploration-003", "notes-exploration-004"])
     args = parser.parse_args()
     EXPERIMENT = args.experiment
     DB = "vediomind_eval_" + EXPERIMENT.replace("-", "_")

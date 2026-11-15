@@ -70,16 +70,22 @@ public class StudyEvidenceService {
         return List.copyOf(unique.values());
     }
 
+    public record ReadWindow(List<VideoAgentCitation> evidence, List<String> deferredWindowAnchors) {}
+
     /** Host-derived originals only; each returned neighbor retains its own scoped citation ID. */
     @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
-    public List<VideoAgentCitation> read(PreparedStudyTask task, List<String> refs) {
+    public ReadWindow read(PreparedStudyTask task, List<String> refs) {
         var originals = full(task).stream().map(VideoEvidenceContextService.Candidate::evidence).toList();
-        var anchors = originals.stream().filter(e -> refs.contains(e.ref())).toList();
+        var byRef = new HashMap<String, VideoAgentCitation>();
+        originals.forEach(e -> byRef.put(e.ref(), e));
+        var anchors = refs.stream().map(byRef::get).filter(Objects::nonNull).toList();
         if (anchors.size() != refs.size())
             throw new GovernanceException("TASK_RESOURCE_CHANGED", "原文证据已变化");
         var selected = new LinkedHashMap<String, VideoAgentCitation>();
-        anchors.forEach(e -> selected.put(e.ref(), e));
+        List<String> deferred = new ArrayList<>();
         for (var anchor : anchors) {
+            var window = new LinkedHashMap<String, VideoAgentCitation>();
+            window.put(anchor.ref(), anchor);
             var sameSource = originals.stream().filter(e -> Objects.equals(e.materialId(), anchor.materialId())
                     && Objects.equals(e.contextVersion(), anchor.contextVersion())
                     && e.endMs() >= Math.max(0, anchor.startMs() - 90_000)
@@ -89,15 +95,19 @@ public class StudyEvidenceService {
                                 && (before ? e.startMs() <= anchor.startMs() : e.startMs() > anchor.startMs()))
                         .sorted(Comparator.comparingLong(e -> Math.abs(e.startMs() - anchor.startMs())))
                         .limit("TRANSCRIPT".equals(type) ? 6 : 1)
-                        .forEach(e -> selected.putIfAbsent(e.ref(), e));
+                        .forEach(e -> window.putIfAbsent(e.ref(), e));
             }
+            var trial = new LinkedHashMap<>(selected);
+            trial.putAll(window);
+            if (AiPromptBudget.estimateText(JSON.toJSONString(trial.values())) <= 14_000) selected = trial;
+            else deferred.add(anchor.ref());
         }
         var values = selected.values().stream().sorted(Comparator.comparing(VideoAgentCitation::materialId)
                 .thenComparingLong(VideoAgentCitation::startMs).thenComparing(VideoAgentCitation::ref)).toList();
-        // Reject the whole window rather than silently dropping a qualifying condition at its edge.
-        if (AiPromptBudget.estimateText(JSON.toJSONString(values)) > 14_000)
-            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "原文窗口超过14k输入预算，请拆为单次1至2个锚点；单个窗口仍过大时报告读取限制，不能假定课程没有相关内容");
-        return values;
+        // Keep each accepted window intact. Deferred anchors grant no additional read permissions.
+        if (values.isEmpty())
+            throw new GovernanceException("EVIDENCE_WINDOW_TOO_LARGE", "单锚点完整窗口超过14k输入预算；请换更短的原文锚点。未读取不代表课程未讲过，禁止重复相同读取");
+        return new ReadWindow(values, List.copyOf(deferred));
     }
 
     private void requireVersion(PreparedStudyTask.Material material, VideoContext context) {

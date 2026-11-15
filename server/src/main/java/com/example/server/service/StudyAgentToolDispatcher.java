@@ -117,10 +117,11 @@ public class StudyAgentToolDispatcher {
                 var refs = call.args().getList("refs", String.class);
                 if (!discovered.keySet().containsAll(refs))
                     throw new GovernanceException("TOOL_NOT_ALLOWED", "证据ID未由当前任务检索返回");
-                result = JSONObject.of("evidence", evidence.read(task, refs),
+                var window = evidence.read(task, refs);
+                result = JSONObject.of("evidence", window.evidence(), "deferredWindowAnchors", window.deferredWindowAnchors(),
                         "window", JSONObject.of("secondsEachSide", 90, "transcriptsEachSide", 6,
                                 "ocrEachSide", 1, "maxEstimatedInput", 14000),
-                        "notice", "有界邻域，不代表完整章节；保留条件、指代和观点归属。只有实际返回的ID可引用。");
+                        "notice", "按请求顺序装入完整有界窗口；deferredWindowAnchors的窗口未完整读取，可另选锚点再读。邻域不代表完整章节；保留条件、指代和观点归属。只有实际返回的ID可引用。");
             }
             case "get_learning_state" -> result = (JSONObject) artifacts.learningState(task);
             case "save_note" ->

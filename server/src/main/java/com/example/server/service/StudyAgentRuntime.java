@@ -177,7 +177,7 @@ public class StudyAgentRuntime {
                                                 .allMatch(e -> read.containsKey(e.ref())))
                                     throw new GovernanceException("NO_PROGRESS", "重复读取没有新增原文");
                             } catch (GovernanceException e) {
-                                if (!"INVALID_TOOL_ARGUMENTS".equals(e.code())) throw e;
+                                if (!Set.of("INVALID_TOOL_ARGUMENTS", "EVIDENCE_WINDOW_TOO_LARGE").contains(e.code())) throw e;
                                 result =
                                         JSONObject.of("error", e.code(), "message", e.getMessage());
                             }
@@ -204,6 +204,12 @@ public class StudyAgentRuntime {
                                     "content",
                                     AiCallLedger.canonicalJson(result)));
                     if (result.containsKey("error")) {
+                        if ("EVIDENCE_WINDOW_TOO_LARGE".equals(result.getString("error"))) {
+                            // A capacity rejection is not malformed input. Still spend the tool/round
+                            // and remember it on replay so repeating the same request cannot loop.
+                            seen.add(call.name() + ":" + canonical(call.args()));
+                            continue;
+                        }
                         if (++corrections > StudyAgentSpec.CORRECTIONS)
                             throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "工具参数修正次数已耗尽");
                         continue;
@@ -275,12 +281,26 @@ public class StudyAgentRuntime {
         // Initial ceiling, not a calibrated quality optimum. Keep the same task-wide hard limits.
         state.put("outputTokens", Math.min(4096, task.budget().outputTokens()));
         state.put("phase", finishing ? "FINALIZE" : "EXPLORE");
-        if (!finishing && round >= StudyAgentSpec.ROUNDS - 3 && state.getLongValue("unreadLeadCount") > 0)
+        if (!finishing && (readRefs.isEmpty() || round >= StudyAgentSpec.ROUNDS - 3)
+                && state.getLongValue("unreadLeadCount") > 0)
             state.put("phase", "READ");
+        boolean firstRead = "READ".equals(state.getString("phase")) && readRefs.isEmpty();
+        if (firstRead) state.put("outputTokens", Math.min(1024, task.budget().outputTokens()));
         long input = estimateDecision(history, state);
+        // Reserve one bounded evidence observation plus a save decision, rather than
+        // three copies of the expanded exploration prompt. This is an initial estimate;
+        // the ledger still enforces each actual request and all task-wide hard limits.
+        if (firstRead) {
+            long saveSchema = AiPromptBudget.estimateText(JSON.toJSONString(StudyAgentSpec.tools().stream()
+                    .filter(t -> "save_note".equals(t.getJSONObject("function").getString("name"))).toList()));
+            long readAndSave = input + state.getIntValue("outputTokens")
+                    + input + 14_000 + saveSchema + 2048 + Math.min(4096, task.budget().outputTokens()) + 512;
+            if (tokens < readAndSave)
+                throw new GovernanceException("TASK_BUDGET_EXHAUSTED", "剩余额度不足以完成原文读取及保存，未发送下一次请求");
+        }
         // Initial conservative margin: two further similarly sized decisions (save + repair),
         // plus 4k for growth. The ledger still checks every real attempt; no budget is enlarged.
-        if (!finishing && tokens < 3 * (input + state.getIntValue("outputTokens")) + 4096) {
+        if (!finishing && !firstRead && tokens < 3 * (input + state.getIntValue("outputTokens")) + 4096) {
             finishing = true;
             state.put("phase", "FINALIZE");
             input = estimateDecision(history, state);
@@ -332,6 +352,8 @@ public class StudyAgentRuntime {
                                                                 .getString("name")))
                 .filter(t -> !"READ".equals(phase) || Set.of("read_evidence", "save_note")
                         .contains(t.getJSONObject("function").getString("name")))
+                .filter(t -> !"READ".equals(phase) || state.getIntValue("readEvidenceCount") > 0
+                        || "read_evidence".equals(t.getJSONObject("function").getString("name")))
                 .filter(t -> state.getIntValue("retrievalCallsRemaining") > 0
                         || !"search_course_evidence".equals(t.getJSONObject("function").getString("name")))
                 .toList();

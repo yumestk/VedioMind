@@ -165,6 +165,10 @@ public class ExploratoryTrial {
         if ("notes-exploration-003".equals(manifest.getString("experimentId"))
                 && (!selectedCases.equals(List.of("N03")) || manifest.getLongValue("batchLimitMicroCny") > 1000000))
             throw new IllegalArgumentException("Experiment 003 permits N03 once within one CNY");
+        if ("notes-exploration-004".equals(manifest.getString("experimentId"))
+                && (!selectedCases.equals(List.of("N01", "N02", "N03")) || manifest.getLongValue("batchLimitMicroCny") > 2000000
+                    || manifest.getLongValue("priorHeldMicroCny") != 3562734))
+            throw new IllegalArgumentException("Experiment 004 permits three cases once within two CNY, carrying prior holds");
         try (var channel=java.nio.channels.FileChannel.open(output.resolve("runner.lock"),StandardOpenOption.CREATE,StandardOpenOption.WRITE);
              var lock=channel.tryLock(); var app=new AnnotationConfigApplicationContext()) {
             if (lock==null || Files.exists(output.resolve("budget.json"))) throw new IllegalStateException("Already executed or locked; no automatic rerun");

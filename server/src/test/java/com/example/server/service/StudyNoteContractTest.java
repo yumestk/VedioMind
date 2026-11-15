@@ -27,14 +27,25 @@ class StudyNoteContractTest {
         assertThat(repaired.getList("gaps", String.class)).containsExactly("堆性质：堆的证据尚未读取");
     }
 
-    @Test void coverageCannotReferenceANonexistentPointOrClaimCoveredWhileDeclaringAGap() {
+    @Test void coverageRequiresExistingPointsOrAnExplicitGap() {
         var input = JSONObject.of("title", "笔记", "knowledgePoints", List.of(JSONObject.of(
                 "title", "有据结论", "explanation", "原文", "evidenceRefs", List.of("ref"))), "quiz", List.of());
         for (var goal : List.of(JSONObject.of("requirement", "目标", "pointIndexes", List.of(1), "gap", ""),
-                JSONObject.of("requirement", "目标", "pointIndexes", List.of(0), "gap", "仍然缺证据"),
                 JSONObject.of("requirement", "目标", "pointIndexes", List.of(), "gap", ""))) {
             input.put("goalCoverage", List.of(goal));
-            assertThatThrownBy(() -> StudyArtifactService.noteFromPoints(input)).hasMessageContaining("目标覆盖");
+            assertThatThrownBy(() -> StudyArtifactService.noteFromPoints(input)).hasMessageContaining("goalCoverage[0]");
         }
     }
+    @Test void partiallySupportedGoalKeepsSupportedPointsAndDeclaresItsGap() {
+        var input = JSONObject.of("title", "部分对比", "knowledgePoints", List.of(JSONObject.of(
+                "title", "已读结论", "explanation", "有条件的原文", "evidenceRefs", List.of("read"))),
+                "quiz", List.of(), "goalCoverage", List.of(JSONObject.of("requirement", "比较三种结构",
+                        "pointIndexes", List.of(0), "gap", "其余两种结构尚未读取")));
+        var note = StudyArtifactService.noteFromPoints(input);
+        assertThat(note.getString("coreConclusion")).isEqualTo("已读结论");
+        assertThat(note.getList("coreEvidenceRefs", String.class)).containsExactly("read");
+        assertThat(note.getList("gaps", String.class)).containsExactly("比较三种结构：其余两种结构尚未读取");
+        assertThat(JSONSchema.of(StudyAgentSpec.noteSchema()).isValid(note)).isTrue();
+    }
+
 }

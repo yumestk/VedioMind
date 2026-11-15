@@ -67,7 +67,7 @@ public record PreparedStudyTask(
          */
         public static Budget boundedStudy(int input, int output, int materials) {
             return new Budget(
-                    input, output, 8, 6, materials, 96000, 120000, 600000, "bounded-study-v7");
+                    input, output, 8, 6, materials, 96000, 120000, 600000, "bounded-study-v8");
         }
 
         public static Budget standard(

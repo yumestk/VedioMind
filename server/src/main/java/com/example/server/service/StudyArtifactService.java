@@ -47,13 +47,16 @@ public class StudyArtifactService {
         var payload = JSON.parseObject(input.toJSONString());
         var points = payload.getList("knowledgePoints", VideoAgentResult.KnowledgePoint.class);
         List<String> gaps = new ArrayList<>();
-        for (var goal : payload.getList("goalCoverage", JSONObject.class)) {
+        var goals = payload.getList("goalCoverage", JSONObject.class);
+        for (int index = 0; index < goals.size(); index++) {
+            var goal = goals.get(index);
             var indexes = goal.getList("pointIndexes", Integer.class);
             String gap = goal.getString("gap");
             if (goal.getString("requirement").isBlank() || indexes.stream().anyMatch(i -> i < 0 || i >= points.size())
-                    || (indexes.isEmpty() ? gap.isBlank() : !gap.isEmpty()))
-                throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "目标覆盖须指向实际知识点（下标从0开始）；缺失目标须说明缺口，已覆盖目标的gap须为空");
-            if (indexes.isEmpty()) gaps.add(goal.getString("requirement") + "：" + gap);
+                    || (indexes.isEmpty() && gap.isBlank()))
+                throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "goalCoverage[" + index
+                        + "]：目标须非空且下标指向实际知识点（从0开始）；无支持知识点时必须说明gap；部分覆盖可同时保留下标与gap");
+            if (!gap.isBlank()) gaps.add(goal.getString("requirement") + "：" + gap);
         }
         payload.remove("goalCoverage");
         payload.put("gaps", gaps);

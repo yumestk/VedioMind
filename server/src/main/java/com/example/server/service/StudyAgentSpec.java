@@ -128,7 +128,7 @@ public final class StudyAgentSpec {
                         object(JSONObject.of("query", string(500)))),
                 function(
                         "read_evidence",
-                        "读取最多4个已发现锚点及宿主限定的相邻原文；返回的邻居保留独立引用ID，超预算须减少锚点",
+                        "通常读取1至2个已发现锚点，最多4个；按顺序装入完整有界窗口，deferredWindowAnchors须另行读取，只有实际返回ID可引用",
                         object(JSONObject.of("refs", array(string(220), 1, 4)))),
                 function(
                         "get_learning_state",
@@ -153,7 +153,7 @@ public final class StudyAgentSpec {
     public static Map<String, String> snapshot() {
         return Map.of(
                 "runtime",
-                "bounded-study-v7",
+                "bounded-study-v8",
                 "prompt",
                 AiCallLedger.sha256(systemPrompt()),
                 "tools",
