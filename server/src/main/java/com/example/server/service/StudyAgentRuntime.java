@@ -62,13 +62,13 @@ public class StudyAgentRuntime {
                 JSONObject state;
                 if (savedBudget != null) state = JSON.parseObject(savedBudget);
                 else {
-                    state = decisionBudget(runId, round, calls, read.keySet(), finishing, history);
+                    state = decisionBudget(runId, round, calls, discovered.keySet(), read.keySet(), finishing, history);
                     // Freeze before HTTP: recovery must reuse the identical request fingerprint,
                     // even though a settled response has already changed cost and time counters.
                     runs.saveCompletedStep(runId, "AGENT_BUDGET", round, null, state);
                 }
                 finishing = "FINALIZE".equals(state.getString("phase"));
-                var allowed = decisionTools(finishing);
+                var allowed = decisionTools(state);
                 runs.markStage(runId, "AGENT_DECISION", Math.min(85, 10 + round * 15));
                 String cached = runs.completedStep(runId, "AGENT_DECISION", round).orElse(null);
                 JSONObject decision;
@@ -117,6 +117,12 @@ public class StudyAgentRuntime {
                         if (finishing && !"save_note".equals(call.name()))
                             throw new GovernanceException(
                                     "INVALID_TOOL_ARGUMENTS", "收尾阶段仅允许save_note；请使用已读证据并如实列出gaps");
+                        if ("READ".equals(state.getString("phase"))
+                                && !Set.of("read_evidence", "save_note").contains(call.name()))
+                            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "READ阶段须读取已有线索或保存；不得把最后的证据获取机会用于继续搜索");
+                        if ("search_course_evidence".equals(call.name())
+                                && state.getIntValue("retrievalCallsRemaining") == 0)
+                            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "检索额度耗尽，请读取现有线索或保存");
                         if (reservedSlots)
                             throw new GovernanceException(
                                     "INVALID_TOOL_ARGUMENTS", "整批工具未执行：须为保存及修正保留工具额度，下一轮进入收尾");
@@ -149,11 +155,6 @@ public class StudyAgentRuntime {
                     if (observation != null) result = JSON.parseObject(observation);
                     else {
                         long toolStarted = System.nanoTime();
-                        if (call != null
-                                && "read_evidence".equals(call.name())
-                                && read.keySet()
-                                        .containsAll(call.args().getList("refs", String.class)))
-                            throw new GovernanceException("NO_PROGRESS", "重复读取没有新增原文");
                         if (invalidBatch)
                             result =
                                     errors.get(i) == null
@@ -171,6 +172,10 @@ public class StudyAgentRuntime {
                                     StudyExecutionContext.purpose(
                                             "AGENT_TOOL:" + round + ":" + i)) {
                                 result = dispatcher.execute(call, runId, skills, discovered, read);
+                                if ("read_evidence".equals(call.name())
+                                        && result.getList("evidence", VideoAgentCitation.class).stream()
+                                                .allMatch(e -> read.containsKey(e.ref())))
+                                    throw new GovernanceException("NO_PROGRESS", "重复读取没有新增原文");
                             } catch (GovernanceException e) {
                                 if (!"INVALID_TOOL_ARGUMENTS".equals(e.code())) throw e;
                                 result =
@@ -236,6 +241,7 @@ public class StudyAgentRuntime {
             String runId,
             int round,
             int calls,
+            Set<String> discoveredRefs,
             Set<String> readRefs,
             boolean finishing,
             List<JSONObject> history) {
@@ -254,7 +260,6 @@ public class StudyAgentRuntime {
                 round >= StudyAgentSpec.ROUNDS - 2
                         || calls >= StudyAgentSpec.TOOL_CALLS - 2
                         || generations <= 2
-                        || retrievals == 0
                         || time <= 40_000;
         var state = new JSONObject();
         state.put("round", round + 1);
@@ -265,33 +270,37 @@ public class StudyAgentRuntime {
         state.put("accountedTokensRemaining", tokens);
         state.put("timeRemainingMs", time);
         state.put("readEvidenceCount", readRefs.size());
+        state.put("unreadLeadCount", discoveredRefs.stream().filter(r -> !readRefs.contains(r)).count());
         state.put("allowedEvidenceRefs", new ArrayList<>(readRefs));
-        state.put("outputTokens", task.budget().outputTokens());
+        // Initial ceiling, not a calibrated quality optimum. Keep the same task-wide hard limits.
+        state.put("outputTokens", Math.min(4096, task.budget().outputTokens()));
         state.put("phase", finishing ? "FINALIZE" : "EXPLORE");
-        long input = estimateDecision(history, state, finishing);
+        if (!finishing && round >= StudyAgentSpec.ROUNDS - 3 && state.getLongValue("unreadLeadCount") > 0)
+            state.put("phase", "READ");
+        long input = estimateDecision(history, state);
         // Initial conservative margin: two further similarly sized decisions (save + repair),
         // plus 4k for growth. The ledger still checks every real attempt; no budget is enlarged.
-        if (!finishing && tokens < 3 * (input + task.budget().outputTokens()) + 4096) {
+        if (!finishing && tokens < 3 * (input + state.getIntValue("outputTokens")) + 4096) {
             finishing = true;
             state.put("phase", "FINALIZE");
-            input = estimateDecision(history, state, true);
+            input = estimateDecision(history, state);
         }
         if (finishing && readRefs.isEmpty())
             throw new GovernanceException(
                     "INSUFFICIENT_EVIDENCE", "收尾时尚无已读证据，停止生成笔记；不据此断言课程没有相关内容");
         int output =
-                (int) Math.min(task.budget().outputTokens(), Math.max(0, tokens - input - 512));
+                (int) Math.min(state.getIntValue("outputTokens"), Math.max(0, tokens - input - 512));
         if (generations == 0 || output < 512)
             throw new GovernanceException("TASK_BUDGET_EXHAUSTED", "剩余额度不足以安全生成笔记，未发送下一次请求");
         state.put("outputTokens", output);
         return state;
     }
 
-    private long estimateDecision(List<JSONObject> history, JSONObject state, boolean finishing) {
+    private long estimateDecision(List<JSONObject> history, JSONObject state) {
         return promptBudget.estimateRequest(
                 DeepSeekChatClient.toolRequest(
                         decisionMessages(history, state),
-                        decisionTools(finishing),
+                        decisionTools(state),
                         state.getIntValue("outputTokens")));
     }
 
@@ -305,20 +314,26 @@ public class StudyAgentRuntime {
                         "宿主执行状态（剩余额度包含本次决策）："
                                 + AiCallLedger.canonicalJson(state)
                                 + "\nEXPLORE须为save_note及必要修正预留两次决策和两次工具机会。"
+                                + "READ仅允许read_evidence或save_note：优先读取尚未覆盖子目标的现有线索，不能只搜不读。"
                                 + "FINALIZE仅允许save_note：只根据已读证据保存，未答目标写入gaps，禁止再检索或读取；"
                                 + "如果已读内容无法支持任何相关笔记，直接说明不足，禁止编造。"));
         return messages;
     }
 
-    private static List<JSONObject> decisionTools(boolean finishing) {
+    private static List<JSONObject> decisionTools(JSONObject state) {
+        String phase = state.getString("phase");
         return StudyAgentSpec.tools().stream()
                 .filter(
                         t ->
-                                !finishing
+                                !"FINALIZE".equals(phase)
                                         || "save_note"
                                                 .equals(
                                                         t.getJSONObject("function")
                                                                 .getString("name")))
+                .filter(t -> !"READ".equals(phase) || Set.of("read_evidence", "save_note")
+                        .contains(t.getJSONObject("function").getString("name")))
+                .filter(t -> state.getIntValue("retrievalCallsRemaining") > 0
+                        || !"search_course_evidence".equals(t.getJSONObject("function").getString("name")))
                 .toList();
     }
 

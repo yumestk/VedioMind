@@ -348,6 +348,19 @@ class StudyAgentRuntimeMySqlTest {
         }
 
         static JSONObject message(String id, String name, Object args) {
+            // Fixtures also serve edit/save service tests; model input has no independent overview.
+            var wireArgs = JSON.parseObject(JSON.toJSONString(args));
+            if ("save_note".equals(name) && wireArgs.getJSONObject("note") != null) {
+                wireArgs.getJSONObject("note").remove("coreConclusion");
+                wireArgs.getJSONObject("note").remove("coreEvidenceRefs");
+                var note = wireArgs.getJSONObject("note");
+                var goals = new ArrayList<JSONObject>();
+                goals.add(JSONObject.of("requirement", "整理第三章事务学习笔记", "pointIndexes", List.of(0), "gap", ""));
+                for (var gap : note.getList("gaps", String.class))
+                    goals.add(JSONObject.of("requirement", "尚未完成的必要目标", "pointIndexes", List.of(), "gap", gap));
+                note.remove("gaps");
+                note.put("goalCoverage", goals);
+            }
             var m =
                     JSONObject.of(
                             "role",
@@ -364,7 +377,7 @@ class StudyAgentRuntimeMySqlTest {
                                                     "name",
                                                     name,
                                                     "arguments",
-                                                    JSON.toJSONString(args)))));
+                                                    JSON.toJSONString(wireArgs)))));
             m.put("content", null);
             return m;
         }
@@ -537,7 +550,12 @@ class StudyAgentRuntimeMySqlTest {
                         a -> {
                             assertThat(a.coverageMaterialIds()).containsExactly(10L, 11L);
                             assertThat(a.citations()).hasSize(2);
+                            assertThat(a.content().coreConclusion()).isEqualTo("共同定义");
                         });
+        assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
+                .extracting(t -> t.getJSONObject("function").getString("name"))
+                .containsExactly("read_evidence", "save_note");
+        assertThat(provider.requests).allSatisfy(r -> assertThat(r.getIntValue("max_tokens")).isLessThanOrEqualTo(4096));
         assertThatThrownBy(() -> artifacts.list("run", 3L))
                 .isInstanceOf(NoSuchElementException.class);
         workflow.process("run", 0);
@@ -967,7 +985,7 @@ class StudyAgentRuntimeMySqlTest {
                                         provider.requests.get(4).getJSONArray("messages").size()
                                                 - 1)
                                 .getString("content"))
-                .contains("FINALIZE", "decisionsRemaining\":2", "readEvidenceCount\":2");
+                .contains("FINALIZE", "decisionsRemaining\":2", "readEvidenceCount\":6");
         assertThat(artifacts.list("run", 2L)).hasSize(1);
     }
 
@@ -1009,7 +1027,7 @@ class StudyAgentRuntimeMySqlTest {
         provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
         String unread = "11:TRANSCRIPT:999:t1-v1-p1";
         var invalid = note();
-        invalid.getJSONArray("coreEvidenceRefs").add(unread);
+        invalid.getJSONArray("knowledgePoints").getJSONObject(0).getJSONArray("evidenceRefs").add(unread);
         provider.call(
                 "save_note",
                 Map.of(
@@ -1120,5 +1138,54 @@ class StudyAgentRuntimeMySqlTest {
         workflow.process("run", 0);
         assertThat(provider.requests).isEmpty();
         assertThat(artifacts.list("run", 2L)).isEmpty();
+    }
+
+    @Test
+    void exhaustedRetrievalStillAllowsReadingExistingLeadsBeforeFinalization() {
+        script();
+        when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class))).thenAnswer(inv -> {
+            ledger.exchange(AiRateLimitService.ALIYUN_EMBEDDING, "RETRIEVAL",
+                    JSONObject.of("input", inv.getArgument(1)), () -> {}, null,
+                    d -> new AiCallLedger.WireResponse(200, "{\"usage\":{\"total_tokens\":10}}"));
+            jdbc.update("UPDATE video_agent_runs SET retrieval_calls=6 WHERE id='run'");
+            jdbc.update("UPDATE study_ai_requests SET retrieval_calls=6 WHERE run_id='run'");
+            var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 300000, 600000, "", List.of(), 1, List.of(43L), List.of());
+            return List.of(List.of(hit), List.of(hit));
+        });
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(provider.requests).hasSize(5);
+        assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
+                .extracting(t -> t.getJSONObject("function").getString("name"))
+                .containsExactly("read_evidence", "save_note");
+    }
+
+    @Test
+    void anAlreadyReadNeighborCanBeAnAnchorWhenItsWindowAddsNewOriginals() {
+        for (long id : List.of(10L, 11L)) {
+            var m = new VideoContext.Modality("AVAILABLE", 1, 3, 3, null);
+            var c = new VideoContext(id, "t1-v1-p1", "TEST", m, m,
+                    List.of(new VideoContext.TranscriptEvidence(42L, 301000, 302000, "事务定义"),
+                            new VideoContext.TranscriptEvidence(43L, 371000, 372000, "事务前提"),
+                            new VideoContext.TranscriptEvidence(44L, 441000, 442000, "更远的限定条件")), List.of());
+            when(contexts.build(id)).thenReturn(c);
+            when(indexes.requireReady(id)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(c, List.of(), ""));
+        }
+        var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 300000, 600000, "", List.of(), 1,
+                List.of(42L, 43L, 44L), List.of());
+        when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class))).thenReturn(List.of(List.of(hit), List.of(hit)));
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "事务"));
+        provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:42:t1-v1-p1", "11:TRANSCRIPT:42:t1-v1-p1")));
+        provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:43:t1-v1-p1", "11:TRANSCRIPT:43:t1-v1-p1")));
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note(),
+                "coverageMaterialIds", List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        var observations = jdbc.queryForList("SELECT output_json FROM video_agent_steps WHERE run_id='run' AND stage='AGENT_TOOL_0' AND round_no IN (2,3) ORDER BY round_no", String.class);
+        var first = JSON.parseObject(observations.getFirst()).getList("evidence", VideoAgentCitation.class);
+        var second = JSON.parseObject(observations.getLast()).getList("evidence", VideoAgentCitation.class);
+        assertThat(first).extracting(VideoAgentCitation::sourceId).contains(43L).doesNotContain(44L);
+        assertThat(second).extracting(VideoAgentCitation::sourceId).contains(44L);
     }
 }

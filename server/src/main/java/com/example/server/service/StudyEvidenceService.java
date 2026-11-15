@@ -1,7 +1,10 @@
 package com.example.server.service;
 
+import com.alibaba.fastjson2.JSON;
 import com.example.server.dto.PreparedStudyTask;
 import com.example.server.dto.VideoAgentCitation;
+import com.example.server.service.ai.AiPromptBudget;
+import com.example.server.service.ai.StudyExecutionContext.GovernanceException;
 import com.example.server.service.context.VideoContext;
 import com.example.server.service.context.VideoContextService;
 import org.springframework.stereotype.Service;
@@ -55,7 +58,7 @@ public class StudyEvidenceService {
         var hits = retriever.searchMaterials(snapshots, query, () -> tasks.assertCurrent(task));
         List<List<VideoEvidenceContextService.Candidate>> byMaterial = new ArrayList<>();
         for (int i = 0; i < snapshots.size(); i++) {
-            var ranked = neighborhoods.rankForQuestion(query, neighborhoods.expand(snapshots.get(i).context(), hits.get(i), true));
+            var ranked = neighborhoods.searchLeads(snapshots.get(i).context(), hits.get(i), query);
             var material = task.materials().get(i);
             byMaterial.add(ranked.stream().map(c -> scoped(material, c)).toList());
         }
@@ -65,6 +68,36 @@ public class StudyEvidenceService {
             if (i < values.size()) unique.putIfAbsent(values.get(i).evidence().ref(), values.get(i));
         tasks.assertCurrent(task);
         return List.copyOf(unique.values());
+    }
+
+    /** Host-derived originals only; each returned neighbor retains its own scoped citation ID. */
+    @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public List<VideoAgentCitation> read(PreparedStudyTask task, List<String> refs) {
+        var originals = full(task).stream().map(VideoEvidenceContextService.Candidate::evidence).toList();
+        var anchors = originals.stream().filter(e -> refs.contains(e.ref())).toList();
+        if (anchors.size() != refs.size())
+            throw new GovernanceException("TASK_RESOURCE_CHANGED", "原文证据已变化");
+        var selected = new LinkedHashMap<String, VideoAgentCitation>();
+        anchors.forEach(e -> selected.put(e.ref(), e));
+        for (var anchor : anchors) {
+            var sameSource = originals.stream().filter(e -> Objects.equals(e.materialId(), anchor.materialId())
+                    && Objects.equals(e.contextVersion(), anchor.contextVersion())
+                    && e.endMs() >= Math.max(0, anchor.startMs() - 90_000)
+                    && e.startMs() <= anchor.endMs() + 90_000).toList();
+            for (String type : List.of("TRANSCRIPT", "OCR")) for (boolean before : List.of(true, false)) {
+                sameSource.stream().filter(e -> type.equals(e.type()) && !e.ref().equals(anchor.ref())
+                                && (before ? e.startMs() <= anchor.startMs() : e.startMs() > anchor.startMs()))
+                        .sorted(Comparator.comparingLong(e -> Math.abs(e.startMs() - anchor.startMs())))
+                        .limit("TRANSCRIPT".equals(type) ? 6 : 1)
+                        .forEach(e -> selected.putIfAbsent(e.ref(), e));
+            }
+        }
+        var values = selected.values().stream().sorted(Comparator.comparing(VideoAgentCitation::materialId)
+                .thenComparingLong(VideoAgentCitation::startMs).thenComparing(VideoAgentCitation::ref)).toList();
+        // Reject the whole window rather than silently dropping a qualifying condition at its edge.
+        if (AiPromptBudget.estimateText(JSON.toJSONString(values)) > 14_000)
+            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "原文窗口超过14k输入预算，请拆为单次1至2个锚点；单个窗口仍过大时报告读取限制，不能假定课程没有相关内容");
+        return values;
     }
 
     private void requireVersion(PreparedStudyTask.Material material, VideoContext context) {

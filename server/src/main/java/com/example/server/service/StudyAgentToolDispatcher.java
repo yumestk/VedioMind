@@ -117,23 +117,10 @@ public class StudyAgentToolDispatcher {
                 var refs = call.args().getList("refs", String.class);
                 if (!discovered.keySet().containsAll(refs))
                     throw new GovernanceException("TOOL_NOT_ALLOWED", "证据ID未由当前任务检索返回");
-                // Reread current authorized originals, rather than accepting a model-provided
-                // quote.
-                var selected =
-                        evidence.full(task).stream()
-                                .map(VideoEvidenceContextService.Candidate::evidence)
-                                .filter(e -> refs.contains(e.ref()))
-                                .toList();
-                if (selected.size() != refs.size())
-                    throw new GovernanceException("TASK_RESOURCE_CHANGED", "原文证据已变化");
-                long bytes =
-                        selected.stream()
-                                .mapToLong(e -> AiPromptBudget.estimateText(e.text()))
-                                .sum();
-                if (bytes > 14000)
-                    throw new GovernanceException(
-                            "INVALID_TOOL_ARGUMENTS", "本次原文超过14k输入预算，请减少证据条数");
-                result = JSONObject.of("evidence", selected);
+                result = JSONObject.of("evidence", evidence.read(task, refs),
+                        "window", JSONObject.of("secondsEachSide", 90, "transcriptsEachSide", 6,
+                                "ocrEachSide", 1, "maxEstimatedInput", 14000),
+                        "notice", "有界邻域，不代表完整章节；保留条件、指代和观点归属。只有实际返回的ID可引用。");
             }
             case "get_learning_state" -> result = (JSONObject) artifacts.learningState(task);
             case "save_note" ->
@@ -141,7 +128,7 @@ public class StudyAgentToolDispatcher {
                             artifacts.saveCandidate(
                                     runId,
                                     call.args().getString("slotId"),
-                                    call.args().getJSONObject("note"),
+                                    StudyArtifactService.noteFromPoints(call.args().getJSONObject("note")),
                                     call.args().getList("coverageMaterialIds", Long.class),
                                     read);
             default -> throw new GovernanceException("TOOL_NOT_ALLOWED", "未知工具");

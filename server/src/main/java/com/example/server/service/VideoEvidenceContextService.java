@@ -115,6 +115,10 @@ public class VideoEvidenceContextService {
 
     /** Local lexical reranking of subtitle neighborhoods; vectors already selected the semantic chunks. */
     public List<Candidate> rankForQuestion(String question, List<Candidate> candidates) {
+        return rankForQuestion(question, candidates, false);
+    }
+
+    private List<Candidate> rankForQuestion(String question, List<Candidate> candidates, boolean preferAnchor) {
         String query = question.toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", "");
         Set<String> terms = new LinkedHashSet<>();
         for (int size = 2; size <= 3; size++) {
@@ -123,6 +127,7 @@ public class VideoEvidenceContextService {
         List<Candidate> chronological = candidates.stream()
                 .sorted(Comparator.comparingLong(value -> value.evidence().startMs())).toList();
         Map<String, Double> scores = new HashMap<>();
+        Map<String, Double> directScores = new HashMap<>();
         List<String> windows = new ArrayList<>();
         for (int i = 0; i < chronological.size(); i++) {
             String text = questionWindow(chronological, i).stream().map(value -> value.evidence().text())
@@ -137,10 +142,45 @@ public class VideoEvidenceContextService {
                 score += term.length() * Math.log(1.0 + windows.size() / (1.0 + frequencies.get(term)));
             }
             scores.put(chronological.get(i).evidence().ref(), score);
+            String own = chronological.get(i).evidence().text().toLowerCase(java.util.Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", "");
+            double direct = 0;
+            for (String term : terms) if (own.contains(term))
+                direct += term.length() * Math.log(1.0 + windows.size() / (1.0 + frequencies.get(term)));
+            directScores.put(chronological.get(i).evidence().ref(), direct);
         }
         // Stable ties retain the cross-chunk round-robin order from expand().
-        return candidates.stream().sorted(Comparator.comparingDouble((Candidate value) ->
-                scores.getOrDefault(value.evidence().ref(), 0.0)).reversed()).toList();
+        Comparator<Candidate> order = Comparator.comparingDouble((Candidate value) ->
+                scores.getOrDefault(value.evidence().ref(), 0.0)).reversed();
+        if (preferAnchor) order = order.thenComparing(Comparator.comparingDouble((Candidate value) ->
+                directScores.getOrDefault(value.evidence().ref(), 0.0)).reversed())
+                .thenComparing(Comparator.comparingInt((Candidate value) -> Math.min(160, value.evidence().text().length())).reversed());
+        return candidates.stream().sorted(order).toList();
+    }
+
+    /** Bounded Agent leads: preserve chunk diversity before the dispatcher truncates to twelve. */
+    public List<Candidate> searchLeads(VideoContext context,
+            List<VideoKnowledgeRetriever.KnowledgeSearchHit> hits, String query) {
+        List<List<Candidate>> groups = new ArrayList<>();
+        for (var hit : hits) {
+            List<Candidate> distinct = new ArrayList<>();
+            // Frozen index terminology bridges query/ASR/OCR language differences; it is a lead,
+            // never an original that can be cited without read_evidence.
+            String anchorQuery = query + " " + String.join(" ", hit.keywords());
+            for (var candidate : rankForQuestion(anchorQuery, expand(context, List.of(hit), true), true)) {
+                if (!candidate.core()) continue;
+                var e = candidate.evidence();
+                if (distinct.stream().anyMatch(v -> v.evidence().type().equals(e.type())
+                        && (Math.abs(v.evidence().startMs() - e.startMs()) <= 30_000
+                            || v.evidence().text().strip().equals(e.text().strip())))) continue;
+                distinct.add(candidate);
+            }
+            groups.add(distinct);
+        }
+        Map<String, Candidate> unique = new LinkedHashMap<>();
+        int longest = groups.stream().mapToInt(List::size).max().orElse(0);
+        for (int offset = 0; offset < longest; offset++) for (var group : groups)
+            if (offset < group.size()) unique.putIfAbsent(group.get(offset).evidence().ref(), group.get(offset));
+        return List.copyOf(unique.values());
     }
 
     /** Keep the same neighborhood intact when ranking and packing question evidence. */

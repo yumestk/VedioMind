@@ -43,6 +43,26 @@ public class StudyArtifactService {
 
     public record Edit(long baseVersion, JSONObject content) {}
 
+    public static JSONObject noteFromPoints(JSONObject input) {
+        var payload = JSON.parseObject(input.toJSONString());
+        var points = payload.getList("knowledgePoints", VideoAgentResult.KnowledgePoint.class);
+        List<String> gaps = new ArrayList<>();
+        for (var goal : payload.getList("goalCoverage", JSONObject.class)) {
+            var indexes = goal.getList("pointIndexes", Integer.class);
+            String gap = goal.getString("gap");
+            if (goal.getString("requirement").isBlank() || indexes.stream().anyMatch(i -> i < 0 || i >= points.size())
+                    || (indexes.isEmpty() ? gap.isBlank() : !gap.isEmpty()))
+                throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "目标覆盖须指向实际知识点（下标从0开始）；缺失目标须说明缺口，已覆盖目标的gap须为空");
+            if (indexes.isEmpty()) gaps.add(goal.getString("requirement") + "：" + gap);
+        }
+        payload.remove("goalCoverage");
+        payload.put("gaps", gaps);
+        payload.put("coreConclusion", points.stream().map(VideoAgentResult.KnowledgePoint::title)
+                .collect(java.util.stream.Collectors.joining("；")));
+        payload.put("coreEvidenceRefs", points.stream().flatMap(p -> p.evidenceRefs().stream()).distinct().toList());
+        return payload;
+    }
+
     public static VideoAgentResult validate(
             JSONObject payload, Map<String, VideoAgentCitation> evidence) {
         if (!JSONSchema.of(StudyAgentSpec.noteSchema()).isValid(payload))
@@ -57,7 +77,7 @@ public class StudyArtifactService {
                             + JSON.toJSONString(unread)
                             + "；本任务允许引用："
                             + JSON.toJSONString(new ArrayList<>(evidence.keySet()))
-                            + "。请移除无已读原文支持的结论及对应引用，并把未完成目标列入gaps；不要只替换引用ID。");
+                            + "。请逐项复核整份笔记的标题、知识点标题和解释、引用及gaps，移除无已读原文支持的结论及对应引用，并把未完成目标列入gaps；不要只替换引用ID。宿主会根据修正后的知识点重新生成概览。");
         if (note.title().isBlank()
                 || note.coreConclusion().isBlank()
                 || note.knowledgePoints().stream()

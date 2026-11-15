@@ -215,6 +215,16 @@ class VideoEvidenceContextServiceTest {
     private VideoContext context(List<VideoContext.TranscriptEvidence> transcripts, List<VideoContext.VisualEvidence> visuals) {
         return new VideoContext(42L, "t1-v1", "ASR", null, null, transcripts, visuals);
     }
+
+    @Test
+    void boundedLeadsPreserveEachChunkAndPreferAnActualAnchorOverItsFillerNeighbor() {
+        var c = context(List.of(transcript(1, 1000, "好"), transcript(2, 2000, "环形链表保留首尾相连的指针"),
+                transcript(3, 3000, "好"), transcript(4, 310_000, "数组可以按下标直接访问"),
+                transcript(5, 320_000, "数组可以按下标直接访问")), List.of());
+        var leads = service.searchLeads(c, List.of(hit(0, 300_000, List.of(1L, 2L, 3L), List.of()),
+                hit(300_000, 600_000, List.of(4L, 5L), List.of())), "环形链表 数组 下标");
+        assertThat(leads).extracting(v -> v.evidence().sourceId()).containsExactly(2L, 4L);
+    }
     private VideoContext.TranscriptEvidence transcript(long id, long start, String text) {
         return new VideoContext.TranscriptEvidence(id, start, start + 1000, text);
     }

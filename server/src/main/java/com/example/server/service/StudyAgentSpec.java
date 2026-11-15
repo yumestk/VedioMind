@@ -77,13 +77,27 @@ public final class StudyAgentSpec {
                         "coreConclusion",
                         string(4000),
                         "coreEvidenceRefs",
-                        array(string(220), 1, 12),
+                                array(string(220), 1, 64),
                         "knowledgePoints",
                         array(point, 1, 8),
                         "quiz",
                         array(object(new JSONObject()), 0, 0));
         properties.put("gaps", array(string(500), 0, 8));
         return object(properties);
+    }
+
+    /** The model writes one set of claims. The host projects the overview from those points. */
+    public static JSONObject noteInputSchema() {
+        var schema = noteSchema();
+        var props = schema.getJSONObject("properties");
+        props.remove("coreConclusion");
+        props.remove("coreEvidenceRefs");
+        props.remove("gaps");
+        props.put("goalCoverage", array(object(JSONObject.of(
+                "requirement", string(240),
+                "pointIndexes", array(JSONObject.of("type", "integer", "minimum", 0, "maximum", 7), 0, 8),
+                "gap", JSONObject.of("type", "string", "maxLength", 240))), 1, 12));
+        return object(props);
     }
 
     private static JSONObject function(String name, String description, JSONObject parameters) {
@@ -114,7 +128,7 @@ public final class StudyAgentSpec {
                         object(JSONObject.of("query", string(500)))),
                 function(
                         "read_evidence",
-                        "读取已检索到的证据原文，最多4条",
+                        "读取最多4个已发现锚点及宿主限定的相邻原文；返回的邻居保留独立引用ID，超预算须减少锚点",
                         object(JSONObject.of("refs", array(string(220), 1, 4)))),
                 function(
                         "get_learning_state",
@@ -128,7 +142,7 @@ public final class StudyAgentSpec {
                                         "slotId",
                                         string(100),
                                         "note",
-                                        noteSchema(),
+                                        noteInputSchema(),
                                         "coverageMaterialIds",
                                         array(
                                                 JSONObject.of("type", "integer", "minimum", 1),
@@ -139,7 +153,7 @@ public final class StudyAgentSpec {
     public static Map<String, String> snapshot() {
         return Map.of(
                 "runtime",
-                "bounded-study-v3",
+                "bounded-study-v7",
                 "prompt",
                 AiCallLedger.sha256(systemPrompt()),
                 "tools",

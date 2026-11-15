@@ -69,7 +69,7 @@ public class ExploratoryTrial {
         JSONObject hold(String provider, String kind, long input, long out) {
             if (!live) throw new IllegalStateException("Dry run forbids all paid attempts");
             long fee=cost(provider,input,out);
-            if (held+fee>limit) throw new StudyExecutionContext.GovernanceException("EVAL_BUDGET_EXHAUSTED","首批货币预留不足，未发送请求");
+            if (held+fee>limit) throw new StudyExecutionContext.GovernanceException("EVAL_BUDGET_EXHAUSTED","本批货币预留不足，未发送请求");
             var ctx=StudyExecutionContext.require();
             var h=obj("provider",provider,"kind",kind,"requestId",ctx.requestId,"runId",ctx.runId,"purpose",ctx.purpose,
                 "reservedInput",input,"reservedOutput",out,"reservedMicroCny",fee,"createdAt",Instant.now().toString());
@@ -157,6 +157,14 @@ public class ExploratoryTrial {
         live=args[0].equals("run"); output=Path.of(args[1]).toAbsolutePath(); Files.createDirectories(output);
         manifest=JSON.parseObject(Files.readString(output.resolve("manifest.json")));
         Guard.selfCheck();
+        var selectedCases = manifest.getList("caseOrder", String.class);
+        if (selectedCases == null || selectedCases.isEmpty()
+                || new HashSet<>(selectedCases).size() != selectedCases.size()
+                || !List.of(CASES).containsAll(selectedCases))
+            throw new IllegalArgumentException("Invalid frozen case order");
+        if ("notes-exploration-003".equals(manifest.getString("experimentId"))
+                && (!selectedCases.equals(List.of("N03")) || manifest.getLongValue("batchLimitMicroCny") > 1000000))
+            throw new IllegalArgumentException("Experiment 003 permits N03 once within one CNY");
         try (var channel=java.nio.channels.FileChannel.open(output.resolve("runner.lock"),StandardOpenOption.CREATE,StandardOpenOption.WRITE);
              var lock=channel.tryLock(); var app=new AnnotationConfigApplicationContext()) {
             if (lock==null || Files.exists(output.resolve("budget.json"))) throw new IllegalStateException("Already executed or locked; no automatic rerun");
@@ -167,13 +175,16 @@ public class ExploratoryTrial {
             String em=app.getEnvironment().getProperty("ai.aliyun.embedding-base-url","https://dashscope.aliyuncs.com/api/v1");
             if (!Set.of("https://api.deepseek.com","https://api.deepseek.com/v1").contains(ds) || !"https://dashscope.aliyuncs.com/api/v1".equals(em)) throw new IllegalArgumentException("Endpoint fee verification required");
             app.register(Config.class); app.refresh();
+            if (!StudyAgentSpec.snapshot().get("runtime").equals(manifest.getString("runtimeVersion")))
+                throw new IllegalStateException("Compiled runtime differs from frozen manifest");
             var j=app.getBean(JdbcTemplate.class); var courses=app.getBean(CourseService.class);
             var indexes=app.getBean(VideoKnowledgeIndexService.class); var tasks=app.getBean(StudyTaskPreparationService.class);
             var contexts=app.getBean(VideoContextService.class);
             write(output.resolve("resources.json"),obj("resources",StudyAgentSpec.snapshot(),"tools",StudyAgentSpec.tools(),"systemPrompt",StudyAgentSpec.systemPrompt(),
                 "skill",StudyAgentSkills.bundled().read("course-notes"),"model",AiPromptBudget.MODEL,"embeddingModel",AliyunTextEmbeddingClient.MODEL));
             List<JSONObject> prepared=new ArrayList<>();
-            for (int n=0;n<3;n++) {
+            for (String caseId : selectedCases) {
+                int n=List.of(CASES).indexOf(caseId);
                 String title="[探索] "+CASES[n];
                 Long cid=j.queryForList("SELECT id FROM courses WHERE title=? AND author_id=1",Long.class,title).stream().findFirst().orElse(null);
                 if (cid==null) {
