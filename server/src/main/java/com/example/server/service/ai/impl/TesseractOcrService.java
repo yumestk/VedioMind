@@ -105,13 +105,13 @@ public class TesseractOcrService {
         try {
             stdout = Files.createTempFile("tesseract-stdout-", ".log");
             stderr = Files.createTempFile("tesseract-stderr-", ".log");
-            process = new ProcessBuilder(command)
-                    .redirectOutput(stdout.toFile())
-                    .redirectError(stderr.toFile())
-                    .start();
+            var builder = new ProcessBuilder(command)
+                    .redirectOutput(stdout.toFile()).redirectError(stderr.toFile());
+            builder.environment().put("OMP_THREAD_LIMIT", "1");
+            process = builder.start();
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
-                process.destroyForcibly();
+                stop(process);
                 throw new IllegalStateException("Tesseract OCR timed out");
             }
             if (process.exitValue() != 0) {
@@ -124,7 +124,7 @@ public class TesseractOcrService {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             if (process != null) {
-                process.destroyForcibly();
+                stop(process);
             }
             throw new IllegalStateException("Tesseract OCR was interrupted", exception);
         } catch (Exception exception) {
@@ -135,6 +135,53 @@ public class TesseractOcrService {
         } finally {
             delete(stdout);
             delete(stderr);
+        }
+    }
+
+    private static void stop(Process process) {
+        process.destroyForcibly();
+        process.onExit().join();
+    }
+
+    public static List<FrameOcr> recognizeOrdered(
+            TesseractOcrService service, List<Path> paths, int workers, java.util.concurrent.Semaphore permits) {
+        if (workers < 1) throw new IllegalArgumentException("OCR worker count must be positive");
+        if (paths.isEmpty()) return List.of();
+        var results = new FrameOcr[paths.size()];
+        var next = new java.util.concurrent.atomic.AtomicInteger();
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(Math.min(workers, paths.size()))) {
+            var tasks = java.util.stream.IntStream.range(0, Math.min(workers, paths.size()))
+                    .<java.util.concurrent.Callable<Void>>mapToObj(task -> () -> {
+                        for (int index; !Thread.currentThread().isInterrupted()
+                                && (index = next.getAndIncrement()) < paths.size();) {
+                            permits.acquire();
+                            try {
+                                var value = java.util.Objects.requireNonNull(service.recognize(paths.get(index)));
+                                results[index] = new FrameOcr(value, null);
+                            } catch (RuntimeException error) {
+                                if (Thread.currentThread().isInterrupted()) throw error;
+                                results[index] = new FrameOcr(null, error);
+                            } finally {
+                                permits.release();
+                            }
+                        }
+                        return null;
+                    }).toList();
+            for (var task : executor.invokeAll(tasks)) task.get();
+            return List.of(results);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("OCR batch interrupted", error);
+        } catch (java.util.concurrent.ExecutionException error) {
+            throw new IllegalStateException("OCR batch failed", error.getCause());
+        }
+    }
+
+    public record FrameOcr(OcrResult result, RuntimeException error) {
+        public String status() {
+            if (error != null) return "FAILED";
+            if (!result.text().isBlank()) return "SUCCEEDED";
+            return result.detectedText() ? "LOW_CONFIDENCE" : "EMPTY";
         }
     }
 

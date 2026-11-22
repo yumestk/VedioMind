@@ -28,11 +28,29 @@ public class AliyunSpeechTranscriber implements SpeechTranscriber {
 
     private final String apiKey;
     private final AiRetryExecutor retryExecutor;
+    private final int workers;
+    private final java.util.concurrent.Semaphore active;
+    private final String ffmpeg;
+    private final String streamUrl;
 
     public AliyunSpeechTranscriber(
             @Value("${ai.aliyun.api-key}") String apiKey,
             AiRetryExecutor retryExecutor
     ) {
+        this(apiKey, retryExecutor, 1, "/opt/homebrew/bin", "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AliyunSpeechTranscriber(@Value("${ai.aliyun.api-key}") String apiKey, AiRetryExecutor retryExecutor,
+            @Value("${ai.asr.workers:5}") int workers,
+            @Value("${tool.ffmpeg.dir}") String ffmpegDirectory,
+            @Value("${ai.asr.websocket-url:wss://dashscope.aliyuncs.com/api-ws/v1/inference}") String streamUrl) {
+        if (workers < 1) throw new IllegalArgumentException("ASR workers must be positive");
+        this.workers = workers;
+        this.active = new java.util.concurrent.Semaphore(workers, true);
+        this.ffmpeg = ffmpegDirectory == null || ffmpegDirectory.isBlank() ? "ffmpeg"
+                : java.nio.file.Path.of(ffmpegDirectory, "ffmpeg").toString();
+        this.streamUrl = streamUrl;
         this.apiKey = apiKey;
         this.retryExecutor = retryExecutor;
     }
@@ -46,8 +64,131 @@ public class AliyunSpeechTranscriber implements SpeechTranscriber {
             throw new IllegalStateException("ALIYUN_API_KEY is not configured");
         }
 
-        return retryExecutor.execute(AiRateLimitService.ALIYUN_ASR,
-                () -> execute(audioFile));
+        if (workers == 1 || audioFile.length() <= 600L * SAMPLE_RATE * 2) {
+            return withActive(() -> retryExecutor.execute(AiRateLimitService.ALIYUN_ASR, () -> execute(audioFile)));
+        }
+        try {
+            return transcribePlanned(audioFile, plan(audioFile));
+        } catch (java.io.IOException error) {
+            throw new IllegalStateException("Could not prepare ASR slices", error);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("ASR interrupted", error);
+        }
+    }
+
+    public AsrSlices.Plan plan(File audioFile) throws java.io.IOException, InterruptedException {
+        return AsrSlices.plan(audioFile.toPath(), ffmpeg);
+    }
+
+    public TranscriptionResult transcribePlanned(File audioFile, AsrSlices.Plan plan)
+            throws java.io.IOException, InterruptedException {
+        return transcribePlanned(audioFile, plan, (slice, sentences) -> {});
+    }
+
+    public TranscriptionResult transcribePlanned(File audioFile, AsrSlices.Plan plan,
+            java.util.function.BiConsumer<AsrSlices.Slice, List<TranscriptSegmentDraft>> completed)
+            throws java.io.IOException, InterruptedException {
+        if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("ALIYUN_API_KEY is not configured");
+        if (plan.slices().size() == 1) return transcribe(audioFile);
+        if (audioFile.length() != plan.samples() * 2) throw new IllegalArgumentException("PCM does not match ASR plan");
+        var directory = java.nio.file.Files.createTempDirectory("asr-slices-");
+        try {
+            return AsrSlices.merge(plan, runSlices(plan, slice -> {
+                var path = directory.resolve(slice.index() + ".pcm");
+                AsrSlices.copy(audioFile.toPath(), path, slice);
+                var sentences = transcribeSlice(path, slice.index());
+                completed.accept(slice, sentences);
+                return sentences;
+            }));
+        } finally {
+            try (var paths = java.nio.file.Files.list(directory)) {
+                for (var path : paths.toList()) java.nio.file.Files.delete(path);
+            }
+            java.nio.file.Files.delete(directory);
+        }
+    }
+
+    @FunctionalInterface
+    interface SliceWork {
+        List<TranscriptSegmentDraft> run(AsrSlices.Slice slice) throws Exception;
+    }
+
+    List<AsrSlices.Piece> runSlices(AsrSlices.Plan plan, SliceWork work) throws InterruptedException {
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(Math.min(workers, plan.slices().size()));
+        try (executor) {
+            var completed = new java.util.concurrent.ExecutorCompletionService<AsrSlices.Piece>(executor);
+            for (var slice : plan.slices()) {
+                completed.submit(() -> {
+                    try {
+                        return new AsrSlices.Piece(slice, work.run(slice));
+                    } catch (Exception error) {
+                        throw new IllegalStateException("ASR slice " + (slice.index() + 1) + " failed", error);
+                    }
+                });
+            }
+            var results = new ArrayList<AsrSlices.Piece>();
+            try {
+                for (int i = 0; i < plan.slices().size(); i++) results.add(completed.take().get());
+                return List.copyOf(results);
+            } catch (java.util.concurrent.ExecutionException error) {
+                throw new IllegalStateException(error.getCause().getMessage(), error.getCause());
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+    }
+
+    private List<TranscriptSegmentDraft> transcribeSlice(java.nio.file.Path path, int index) {
+        return retrySlice(() -> recognizeSlice(path), () -> {
+            log.info("Starting Paraformer slice {} ({} PCM bytes)", index + 1, path.toFile().length());
+        });
+    }
+
+    private List<TranscriptSegmentDraft> recognizeSlice(java.nio.file.Path path) {
+        try {
+            return ParaformerStream.recognize(apiKey, streamUrl, path);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("ASR slice interrupted", error);
+        }
+    }
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(AliyunSpeechTranscriber.class);
+
+    <T> T retrySlice(java.util.function.Supplier<T> send, Runnable beforeSend) {
+        var deadline = java.time.Instant.now().plusSeconds(900);
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        while (true) {
+            try {
+                return withActive(() -> retryExecutor.execute(AiRateLimitService.ALIYUN_ASR, () -> {
+                    if (attempts.getAndIncrement() >= 3) throw new IllegalStateException("ASR slice retry limit");
+                    beforeSend.run();
+                }, send, deadline));
+            } catch (AiRateLimitService.AiRateLimitExceededException wait) {
+                AiRetryExecutor.remainingMillis(deadline);
+                try {
+                    Thread.sleep(Math.min(5, wait.retryAfterSeconds()) * 1000);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("ASR quota wait interrupted", error);
+                }
+            }
+        }
+    }
+
+    private <T> T withActive(java.util.function.Supplier<T> work) {
+        try {
+            active.acquire();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("ASR interrupted while waiting for a worker", error);
+        }
+        try {
+            return work.get();
+        } finally {
+            active.release();
+        }
     }
 
     private TranscriptionResult execute(File audioFile) {

@@ -47,6 +47,8 @@ public class VisualEvidenceService {
     private final TesseractOcrService ocrService;
     private final ObjectStorageService objectStorageService;
     private final RedissonClient redissonClient;
+    private final int ocrWorkers;
+    private final java.util.concurrent.Semaphore ocrPermits;
     private final ExecutorService executor = new ThreadPoolExecutor(
             2,
             2,
@@ -64,6 +66,17 @@ public class VisualEvidenceService {
             ObjectStorageService objectStorageService,
             RedissonClient redissonClient
     ) {
+        this(evidenceMapper, keyframeMapper, keyframeExtractor, ocrService, objectStorageService, redissonClient, 6);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public VisualEvidenceService(MediaVisualEvidenceMapper evidenceMapper, VideoKeyframeMapper keyframeMapper,
+            VideoKeyframeExtractor keyframeExtractor, TesseractOcrService ocrService,
+            ObjectStorageService objectStorageService, RedissonClient redissonClient,
+            @org.springframework.beans.factory.annotation.Value("${tool.tesseract.workers:6}") int ocrWorkers) {
+        if (ocrWorkers < 1) throw new IllegalArgumentException("OCR worker count must be positive");
+        this.ocrWorkers = ocrWorkers;
+        this.ocrPermits = new java.util.concurrent.Semaphore(ocrWorkers, true);
         this.evidenceMapper = evidenceMapper;
         this.keyframeMapper = keyframeMapper;
         this.keyframeExtractor = keyframeExtractor;
@@ -137,32 +150,35 @@ public class VisualEvidenceService {
                 existingByTimestamp.put(frame.getTimestampMs(), frame);
             }
 
+            var reusable = new HashSet<Long>();
+            var pending = new ArrayList<VideoKeyframeExtractor.ExtractedFrame>();
+            for (var frame : retained) {
+                if (isReusable(existingByTimestamp.get(frame.timestampMs()))) reusable.add(frame.timestampMs());
+                else pending.add(frame);
+            }
+            var results = TesseractOcrService.recognizeOrdered(ocrService,
+                    pending.stream().map(VideoKeyframeExtractor.ExtractedFrame::path).toList(), ocrWorkers, ocrPermits);
+            int recognized = 0;
             Set<Long> selectedTimestamps = new HashSet<>();
             for (int index = 0; index < retained.size(); index++) {
                 VideoKeyframeExtractor.ExtractedFrame extracted = retained.get(index);
                 selectedTimestamps.add(extracted.timestampMs());
                 VideoKeyframe existing = existingByTimestamp.get(extracted.timestampMs());
-                if (isReusable(existing)) {
+                if (reusable.contains(extracted.timestampMs())) {
                     existing.setFrameIndex(index);
                     keyframeMapper.updateById(existing);
                     counts.add(existing.getOcrStatus());
                     continue;
                 }
 
-                String ocrStatus;
-                String ocrText = null;
-                Double ocrConfidence = null;
-                try {
-                    TesseractOcrService.OcrResult result = ocrService.recognize(extracted.path());
-                    ocrConfidence = result.confidence();
-                    ocrText = result.text().isBlank() ? null : result.text();
-                    ocrStatus = ocrText != null
-                            ? OCR_SUCCEEDED
-                            : result.detectedText() ? OCR_LOW_CONFIDENCE : OCR_EMPTY;
-                } catch (RuntimeException exception) {
-                    ocrStatus = OCR_FAILED;
+                var frameOcr = results.get(recognized++);
+                String ocrStatus = frameOcr.status();
+                var result = frameOcr.result();
+                String ocrText = OCR_SUCCEEDED.equals(ocrStatus) ? result.text() : null;
+                Double ocrConfidence = result == null ? null : result.confidence();
+                if (frameOcr.error() != null) {
                     log.warn("OCR failed for media {} at {} ms: {}",
-                            mediaId, extracted.timestampMs(), exception.getMessage());
+                            mediaId, extracted.timestampMs(), frameOcr.error().getMessage());
                 }
 
                 String objectKey = objectKey(mediaId, extracted.timestampMs());
@@ -196,7 +212,7 @@ public class VisualEvidenceService {
         }
     }
 
-    private List<VideoKeyframeExtractor.ExtractedFrame> deduplicate(
+    List<VideoKeyframeExtractor.ExtractedFrame> deduplicate(
             List<VideoKeyframeExtractor.ExtractedFrame> candidates
     ) {
         List<VideoKeyframeExtractor.ExtractedFrame> retained = new ArrayList<>();
