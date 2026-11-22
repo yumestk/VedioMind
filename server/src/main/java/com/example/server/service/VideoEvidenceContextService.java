@@ -216,6 +216,12 @@ public class VideoEvidenceContextService {
     /** Fair initial shares, then round-robin reuse of unspent and duplicate evidence space. */
     public List<List<VideoAgentCitation>> allocate(List<List<List<VideoAgentCitation>>> windows, long limit,
             List<java.util.function.Predicate<List<VideoAgentCitation>>> fits) {
+        return allocate(windows, limit, fits, values -> AiPromptBudget.estimateText(formatEvidence(values)));
+    }
+
+    List<List<VideoAgentCitation>> allocate(List<List<List<VideoAgentCitation>>> windows, long limit,
+            List<java.util.function.Predicate<List<VideoAgentCitation>>> fits,
+            java.util.function.ToLongFunction<List<VideoAgentCitation>> estimate) {
         if (windows.size() != fits.size()) throw new IllegalArgumentException("One budget check per task is required");
         List<LinkedHashMap<String, VideoAgentCitation>> selected = new ArrayList<>();
         windows.forEach(v -> selected.add(new LinkedHashMap<>()));
@@ -229,10 +235,10 @@ public class VideoEvidenceContextService {
                 if (trial.size() == selected.get(task).size()) { duplicates++; continue; }
                 var values = List.copyOf(trial.values());
                 if (!fits.get(task).test(values)) { nodeOmissions++; continue; }
-                if (phase == 0 && AiPromptBudget.estimateText(formatEvidence(values)) > limit / windows.size()) { shareOmissions++; continue; }
+                if (phase == 0 && estimate.applyAsLong(values) > limit / windows.size()) { shareOmissions++; continue; }
                 Map<String, VideoAgentCitation> union = new LinkedHashMap<>();
                 for (int i = 0; i < selected.size(); i++) union.putAll(i == task ? trial : selected.get(i));
-                if (AiPromptBudget.estimateText(formatEvidence(List.copyOf(union.values()))) <= limit) selected.set(task, trial);
+                if (estimate.applyAsLong(List.copyOf(union.values())) <= limit) selected.set(task, trial);
                 else poolOmissions++;
             }
         }

@@ -45,6 +45,17 @@ class VideoChunkSummarizerTest {
     }
 
     @Test
+    void acceptsComplementaryFieldsFromTwoConsecutiveObjects() {
+        when(chatClient.chat(anyString(), any())).thenReturn("""
+                {"summary":"核心内容"}
+                {"keywords":["索引","检索","长视频"]}
+                """);
+        var input = new VideoChunkSummarizer.ChunkInput(0, 0, 120_000,
+                List.of(new VideoContext.TranscriptEvidence(1L, 0, 1_000, "text")), List.of());
+        assertThat(summarizer.summarize(input).keywords()).containsExactly("索引", "检索", "长视频");
+    }
+
+    @Test
     void rejectsMalformedModelOutputInsteadOfCreatingAFallbackSummary() {
         when(chatClient.chat(anyString(), any())).thenReturn("not json");
         VideoChunkSummarizer.ChunkInput input = new VideoChunkSummarizer.ChunkInput(

@@ -66,6 +66,28 @@ class VideoKnowledgeIndexServiceTest {
     }
 
     @Test
+    void finePlansUseChapterBoundariesAndKeepEachOriginalExactlyOnce() {
+        var chapter1 = new com.example.server.entity.VideoChapter();
+        chapter1.setStartMs(15_000L);
+        var chapter2 = new com.example.server.entity.VideoChapter();
+        chapter2.setStartMs(195_000L);
+        var context = context("ctx", List.of(transcript(1L, 20_000, "a"),
+                transcript(2L, 96_000, "b"), transcript(3L, 195_000, "c"),
+                transcript(4L, 220_000, "d")), List.of());
+        var plans = VideoKnowledgeIndexService.finePlans(context, List.of(chapter1, chapter2));
+
+        assertThat(plans).extracting(VideoChunkSummarizer.ChunkInput::startMs)
+                .containsExactly(0L, 96_000L, 195_000L);
+        assertThat(plans).extracting(VideoChunkSummarizer.ChunkInput::endMs)
+                .containsExactly(96_000L, 195_000L, context.transcriptEvidence().getLast().endMs());
+        assertThat(plans.stream().flatMap(c -> c.transcripts().stream()).map(VideoContext.TranscriptEvidence::id))
+                .containsExactly(1L, 2L, 3L, 4L);
+
+        var fallback = VideoKnowledgeIndexService.finePlans(context, List.of());
+        assertThat(fallback).extracting(VideoChunkSummarizer.ChunkInput::startMs).containsExactly(0L, 120_000L);
+    }
+
+    @Test
     void assignsBoundaryEvidenceToTheNextFiveMinuteChunk() {
         VideoContext context = context(
                 "t1-v1-p2",
@@ -189,7 +211,7 @@ class VideoKnowledgeIndexServiceTest {
 
         assertThat(result.chunks()).hasSize(1);
         assertThat(result.chunks().getFirst().getStatus()).isEqualTo("READY");
-        verify(chunkMapper).delete(any());
+        verify(chunkMapper, never()).delete(any());
     }
 
     @SafeVarargs
@@ -204,7 +226,6 @@ class VideoKnowledgeIndexServiceTest {
             return 1;
         });
         when(chunkMapper.updateById(any(VideoKnowledgeChunk.class))).thenReturn(1);
-        when(chunkMapper.delete(any())).thenReturn(0);
         return rows;
     }
 

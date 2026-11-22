@@ -20,7 +20,11 @@ public class AliyunTextEmbeddingClient {
     public static final int DIMENSION = 1024;
     public static final int MAX_BATCH_SIZE = 10;
     private static final OkHttpClient HTTP =
-            new OkHttpClient.Builder().retryOnConnectionFailure(false).build();
+            new OkHttpClient.Builder()
+                    .writeTimeout(30, TimeUnit.SECONDS)
+                    .readTimeout(90, TimeUnit.SECONDS)
+                    .retryOnConnectionFailure(false)
+                    .build();
     private final String apiKey, baseUrl;
     private final AiCallLedger ledger;
 

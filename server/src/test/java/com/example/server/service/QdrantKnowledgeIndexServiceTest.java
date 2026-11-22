@@ -42,24 +42,25 @@ class QdrantKnowledgeIndexServiceTest {
     }
 
     @Test
-    void replacesMediaPointsWithStableChunkIdsAndMetadata() {
+    void publishesAnotherVersionWithoutDeletingExistingPoints() {
         when(client.collectionExistsAsync("knowledge", TIMEOUT))
                 .thenReturn(Futures.immediateFuture(true));
-        when(client.deleteAsync(any(Points.DeletePoints.class), eq(TIMEOUT)))
-                .thenReturn(Futures.immediateFuture(Points.UpdateResult.getDefaultInstance()));
         when(client.upsertAsync(any(Points.UpsertPoints.class), eq(TIMEOUT)))
                 .thenReturn(Futures.immediateFuture(Points.UpdateResult.getDefaultInstance()));
 
         service.replaceMediaIndex(List.of(chunk(7L, 42L, "context-v1", 2)));
 
-        ArgumentCaptor<Points.DeletePoints> delete = ArgumentCaptor.forClass(Points.DeletePoints.class);
-        verify(client).deleteAsync(delete.capture(), eq(TIMEOUT));
-        assertThat(delete.getValue().getWait()).isTrue();
-        assertThat(delete.getValue().getPoints().getFilter().getMustCount()).isEqualTo(1);
+        var next = chunk(8L, 42L, "context-v2", 0);
+        next.setProcessorVersion(2);
+        service.replaceMediaIndex(List.of(next));
 
+        verify(client, org.mockito.Mockito.never()).deleteAsync(any(Points.DeletePoints.class), eq(TIMEOUT));
         ArgumentCaptor<Points.UpsertPoints> upsert = ArgumentCaptor.forClass(Points.UpsertPoints.class);
-        verify(client).upsertAsync(upsert.capture(), eq(TIMEOUT));
-        Points.PointStruct point = upsert.getValue().getPoints(0);
+        verify(client, org.mockito.Mockito.times(2)).upsertAsync(upsert.capture(), eq(TIMEOUT));
+        var second = upsert.getAllValues().get(1).getPoints(0);
+        assertThat(second.getId().getNum()).isEqualTo(8L);
+        assertThat(second.getPayloadOrThrow("processor_version").getIntegerValue()).isEqualTo(2);
+        Points.PointStruct point = upsert.getAllValues().getFirst().getPoints(0);
         assertThat(upsert.getValue().getWait()).isTrue();
         assertThat(point.getId().getNum()).isEqualTo(7L);
         assertThat(point.getPayloadOrThrow("media_id").getIntegerValue()).isEqualTo(42L);

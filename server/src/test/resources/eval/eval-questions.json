@@ -1,0 +1,182 @@
+[
+  {
+    "id": "K01",
+    "category": "keyword_term",
+    "question": "我照着写 pushAt 时漏记了参数。老师给这个方法传哪两个值，各自是干什么的？",
+    "expectedTimeRanges": [{"startSec": 124, "endSec": 157}, {"startSec": 226, "endSec": 254}]
+  },
+  {
+    "id": "K02",
+    "category": "keyword_term",
+    "question": "老师说 C++ 已经有现成的 list 可以用，他提到的 STL 全称是什么？",
+    "expectedTimeRanges": [{"startSec": 979, "endSec": 1012}]
+  },
+  {
+    "id": "K03",
+    "category": "keyword_term",
+    "question": "我只想看一下栈顶，下一步还要用这个元素。该调用 top() 还是 pop()？",
+    "expectedTimeRanges": [{"startSec": 1496, "endSec": 1532}]
+  },
+  {
+    "id": "K04",
+    "category": "keyword_term",
+    "question": "我没用过老师说的后缀计算器。像 3 加 5 这种算式，输入时加号放在哪儿？需要加括号吗？",
+    "expectedTimeRanges": [{"startSec": 2175, "endSec": 2227}]
+  },
+  {
+    "id": "K05",
+    "category": "keyword_term",
+    "question": "循环队列里 front 和 rear 碰到一起时，如果我没存元素个数，怎么用上一次操作判断是空还是满？",
+    "expectedTimeRanges": [{"startSec": 2727, "endSec": 2790}]
+  },
+  {
+    "id": "K06",
+    "category": "keyword_term",
+    "question": "节点的 degree 我会数了。老师说的整棵树的 degree，要从各节点的度里怎么取？",
+    "expectedTimeRanges": [{"startSec": 3254, "endSec": 3272}]
+  },
+  {
+    "id": "K07",
+    "category": "keyword_term",
+    "question": "按课上那个用数组存二叉树的编号方式，节点在下标 i，右孩子的位置怎么算？",
+    "expectedTimeRanges": [{"startSec": 3451, "endSec": 3474}]
+  },
+  {
+    "id": "K08",
+    "category": "keyword_term",
+    "question": "BST 里遇到两个一样的 key，就按老师举的唯一查找场景，应该把它们都存进去吗？",
+    "expectedTimeRanges": [{"startSec": 3645, "endSec": 3672}]
+  },
+  {
+    "id": "K09",
+    "category": "keyword_term",
+    "question": "要往 BST 插入一个还没有的键，老师是怎么用 search 找到该把新节点挂在哪里的？",
+    "expectedTimeRanges": [{"startSec": 4698, "endSec": 4738}]
+  },
+  {
+    "id": "K10",
+    "category": "keyword_term",
+    "question": "删有两个孩子的 BST 节点时，如果要用 successor 替换，从它的哪个子树出发，要往哪边走？",
+    "expectedTimeRanges": [{"startSec": 4929, "endSec": 4970}]
+  },
+  {
+    "id": "V01",
+    "category": "visual_ocr",
+    "question": "我想对照老师跑 C++ 示例用的环境，开头命令提示符里显示的 Windows 版本号是多少？",
+    "expectedTimeRanges": [{"startSec": 41, "endSec": 49}]
+  },
+  {
+    "id": "V02",
+    "category": "visual_ocr",
+    "question": "我想对一下链表的打印结果。老师的示例程序在输出最后一个值之后，还会打印哪个字样？",
+    "expectedTimeRanges": [{"startSec": 69, "endSec": 81}, {"startSec": 451, "endSec": 467}]
+  },
+  {
+    "id": "V03",
+    "category": "visual_ocr",
+    "question": "我想照着跑一遍链表测试。画面里的 main() 连续几次调用 pushFront，各传了什么数，顺序是怎样的？",
+    "expectedTimeRanges": [{"startSec": 564, "endSec": 574}]
+  },
+  {
+    "id": "V04",
+    "category": "visual_ocr",
+    "question": "老师在终端跑完链表测试后，输出里夹着一个三位数。那个数是多少？",
+    "expectedTimeRanges": [{"startSec": 751, "endSec": 762}]
+  },
+  {
+    "id": "V05",
+    "category": "visual_ocr",
+    "question": "STL list 那张投影片的 for 循环太快翻过去了。循环继续的条件完整写法是什么？",
+    "expectedTimeRanges": [{"startSec": 1045, "endSec": 1058}]
+  },
+  {
+    "id": "V06",
+    "category": "visual_ocr",
+    "question": "我在抄抽象栈的接口，投影片上 top() 的返回类型怎么写？",
+    "expectedTimeRanges": [{"startSec": 1497, "endSec": 1508}]
+  },
+  {
+    "id": "V07",
+    "category": "visual_ocr",
+    "question": "数组队列那页，队头画在左边时，back() 这行写的是调用哪个方法、传什么下标？",
+    "expectedTimeRanges": [{"startSec": 2573, "endSec": 2585}]
+  },
+  {
+    "id": "V08",
+    "category": "visual_ocr",
+    "question": "线性表和树放在一页比较时，除了星期，投影片还举了哪一个跟日历有关的线性表例子？",
+    "expectedTimeRanges": [{"startSec": 2873, "endSec": 2885}]
+  },
+  {
+    "id": "V09",
+    "category": "visual_ocr",
+    "question": "在用指针存二叉树的示意图里，没有孩子可指的格子标了什么字样？",
+    "expectedTimeRanges": [{"startSec": 3568, "endSec": 3580}]
+  },
+  {
+    "id": "V10",
+    "category": "visual_ocr",
+    "question": "我想核对自己的遍历练习。前序和后序放在同一张投影片的那棵示例树，画面上给出的后序字母顺序是什么？",
+    "expectedTimeRanges": [{"startSec": 4079, "endSec": 4092}]
+  },
+  {
+    "id": "C01",
+    "category": "cross_chapter",
+    "question": "开头老师补了链表的 size，后来又给循环队列加了计数。这两处分别要在什么时候改计数？队列靠它区分哪两种状态？",
+    "expectedTimeRanges": [{"startSec": 44, "endSec": 73}, {"startSec": 2727, "endSec": 2765}]
+  },
+  {
+    "id": "C02",
+    "category": "cross_chapter",
+    "question": "pushAt 原来在什么情况下会转去调用 pushFront？加了虚拟头节点之后，为什么这条分支就能去掉？",
+    "expectedTimeRanges": [{"startSec": 226, "endSec": 254}, {"startSec": 653, "endSec": 682}]
+  },
+  {
+    "id": "C03",
+    "category": "cross_chapter",
+    "question": "我总把链表中间的插入和删除画混。找到前驱节点以后，这两种操作分别是怎么重接 next 的？",
+    "expectedTimeRanges": [{"startSec": 451, "endSec": 467}, {"startSec": 601, "endSec": 615}]
+  },
+  {
+    "id": "C04",
+    "category": "cross_chapter",
+    "question": "用只有 next 的单链表做栈时，为什么老师更愿意从链表头进出？换成前面讲的双向循环链表，找尾节点还要走完整条链吗？",
+    "expectedTimeRanges": [{"startSec": 787, "endSec": 822}, {"startSec": 1616, "endSec": 1668}]
+  },
+  {
+    "id": "C05",
+    "category": "cross_chapter",
+    "question": "同样用数组，老师的栈和循环队列分别从哪一端加、从哪一端取？队列的下标走到数组末尾时怎么处理？",
+    "expectedTimeRanges": [{"startSec": 1364, "endSec": 1407}, {"startSec": 2625, "endSec": 2709}]
+  },
+  {
+    "id": "C06",
+    "category": "cross_chapter",
+    "question": "括号匹配和后缀算式求值都用了栈。我写实现时，这两种方法分别该在什么时候入栈、什么时候出栈，栈里又装什么？",
+    "expectedTimeRanges": [{"startSec": 1852, "endSec": 1874}, {"startSec": 2364, "endSec": 2416}]
+  },
+  {
+    "id": "C07",
+    "category": "cross_chapter",
+    "question": "把一个节点唯一的孩子从左边移到右边，它的度变了吗？为什么按老师后面讲的二叉树定义，这两种画法还是不同的树？",
+    "expectedTimeRanges": [{"startSec": 3204, "endSec": 3225}, {"startSec": 3328, "endSec": 3354}]
+  },
+  {
+    "id": "C08",
+    "category": "cross_chapter",
+    "question": "树如果长得很偏，为什么课上一处说按层用数组存会浪费空间，另一处又说 BST 查找也可能变慢？",
+    "expectedTimeRanges": [{"startSec": 3475, "endSec": 3533}, {"startSec": 4665, "endSec": 4699}]
+  },
+  {
+    "id": "C09",
+    "category": "cross_chapter",
+    "question": "我想用中序遍历检查手画的 BST，应该看到什么样的输出？这和老师前面讲的键值规则有什么关系？",
+    "expectedTimeRanges": [{"startSec": 3622, "endSec": 3656}, {"startSec": 4064, "endSec": 4087}]
+  },
+  {
+    "id": "C10",
+    "category": "cross_chapter",
+    "question": "我只抄了后序遍历的结果，哪个位置是根？为什么老师说有这份记录就能还原 BST，换成普通二叉树却还缺信息？",
+    "expectedTimeRanges": [{"startSec": 4048, "endSec": 4065}, {"startSec": 4448, "endSec": 4509}]
+  }
+]

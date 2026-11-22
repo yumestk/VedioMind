@@ -1,6 +1,6 @@
 package com.example.server.service;
 
-import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONReader;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONException;
 import com.alibaba.fastjson2.JSONObject;
@@ -85,8 +85,16 @@ public class VideoChunkSummarizer {
         if (start < 0 || end <= start) {
             throw new IllegalStateException("Chunk summarizer returned invalid JSON");
         }
-        try {
-            return JSON.parseObject(content.substring(start, end + 1));
+        try (var reader = JSONReader.of(content.substring(start, end + 1))) {
+            var summary = new JSONObject();
+            while (!reader.isEnd()) {
+                var fields = reader.readObject();
+                for (var entry : fields.entrySet()) {
+                    if (summary.containsKey(entry.getKey())) throw new JSONException("Duplicate summary field");
+                    summary.put(entry.getKey(), entry.getValue());
+                }
+            }
+            return summary;
         } catch (JSONException exception) {
             throw new IllegalStateException("Chunk summarizer returned invalid JSON", exception);
         }

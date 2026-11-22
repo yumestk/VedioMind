@@ -159,6 +159,23 @@ class VideoEvidenceContextServiceTest {
     }
 
     @Test
+    void finePackingUsesFullEscapedRequestBudgetAndKeepsSmallerCore() {
+        var context = context(List.of(transcript(1, 10_000, "quoted \"text\" \n".repeat(400)),
+                transcript(2, 160_000, "另一个章节证据")), List.of());
+        var chunk = new com.example.server.entity.VideoKnowledgeChunk();
+        chunk.setProcessorVersion(2);
+        var index = new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(chunk), "摘要");
+        var evidence = new VideoAgentEvidenceService(mock(VideoKnowledgeRetriever.class), service,
+                new AiPromptBudget(13_500, 8_192));
+        String prefix = VideoAgentEvidenceService.goalPrefix("章节");
+        var packed = evidence.assemble(index, "章节",
+                List.of(hit(0,120_000,List.of(1L),List.of()), hit(120_000,240_000,List.of(2L),List.of())), prefix);
+        assertThat(packed).extracting(VideoAgentCitation::ref).contains("TRANSCRIPT:2");
+        assertThat(packed).extracting(VideoAgentCitation::ref).doesNotContain("TRANSCRIPT:1");
+        assertThat(evidence.promptTokens(prefix, packed)).isLessThanOrEqualTo(13_500 - 8_192 - 512);
+    }
+
+    @Test
     void aCompleteShortSubtitleArgumentIsNotDroppedByAnArbitraryItemCount() {
         var paragraphs = new java.util.ArrayList<List<VideoAgentCitation>>();
         for(int i=0;i<120;i++) paragraphs.add(List.of(new VideoAgentCitation("TRANSCRIPT:"+i,"TRANSCRIPT",(long)i,i*1000L,i*1000L+1000,

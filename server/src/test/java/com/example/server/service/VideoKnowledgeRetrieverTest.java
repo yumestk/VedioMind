@@ -145,6 +145,30 @@ class VideoKnowledgeRetrieverTest {
         );
     }
 
+    @Test
+    void onlyTheExactOcrIdentifierGetsTheFineRankingBoost() {
+        var present = new VideoContext.Modality("AVAILABLE", 1, 2, 2, null);
+        var context = new VideoContext(42L, "source", "test", present, present, List.of(), List.of(
+                new VideoContext.VisualEvidence(1L, 100, "first", "SUCCEEDED", 90.0, "stop()"),
+                new VideoContext.VisualEvidence(2L, 300_100, "second", "SUCCEEDED", 90.0, "const T& top()")));
+        var generic = chunk(0, "栈", "[\"栈\"]", "[1.0,0.0]");
+        var exact = chunk(1, "接口", "[]", "[1.0,0.0]");
+        for (var c : List.of(generic, exact)) {
+            c.setContextVersion("fingerprint");
+            c.setProcessorVersion(2);
+        }
+        var index = new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(generic, exact), "");
+        var vector = List.of(1.0, 0.0);
+        when(qdrantIndexService.search(42L, "fingerprint", 2, vector, 24)).thenReturn(List.of(1L, 2L));
+
+        var capped = retriever.rank(index, "栈的 top() 怎么写", vector, VideoKnowledgeRetriever.Ranking.CAPPED, 2);
+        assertThat(capped).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex).containsExactly(1, 0);
+        assertThat(capped.getFirst().score() - capped.getLast().score()).isBetween(0.009, 0.011);
+        var rrf = retriever.rank(index, "栈的 top() 怎么写", vector, VideoKnowledgeRetriever.Ranking.RRF, 2);
+        assertThat(rrf).extracting(VideoKnowledgeRetriever.KnowledgeSearchHit::chunkIndex).containsExactly(1, 0);
+        verify(qdrantIndexService, org.mockito.Mockito.times(2)).search(42L, "fingerprint", 2, vector, 24);
+    }
+
     private VideoKnowledgeChunk chunk(int index, String summary, String keywords, String embedding) {
         VideoKnowledgeChunk chunk = new VideoKnowledgeChunk();
         chunk.setChunkIndex(index);

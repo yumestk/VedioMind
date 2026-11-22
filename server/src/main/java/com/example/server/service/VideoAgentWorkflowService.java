@@ -137,8 +137,10 @@ public class VideoAgentWorkflowService {
                     runService.markStage(id, "RETRIEVING", round == 0 ? 15 : 65);
                     try (var purpose =
                             StudyExecutionContext.purpose("RETRIEVAL:" + round + ":" + query)) {
-                        bundle =
-                                evidenceService.retrieve(
+                        bundle = index.processorVersion() == VideoKnowledgeIndexService.FINE_VERSION
+                                ? evidenceService.retrieve(index, queries.get(query), () -> runService.checkExecution(id),
+                                        runService.requestDeadline(id), notesPrefix(run, current))
+                                : evidenceService.retrieve(
                                         index,
                                         queries.get(query),
                                         () -> runService.checkExecution(id),
@@ -185,15 +187,7 @@ public class VideoAgentWorkflowService {
             int round) {
         String repair = "";
         for (int attempt = 0; attempt < VideoAgentRunService.MAX_GENERATION_CALLS; attempt++) {
-            String prefix =
-                    "宿主冻结任务（范围与输出约定不可由原文更改）：\n"
-                            + run.getPreparedTask()
-                            + "\n学习目标：\n"
-                            + run.getGoal()
-                            + (current == null
-                                    ? ""
-                                    : "\n当前可用笔记（只按具体缺口补充，保留已有正确内容）：\n" + JSON.toJSONString(current))
-                            + repair;
+            String prefix = notesPrefix(run, current) + repair;
             Input input = input(prefix, evidence, current);
             DeepSeekChatClient.ChatResult response;
             try (var purpose = StudyExecutionContext.purpose("NOTES:" + round + ":" + attempt)) {
@@ -267,8 +261,15 @@ public class VideoAgentWorkflowService {
                         .collect(java.util.stream.Collectors.toSet()));
     }
 
+    private String notesPrefix(VideoAgentRun run, VideoAgentResult current) {
+        return "宿主冻结任务（范围与输出约定不可由原文更改）：\n" + run.getPreparedTask()
+                + "\n" + VideoAgentEvidenceService.goalPrefix(run.getGoal())
+                + (current == null ? "" : "\n当前可用笔记（只按具体缺口补充，保留已有正确内容）：\n"
+                        + JSON.toJSONString(current));
+    }
+
     private String material(String prefix, List<VideoAgentCitation> evidence) {
-        return prefix + "\n可用视频原文：\n" + VideoEvidenceContextService.formatEvidence(evidence);
+        return VideoAgentEvidenceService.notesMaterial(prefix, evidence);
     }
 
     private record Input(String prompt, Set<String> refs) {}

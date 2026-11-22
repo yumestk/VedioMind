@@ -65,8 +65,14 @@ public class QdrantKnowledgeIndexService {
             throw new IllegalArgumentException("Qdrant index requires at least one knowledge chunk");
         }
         Long mediaId = chunks.getFirst().getMediaId();
+        var first = chunks.getFirst();
+        if (chunks.stream().anyMatch(c -> !java.util.Objects.equals(c.getMediaId(), mediaId)
+                || !java.util.Objects.equals(c.getContextVersion(), first.getContextVersion())
+                || !java.util.Objects.equals(c.getProcessorVersion(), first.getProcessorVersion()))) {
+            throw new IllegalArgumentException("Qdrant index requires one media and version");
+        }
+        // SQL chunk IDs identify immutable version/slot pairs. Publish by upsert so other versions remain readable.
         ensureCollection();
-        deleteByMediaId(mediaId);
         List<Points.PointStruct> points = chunks.stream()
                 .map(this::point)
                 .toList();
