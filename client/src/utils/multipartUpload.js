@@ -1,4 +1,4 @@
-import { currentUser } from '../api/session'
+import { currentUser } from '../api/session.js'
 import {
   abortMediaUpload,
   completeMediaUpload,
@@ -6,7 +6,7 @@ import {
   getMediaUploadPartUrl,
   initiateMediaUpload,
   putMediaUploadPart
-} from '../api/media'
+} from '../api/media.js'
 import {
   isRetriableUploadError,
   shouldDiscardUploadSession,
@@ -19,7 +19,16 @@ const STORAGE_KEY = 'pending-media-upload'
 
 export const fileFingerprint = file => `${file.name}:${file.size}:${file.lastModified}`
 
-const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+const wait = (milliseconds, signal) => new Promise(resolve => {
+  if (signal.aborted) return resolve()
+  const finish = () => {
+    clearTimeout(timer)
+    signal.removeEventListener('abort', finish)
+    resolve()
+  }
+  const timer = setTimeout(finish, milliseconds)
+  signal.addEventListener('abort', finish, { once: true })
+})
 
 export class MultipartUploader {
   constructor(file, userId, onProgress) {
@@ -145,7 +154,7 @@ export class MultipartUploader {
       this.activeBytes.set(partNumber, 0)
       try {
         this.requireOwner()
-        const { url } = await getMediaUploadPartUrl(this.sessionId, partNumber)
+        const { url } = await getMediaUploadPartUrl(this.sessionId, partNumber, controller.signal)
         const etag = await putMediaUploadPart(url, blob, controller.signal, loaded => {
           this.activeBytes.set(partNumber, loaded)
           this.emitProgress()
@@ -157,10 +166,11 @@ export class MultipartUploader {
         return
       } catch (error) {
         this.activeBytes.delete(partNumber)
-        if (this.paused || this.cancelled) return
+        if (controller.signal.aborted || this.paused || this.cancelled) return
         if (attempt === MAX_ATTEMPTS || !isRetriableUploadError(error)) throw error
         this.emitProgress({ phase: 'retrying', retryAttempt: attempt })
-        await wait(uploadRetryDelay(attempt))
+        await wait(uploadRetryDelay(attempt), controller.signal)
+        if (controller.signal.aborted) return
       } finally {
         this.controllers.delete(controller)
       }

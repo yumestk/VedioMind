@@ -5,6 +5,8 @@ const errorStatus = error => error?.response?.status ?? error?.status
 
 export const isRetriableUploadError = error => {
   if (error?.code === 'ERR_CANCELED') return false
+  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'TimeoutError') return true
+  if (error?.name === 'AbortError') return error.cause?.name === 'TimeoutError'
   const status = errorStatus(error)
   return status == null || status === 408 || status === 429 || status >= 500
 }

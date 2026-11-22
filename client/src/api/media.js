@@ -1,5 +1,9 @@
 import axios from 'axios'
-import http from './http'
+import http from './http.js'
+
+const configuredPartTimeout = Number(import.meta.env?.VITE_UPLOAD_PART_TIMEOUT_MS)
+const partTimeout = Number.isSafeInteger(configuredPartTimeout) && configuredPartTimeout > 0
+  && configuredPartTimeout <= 2_147_483_647 ? configuredPartTimeout : 5 * 60_000
 
 export const listMedia = async () => {
   const response = await http.get('/media')
@@ -59,11 +63,11 @@ export const getMediaUpload = async (sessionId) => {
   return response.data
 }
 
-export const getMediaUploadPartUrl = async (sessionId, partNumber) => {
+export const getMediaUploadPartUrl = async (sessionId, partNumber, signal) => {
   const response = await http.post(
     `/media/uploads/${sessionId}/parts/${partNumber}/url`,
     null,
-    {}
+    { signal }
   )
   return response.data
 }
@@ -71,6 +75,8 @@ export const getMediaUploadPartUrl = async (sessionId, partNumber) => {
 export const putMediaUploadPart = async (url, part, signal, onProgress) => {
   const response = await axios.put(url, part, {
     signal,
+    timeout: partTimeout,
+    transitional: { clarifyTimeoutError: true },
     headers: { 'Content-Type': 'application/octet-stream' },
     onUploadProgress: ({ loaded }) => onProgress?.(loaded)
   })
