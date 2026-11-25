@@ -68,6 +68,7 @@ public class StudyAgentRuntime {
                     runs.saveCompletedStep(runId, "AGENT_BUDGET", round, null, state);
                 }
                 finishing = "FINALIZE".equals(state.getString("phase"));
+                var readBeforeDecision = new LinkedHashMap<>(read);
                 var allowed = decisionTools(state);
                 runs.markStage(runId, "AGENT_DECISION", Math.min(85, 10 + round * 15));
                 String cached = runs.completedStep(runId, "AGENT_DECISION", round).orElse(null);
@@ -144,6 +145,7 @@ public class StudyAgentRuntime {
                         throw new GovernanceException("TOOL_NOT_ALLOWED", "证据ID未由当前任务检索返回");
                 history.add(decision);
                 boolean invalidBatch = errors.stream().anyMatch(Objects::nonNull);
+                boolean correctedThisRound = false;
                 for (int i = 0; i < wire.size(); i++) {
                     // A capacity-rejected batch executes no tools; it still consumes a model
                     // decision and the finite argument-correction budget.
@@ -166,21 +168,28 @@ public class StudyAgentRuntime {
                                             : errors.get(i);
                         else {
                             String signature = call.name() + ":" + canonical(call.args());
-                            if (seen.contains(signature))
-                                throw new GovernanceException("NO_PROGRESS", "重复工具调用没有新增进展");
-                            try (var purpose =
-                                    StudyExecutionContext.purpose(
-                                            "AGENT_TOOL:" + round + ":" + i)) {
-                                result = dispatcher.execute(call, runId, skills, discovered, read);
+                            if (seen.contains(signature)) {
+                                if (read.isEmpty() || "save_note".equals(call.name()))
+                                    throw new GovernanceException("NO_PROGRESS", "重复工具调用没有新增进展");
+                                result = JSONObject.of("error", "NO_PROGRESS");
+                            } else try (var purpose =
+                                    StudyExecutionContext.purpose("AGENT_TOOL:" + round + ":" + i)) {
+                                result = dispatcher.execute(call, runId, skills, discovered, readBeforeDecision);
+                                if ("save_note".equals(call.name())) return; // Save and terminal state committed together.
                                 if ("read_evidence".equals(call.name())
                                         && result.getList("evidence", VideoAgentCitation.class).stream()
-                                                .allMatch(e -> read.containsKey(e.ref())))
-                                    throw new GovernanceException("NO_PROGRESS", "重复读取没有新增原文");
+                                                .allMatch(e -> read.containsKey(e.ref()))
+                                        && result.getList("deferredWindowAnchors", String.class).isEmpty())
+                                    result = JSONObject.of("error", "NO_PROGRESS");
                             } catch (GovernanceException e) {
                                 if (!Set.of("INVALID_TOOL_ARGUMENTS", "EVIDENCE_WINDOW_TOO_LARGE").contains(e.code())) throw e;
-                                result =
-                                        JSONObject.of("error", e.code(), "message", e.getMessage());
+                                result = JSONObject.of("error", e.code(), "message", e.getMessage());
                             }
+                        }
+                        if (!invalidBatch && (!read.isEmpty() || "read_evidence".equals(call.name()))
+                                && !fitsSave(history, state, read, batch, wire, i, result)) {
+                            result = "read_evidence".equals(call.name()) ? deferredRead(call)
+                                    : JSONObject.of("error", result.getOrDefault("error", "TOOL_OUTPUT_BUDGET"));
                         }
                         runs.saveCompletedStep(
                                 runId,
@@ -195,23 +204,22 @@ public class StudyAgentRuntime {
                                         (System.nanoTime() - toolStarted) / 1_000_000),
                                 result);
                     }
-                    history.add(
-                            JSONObject.of(
-                                    "role",
-                                    "tool",
-                                    "tool_call_id",
-                                    wire.getJSONObject(i).getString("id"),
-                                    "content",
-                                    AiCallLedger.canonicalJson(result)));
+                    history.add(observation(wire.getJSONObject(i), result));
                     if (result.containsKey("error")) {
-                        if ("EVIDENCE_WINDOW_TOO_LARGE".equals(result.getString("error"))) {
-                            // A capacity rejection is not malformed input. Still spend the tool/round
-                            // and remember it on replay so repeating the same request cannot loop.
+                        String error = result.getString("error");
+                        if ("EVIDENCE_WINDOW_TOO_LARGE".equals(error)) {
                             seen.add(call.name() + ":" + canonical(call.args()));
                             continue;
                         }
-                        if (++corrections > StudyAgentSpec.CORRECTIONS)
+                        if ("NO_PROGRESS".equals(error) || "TOOL_OUTPUT_BUDGET".equals(error)) {
+                            if (read.isEmpty())
+                                throw new GovernanceException(error, "重复工具调用没有新增进展");
+                            finishing = true;
+                            continue;
+                        }
+                        if (!correctedThisRound && ++corrections > StudyAgentSpec.CORRECTIONS)
                             throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "工具参数修正次数已耗尽");
+                        correctedThisRound = true;
                         continue;
                     }
                     seen.add(call.name() + ":" + canonical(call.args()));
@@ -224,14 +232,15 @@ public class StudyAgentRuntime {
                             discovered.putIfAbsent(hit.getString("ref"), null);
                         }
                         noEvidence = discovered.size() == before ? noEvidence + 1 : 0;
-                        if (noEvidence >= 2)
-                            throw new GovernanceException("NO_NEW_EVIDENCE", "连续检索未获得新增证据");
+                        if (noEvidence >= 2) {
+                            if (read.isEmpty())
+                                throw new GovernanceException("NO_NEW_EVIDENCE", "连续检索未获得新增证据");
+                            finishing = true;
+                        }
                     }
                     if ("read_evidence".equals(call.name()))
                         result.getList("evidence", VideoAgentCitation.class)
                                 .forEach(e -> read.put(e.ref(), e));
-                    if ("save_note".equals(call.name()) && artifacts.deliver(runId, null, null))
-                        return;
                 }
             }
             throw new GovernanceException("TASK_BUDGET_EXHAUSTED", "模型决策轮数已达上限");
@@ -241,6 +250,41 @@ public class StudyAgentRuntime {
                     && artifacts.deliver(runId, stop.code(), stop.getMessage())) return;
             throw stop;
         }
+    }
+
+    private static JSONObject observation(JSONObject wire, JSONObject result) {
+        return JSONObject.of("role", "tool", "tool_call_id", wire.getString("id"),
+                "content", AiCallLedger.canonicalJson(result));
+    }
+
+    private static JSONObject deferredRead(StudyAgentToolDispatcher.Call call) {
+        return JSONObject.of("error", "EVIDENCE_WINDOW_TOO_LARGE",
+                "deferredWindowAnchors", call.args().getList("refs", String.class),
+                "message", "本轮剩余输入预算不足以容纳完整窗口。请改读较短窗口或用已读证据保存。");
+    }
+
+    private boolean fitsSave(List<JSONObject> history, JSONObject state, Map<String, VideoAgentCitation> read,
+                             List<StudyAgentToolDispatcher.Call> batch, JSONArray wire, int at, JSONObject result) {
+        var nextRefs = new LinkedHashSet<>(read.keySet());
+        if (result.containsKey("evidence"))
+            result.getList("evidence", VideoAgentCitation.class).forEach(e -> nextRefs.add(e.ref()));
+        var nextState = new JSONObject(state);
+        nextState.put("phase", "FINALIZE");
+        nextState.put("allowedEvidenceRefs", new ArrayList<>(nextRefs));
+        nextState.put("readEvidenceCount", nextRefs.size());
+        // These counters can grow across this batch. Bound their serialized widths for the next request.
+        nextState.put("unreadLeadCount", Integer.MAX_VALUE);
+        nextState.put("timeRemainingMs", Long.MAX_VALUE);
+        nextState.put("accountedTokensRemaining", Long.MAX_VALUE);
+        nextState.put("outputTokens", StudyExecutionContext.require().task.budget().outputTokens());
+        var nextHistory = new ArrayList<>(history);
+        nextHistory.add(observation(wire.getJSONObject(at), result));
+        for (int i = at + 1; i < batch.size(); i++) {
+            var call = batch.get(i);
+            nextHistory.add(observation(wire.getJSONObject(i), "read_evidence".equals(call.name())
+                    ? deferredRead(call) : JSONObject.of("error", "INVALID_TOOL_ARGUMENTS")));
+        }
+        return estimateDecision(nextHistory, nextState) <= promptBudget.inputLimit();
     }
 
     private JSONObject decisionBudget(
@@ -300,7 +344,8 @@ public class StudyAgentRuntime {
         }
         // Initial conservative margin: two further similarly sized decisions (save + repair),
         // plus 4k for growth. The ledger still checks every real attempt; no budget is enlarged.
-        if (!finishing && !firstRead && tokens < 3 * (input + state.getIntValue("outputTokens")) + 4096) {
+        if (!finishing && !firstRead && (input > promptBudget.inputLimit()
+                || tokens < 3 * (input + state.getIntValue("outputTokens")) + 4096)) {
             finishing = true;
             state.put("phase", "FINALIZE");
             input = estimateDecision(history, state);

@@ -124,14 +124,14 @@ public class StudyAgentToolDispatcher {
                         "notice", "按请求顺序装入完整有界窗口；deferredWindowAnchors的窗口未完整读取，可另选锚点再读。邻域不代表完整章节；保留条件、指代和观点归属。只有实际返回的ID可引用。");
             }
             case "get_learning_state" -> result = (JSONObject) artifacts.learningState(task);
-            case "save_note" ->
-                    result =
-                            artifacts.saveCandidate(
-                                    runId,
-                                    call.args().getString("slotId"),
-                                    StudyArtifactService.noteFromPoints(call.args().getJSONObject("note")),
-                                    call.args().getList("coverageMaterialIds", Long.class),
-                                    read);
+            case "save_note" -> {
+                return artifacts.saveAndDeliver(
+                        runId,
+                        call.args().getString("slotId"),
+                        StudyArtifactService.noteFromPoints(call.args().getJSONObject("note")),
+                        call.args().getList("coverageMaterialIds", Long.class),
+                        read);
+            }
             default -> throw new GovernanceException("TOOL_NOT_ALLOWED", "未知工具");
         }
         runs.checkExecution(runId);

@@ -96,6 +96,17 @@ public class StudyArtifactService {
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
+    public JSONObject saveAndDeliver(
+            String runId, String slotId, JSONObject payload, List<Long> coverage,
+            Map<String, VideoAgentCitation> readEvidence) {
+        var receipt = saveCandidate(runId, slotId, payload, coverage, readEvidence);
+        if (!deliver(runId, null, null))
+            throw new GovernanceException("STALE_EXECUTION", "保存笔记时执行代次已变化");
+        receipt.put("status", "DELIVERED");
+        return receipt;
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public JSONObject saveCandidate(
             String runId,
             String slotId,
@@ -229,14 +240,7 @@ public class StudyArtifactService {
             stopCode = "TASK_BUDGET_EXHAUSTED";
             reason = "实际用量超过预算，交付已保存的部分笔记";
         }
-        if (complete && stopCode == null) control.completeLocked(run);
-        else
-            control.stop(
-                    runId,
-                    stopCode == null ? "TASK_INCOMPLETE" : stopCode,
-                    reason == null ? "已交付部分笔记；所选材料覆盖或证据缺口尚未完成" : reason,
-                    "PARTIAL",
-                    true);
+        control.finishDeliveredLocked(run, complete, stopCode, reason);
         return true;
     }
 

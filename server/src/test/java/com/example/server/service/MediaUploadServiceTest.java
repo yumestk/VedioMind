@@ -61,6 +61,76 @@ class MediaUploadServiceTest {
     }
 
     @Test
+    void abortRechecksStateAfterWaitingForConcurrentCompletion() throws Exception {
+        var sessionLock = new java.util.concurrent.locks.ReentrantLock();
+        var cancellingAtLock = new java.util.concurrent.CountDownLatch(1);
+        var completingInStorage = new java.util.concurrent.CountDownLatch(1);
+        var finishStorage = new java.util.concurrent.CountDownLatch(1);
+        RLock shared = mock(RLock.class);
+        when(redissonClient.getLock("lock:media-upload:session-1")).thenReturn(shared);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (sessionLock.isLocked()) cancellingAtLock.countDown();
+            sessionLock.lock();
+            return null;
+        }).when(shared).lock();
+        when(shared.isHeldByCurrentThread()).thenAnswer(invocation -> sessionLock.isHeldByCurrentThread());
+        org.mockito.Mockito.doAnswer(invocation -> {
+            sessionLock.unlock();
+            return null;
+        }).when(shared).unlock();
+
+        var saved = new java.util.concurrent.atomic.AtomicReference<>("UPLOADING");
+        when(sessionMapper.selectById("session-1")).thenAnswer(invocation -> {
+            var row = session(5);
+            row.setStatus(saved.get());
+            return row;
+        });
+        when(sessionMapper.updateById(any(MediaUploadSession.class))).thenAnswer(invocation -> {
+            saved.set(invocation.<MediaUploadSession>getArgument(0).getStatus());
+            return 1;
+        });
+        when(objectStorageService.objectSize("media/random.mp4")).thenAnswer(invocation -> {
+            completingInStorage.countDown();
+            assertThat(finishStorage.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            return 5L;
+        });
+        when(objectStorageService.calculateSha256("media/random.mp4")).thenReturn("content-hash");
+        var media = new MediaFile();
+        media.setId(42L);
+        when(mediaService.registerLocalUpload(7L, "lesson.mp4", "media/random.mp4", "video/mp4", 5L,
+                "content-hash")).thenReturn(MediaListItemResponse.from(media));
+
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var complete = workers.submit(() -> uploadService.complete("session-1",
+                    new CompleteMediaUploadRequest(List.of()), 7L));
+            assertThat(completingInStorage.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var abort = workers.submit(() -> uploadService.abort("session-1", 7L));
+            assertThat(cancellingAtLock.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            finishStorage.countDown();
+            assertThat(complete.get(5, java.util.concurrent.TimeUnit.SECONDS).id()).isEqualTo(42L);
+            assertThatThrownBy(() -> abort.get(5, java.util.concurrent.TimeUnit.SECONDS))
+                    .hasCauseInstanceOf(IllegalStateException.class);
+            assertThat(saved.get()).isEqualTo("COMPLETED");
+            verify(objectStorageService, never()).abortMultipartUpload(anyString(), anyString());
+        } finally {
+            finishStorage.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    void abortRejectsAnInactiveSessionWithoutCallingStorage() {
+        var row = session(5);
+        row.setStatus("ABORTED");
+        when(sessionMapper.selectById("session-1")).thenReturn(row);
+        assertThatThrownBy(() -> uploadService.abort("session-1", 7L))
+                .isInstanceOf(IllegalStateException.class);
+        verify(objectStorageService, never()).abortMultipartUpload(anyString(), anyString());
+        verify(sessionMapper, never()).updateById(any(MediaUploadSession.class));
+    }
+
+    @Test
     void initiatesADirectMultipartUploadForVideoFiles() {
         when(objectStorageService.resolveContentType("video/mp4", "lesson.mp4")).thenReturn("video/mp4");
         when(objectStorageService.createObjectKey("lesson.mp4")).thenReturn("media/random.mp4");

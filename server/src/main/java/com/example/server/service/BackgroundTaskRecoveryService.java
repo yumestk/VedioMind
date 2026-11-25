@@ -151,7 +151,7 @@ public class BackgroundTaskRecoveryService {
         LocalDateTime now = now();
         LocalDateTime waitStarted = quotaWait && task.waitStarted == null ? now : task.waitStarted;
         Task waiting = new Task(task.id, task.mediaId, quotaWait ? "WAITING_FOR_QUOTA" : "RETRYING",
-                task.retries, task.version, null, waitStarted, task.deadline);
+                task.retries, task.version, null, waitStarted, task.deadline, now);
         if (expire(type, waiting, now)) return;
         int retries = quotaWait ? task.retries : task.retries + 1;
         long seconds = quotaWait ? Math.max(1, ((AiRateLimitExceededException) error).retryAfterSeconds())
@@ -173,14 +173,20 @@ public class BackgroundTaskRecoveryService {
         LocalDateTime cutoff = now().minusSeconds(30);
         agentControl.expireDue();
         for (TaskType type : TaskType.values()) {
-            for (Task task : jdbc.query(select(type) + " WHERE (status IN ('WAITING_FOR_QUOTA', 'RETRYING','RETRY_WAIT') "
-                    + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
-                    ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : " OR status IN ('QUEUED','RUNNING')")
-                    + ") AND updated_at <= ? ORDER BY updated_at LIMIT 100",
+            for (Task task : jdbc.query(select(type) + " WHERE " + recoverable(type)
+                    + " AND updated_at <= ? ORDER BY updated_at LIMIT 100",
                     (rs, row) -> task(rs), cutoff, cutoff)) {
                 recover(type, task);
             }
         }
+    }
+
+    private String recoverable(TaskType type) {
+        String due = "(status IN ('WAITING_FOR_QUOTA','RETRYING','RETRY_WAIT') AND next_attempt_at <= ?)";
+        return "(" + due + (type == TaskType.ANALYSIS
+                ? " OR (status NOT IN ('WAITING_FOR_QUOTA','RETRYING','RETRY_WAIT')"
+                    + " AND status NOT IN " + StudyRunStatus.TERMINAL_SQL + ")"
+                : " OR status IN ('QUEUED','RUNNING')") + ")";
     }
 
     private void recover(TaskType type, Task candidate) {
@@ -191,20 +197,29 @@ public class BackgroundTaskRecoveryService {
             locked = lock.tryLock(0, TimeUnit.SECONDS);
             if (!locked) return;
             Task task = load(type, candidate.id);
-            if (task == null || task.terminal() || task.version != candidate.version) return;
+            if (task == null || task.terminal() || task.version != candidate.version || !task.status.equals(candidate.status)
+                    || task.updatedAt.isAfter(now().minusSeconds(30))) return;
             LocalDateTime now = now();
             if (expire(type, task, now)) return;
-            if(type==TaskType.AGENT && "RUNNING".equals(task.status)) {
-                if (agentControl.recoverRunning(task.id,task.version)) wakeup = load(type,task.id);
+            if (type == TaskType.AGENT && "RUNNING".equals(task.status)) {
+                if (agentControl.recoverRunning(task.id, task.version)) wakeup = load(type, task.id);
+            } else if (type == TaskType.ANALYSIS && !task.pending()) {
+                if (task.retries >= MAX_FAILURE_RETRIES) {
+                    fail(type, task, "解析任务中断，已达到恢复次数上限", false);
+                } else if (jdbc.update("UPDATE analysis_jobs SET status='RETRYING',"
+                                + " dispatch_version=dispatch_version+1, retry_count=retry_count+1,"
+                                + " next_attempt_at=?, updated_at=? WHERE id=? AND dispatch_version=?"
+                                + " AND status=? AND updated_at <= ?",
+                        now, now, task.id, task.version, task.status, now.minusSeconds(30)) == 1) {
+                    wakeup = load(type, task.id);
+                }
             } else {
-            // Claim only publication; keep the due time so an immediate delivery can run.
-            int claimed = jdbc.update("UPDATE " + type.table + " SET updated_at = ? WHERE id = ? "
-                            + "AND dispatch_version = ? AND (status IN ('WAITING_FOR_QUOTA', 'RETRYING','RETRY_WAIT') "
-                            + "AND next_attempt_at <= ?" + (type == TaskType.ANALYSIS
-                            ? " OR (status = 'QUEUED' AND job_type = 'KNOWLEDGE_INDEX')" : " OR status IN ('QUEUED','RUNNING')")
-                            + ") AND updated_at <= ?",
-                    now, task.id, task.version, now.minusSeconds(30), now.minusSeconds(30));
-            if (claimed == 1) wakeup = task;
+                // Keep the dispatch version for queued or already scheduled retries.
+                int claimed = jdbc.update("UPDATE " + type.table + " SET updated_at = ? WHERE id = ?"
+                                + " AND dispatch_version = ? AND " + recoverable(type)
+                                + " AND updated_at <= ?",
+                        now, task.id, task.version, now.minusSeconds(30), now.minusSeconds(30));
+                if (claimed == 1) wakeup = task;
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -263,14 +278,14 @@ public class BackgroundTaskRecoveryService {
     }
 
     private String select(TaskType type) {
-        return "SELECT id, media_id, status, retry_count, dispatch_version, next_attempt_at, quota_wait_started_at, "
+        return "SELECT id, media_id, status, retry_count, dispatch_version, next_attempt_at, quota_wait_started_at, updated_at, "
                 + (type == TaskType.AGENT ? "deadline_at" : "NULL AS deadline_at") + " FROM " + type.table;
     }
 
     private Task task(ResultSet rs) throws SQLException {
         return new Task(rs.getString("id"), rs.getLong("media_id"), rs.getString("status"),
                 rs.getInt("retry_count"), rs.getLong("dispatch_version"), date(rs, "next_attempt_at"),
-                date(rs, "quota_wait_started_at"), date(rs, "deadline_at"));
+                date(rs, "quota_wait_started_at"), date(rs, "deadline_at"), date(rs, "updated_at"));
     }
 
     private LocalDateTime date(ResultSet rs, String column) throws SQLException {
@@ -285,7 +300,7 @@ public class BackgroundTaskRecoveryService {
     }
 
     private record Task(String id, long mediaId, String status, int retries, long version,
-                        LocalDateTime nextAttempt, LocalDateTime waitStarted, LocalDateTime deadline) {
+                        LocalDateTime nextAttempt, LocalDateTime waitStarted, LocalDateTime deadline, LocalDateTime updatedAt) {
         boolean terminal() {return StudyRunStatus.terminal(status);}
         boolean pending() { return "QUEUED".equals(status) || "WAITING_FOR_QUOTA".equals(status) || "RETRYING".equals(status) || "RETRY_WAIT".equals(status); }
     }

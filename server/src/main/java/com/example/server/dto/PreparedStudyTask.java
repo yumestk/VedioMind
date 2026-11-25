@@ -62,12 +62,13 @@ public record PreparedStudyTask(
             long activeLimitMs,
             long wallLimitMs,
             String runtimeVersion) {
+        public static final String BOUNDED_RUNTIME_VERSION = "bounded-study-v9";
         /**
          * P4 tool-loop profile, deliberately separate from the currently enabled short workflows.
          */
         public static Budget boundedStudy(int input, int output, int materials) {
             return new Budget(
-                    input, output, 8, 6, materials, 96000, 120000, 600000, "bounded-study-v8");
+                    input, output, 8, 6, materials, 96000, 120000, 600000, BOUNDED_RUNTIME_VERSION);
         }
 
         public static Budget standard(

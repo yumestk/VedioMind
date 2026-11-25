@@ -75,11 +75,12 @@ class StudyAgentRuntimeMySqlTest {
             String url = System.getenv("STUDY_P4_MYSQL_URL");
             if (!url.matches("jdbc:mysql://[^/]+/vediomind_study_test_[A-Za-z0-9_]+(\\?.*)?"))
                 throw new IllegalArgumentException("Isolated study database required");
-            var db =
-                    new DriverManagerDataSource(
-                            url,
-                            System.getenv("AUTH_TEST_MYSQL_USER"),
-                            System.getenv("AUTH_TEST_MYSQL_PASSWORD"));
+            var config = new com.zaxxer.hikari.HikariConfig();
+            config.setJdbcUrl(url);
+            config.setUsername(System.getenv("AUTH_TEST_MYSQL_USER"));
+            config.setPassword(System.getenv("AUTH_TEST_MYSQL_PASSWORD"));
+            config.setMaximumPoolSize(8);
+            var db = new com.zaxxer.hikari.HikariDataSource(config);
             var flyway = Flyway.configure().dataSource(db).load();
             flyway.migrate();
             flyway.validate();
@@ -540,6 +541,130 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @Test
+    void aSaveCanOnlyCiteOriginalsSeenBeforeThatDecision() {
+        var refs = originals.stream().map(VideoAgentCitation::ref).toList();
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "事务定义"));
+        provider.call("read_evidence", Map.of("refs", List.of(refs.getFirst())));
+        var save = Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note(),
+                "coverageMaterialIds", List.of(10L, 11L));
+        var batch = Provider.message("read2", "read_evidence", Map.of("refs", List.of(refs.getLast())));
+        batch.getJSONArray("tool_calls").addAll(Provider.message("save", "save_note", save).getJSONArray("tool_calls"));
+        provider.replies.add(batch);
+        provider.call("save_note", save);
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(5);
+        assertThat(provider.requests.getLast().toJSONString()).contains("引用未读取的原文", refs.getLast());
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void aRejectedBatchOfThreeToolsCostsOneCorrection() {
+        var batch = Provider.message("bad", "read_skill", Map.of("name", "course-notes", "extra", true));
+        for (int i = 0; i < 2; i++) {
+            batch.getJSONArray("tool_calls").addAll(Provider.message("valid-" + i, "read_skill",
+                    Map.of("name", "course-notes")).getJSONArray("tool_calls"));
+        }
+        provider.replies.add(batch);
+        script();
+        provider.replies.removeIf(reply -> "get_course_structure".equals(
+                reply.getJSONArray("tool_calls").getJSONObject(0).getJSONObject("function").getString("name")));
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(5);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void candidateAcceptedAtTheDeadlinePublishesAsPartialBeforeTheScannerCanStopIt() {
+        script();
+        jdbc.execute("CREATE TRIGGER expire_after_candidate AFTER INSERT ON study_artifacts FOR EACH ROW "
+                + "UPDATE video_agent_runs SET active_remaining_ms=0 WHERE id=NEW.run_id");
+        try {
+            workflow.process("run", 0);
+            control.expireDue();
+            var run = runs.getRequired("run");
+            assertThat(run.getStatus()).isEqualTo("PARTIAL");
+            assertThat(run.getStopCode()).isEqualTo("TASK_DEADLINE_EXCEEDED");
+            assertThat(run.getResultJson()).isNotNull();
+            assertThat(artifacts.list("run", 2L)).hasSize(1);
+        } finally {
+            jdbc.execute("DROP TRIGGER expire_after_candidate");
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void wholeReadWindowsProtectTheNextSaveAndKeepDeferredAnchorsVisible(boolean batchReads) {
+        int originalSize = batchReads ? 13_200 : 8_000;
+        var refs = originals.stream().map(VideoAgentCitation::ref).toList();
+        var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 0, 600000, "", List.of(), 1,
+                List.of(43L, 44L), List.of());
+        for (long id : List.of(10L, 11L)) {
+            var m = new VideoContext.Modality("AVAILABLE", 1, 2, 2, null);
+            var c = new VideoContext(id, "t1-v1-p1", "TEST", m, m,
+                    List.of(new VideoContext.TranscriptEvidence(43L, 1000, 2000,
+                                    "a".repeat(batchReads || id == 10L ? originalSize : 50)),
+                            new VideoContext.TranscriptEvidence(44L, 300000, 301000, "b".repeat(originalSize))), List.of());
+            when(contexts.build(id)).thenReturn(c);
+            when(indexes.requireReady(id)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(c, List.of(), ""));
+        }
+        when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class)))
+                .thenReturn(List.of(List.of(hit), List.of(hit)));
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "定义"));
+        var secondAnchors = List.of("10:TRANSCRIPT:44:t1-v1-p1", "11:TRANSCRIPT:44:t1-v1-p1");
+        if (batchReads) {
+            var batch = Provider.message("read-0", "read_evidence", Map.of("refs", List.of(refs.getFirst())));
+            var others = List.of(refs.getLast(), secondAnchors.getFirst(), secondAnchors.getLast());
+            for (int i = 0; i < others.size(); i++) {
+                batch.getJSONArray("tool_calls").addAll(Provider.message("read-" + (i + 1), "read_evidence",
+                        Map.of("refs", List.of(others.get(i)))).getJSONArray("tool_calls"));
+            }
+            provider.replies.add(batch);
+        } else {
+            var initial = Provider.message("left", "read_evidence", Map.of("refs", List.of(refs.getFirst())));
+            initial.getJSONArray("tool_calls").addAll(Provider.message("right", "read_evidence",
+                    Map.of("refs", List.of(refs.getLast()))).getJSONArray("tool_calls"));
+            provider.replies.add(initial);
+            provider.call("read_evidence", Map.of("refs", List.of(refs.getFirst(), secondAnchors.getFirst())));
+        }
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note(),
+                "coverageMaterialIds", List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(artifacts.list("run", 2L)).hasSize(1);
+        if (batchReads) {
+            assertThat(provider.requests.getLast().toJSONString()).contains("EVIDENCE_WINDOW_TOO_LARGE");
+        } else {
+            assertThat(provider.requests.get(4).toJSONString()).contains("deferredWindowAnchors", secondAnchors.getFirst());
+            var observation = jdbc.queryForObject("SELECT output_json FROM video_agent_steps "
+                    + "WHERE run_id='run' AND stage='AGENT_TOOL_0' AND round_no=3", String.class);
+            assertThat(JSON.parseObject(observation).getList("deferredWindowAnchors", String.class))
+                    .as("read observation %s", observation)
+                    .containsExactly(secondAnchors.getFirst());
+        }
+    }
+
+    @Test
+    void twoSearchesWithoutNewEvidenceKeepTheOptionToSaveAPartialNote() {
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "定义"));
+        provider.call("read_evidence", Map.of("refs", originals.stream().map(VideoAgentCitation::ref).toList()));
+        var searches = Provider.message("more-1", "search_course_evidence", Map.of("query", "例外"));
+        searches.getJSONArray("tool_calls").addAll(Provider.message("more-2", "search_course_evidence",
+                Map.of("query", "边界")).getJSONArray("tool_calls"));
+        provider.replies.add(searches);
+        var partial = note();
+        partial.put("gaps", List.of("尚未读取例外"));
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", partial,
+                "coverageMaterialIds", List.of(10L, 11L)));
+        workflow.process("run", 0);
+        assertThat(provider.requests).hasSize(5);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("PARTIAL");
+        assertThat(artifacts.list("run", 2L)).hasSize(1);
+    }
+
+    @Test
     void nativeCrossVideoTaskDeliversExactlyOnePrivateNoteAndHonestUsage() {
         script();
         workflow.process("run", 0);
@@ -744,11 +869,8 @@ class StudyAgentRuntimeMySqlTest {
             assertThatThrownBy(() -> workflow.process("run", 0))
                     .isInstanceOf(RuntimeException.class);
             assertThat(artifacts.list("run", 2L)).isEmpty();
-            assertThat(
-                            jdbc.queryForObject(
-                                    "SELECT status FROM study_artifacts WHERE run_id='run'",
-                                    String.class))
-                    .isEqualTo("CANDIDATE");
+            assertThat(jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM study_artifacts WHERE run_id='run'", Integer.class)).isZero();
             assertThat(runs.getRequired("run").getResultJson()).isNull();
             assertThat(control.events("run", 2L, 0))
                     .extracting(e -> e.get("type"))

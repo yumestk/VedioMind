@@ -191,6 +191,35 @@ class VideoAgentWorkflowServiceTest {
         verify(runs).markSucceeded(eq("r"), any(), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1500, 24_000})
+    void revisionPrioritizesNewOriginalsAndSkipsGenerationIfNoneFit(int newSize) {
+        var older = new ArrayList<>(bundle(1).evidence());
+        for (long id = 10; id < 50; id++) {
+            older.add(new VideoAgentCitation("TRANSCRIPT:" + id, "TRANSCRIPT", id, 1000, 2000,
+                    "a".repeat(600)));
+        }
+        var fresh = new VideoAgentCitation("TRANSCRIPT:2", "TRANSCRIPT", 2L, 3000, 4000,
+                "b".repeat(newSize));
+        when(evidence.retrieve(any(), anyString(), any(), any())).thenReturn(
+                new VideoAgentEvidenceService.EvidenceBundle(List.of(), older),
+                new VideoAgentEvidenceService.EvidenceBundle(List.of(), List.of(fresh)));
+        when(chat.chatWithinBudget(anyString(), anyList(), any(), any()))
+                .thenReturn(answer(notes(List.of("缺少例外"))), answer(notes(List.of())));
+        workflow.process("r", 0);
+        if (newSize == 1500) {
+            verify(chat).chatWithinBudget(anyString(), argThat(messages -> {
+                String prompt = messages.getFirst().content();
+                return prompt.contains("TRANSCRIPT:1\"") && prompt.contains("TRANSCRIPT:2\"") && prompt.contains("TRANSCRIPT:10\"")
+                        && prompt.indexOf("TRANSCRIPT:2\"") < prompt.indexOf("TRANSCRIPT:10\"");
+            }), any(), any());
+            verify(runs).markSucceeded(eq("r"), any(), any());
+        } else {
+            verify(chat, times(1)).chatWithinBudget(anyString(), anyList(), any(), any());
+            verify(runs).finishStopped(eq("r"), contains("新增原文未能装入"));
+        }
+    }
+
     static VideoAgentEvidenceService.EvidenceBundle bundle(long id) {
         return new VideoAgentEvidenceService.EvidenceBundle(
                 List.of(),

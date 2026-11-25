@@ -255,7 +255,8 @@ class StudyAuthorizationMySqlTest {
         var conversation=conversations.create(10L,2L,courseId);
         var command=command("cancel-test",conversation.id(),2L);
         runs.createQueuedRun(command);
-        jdbc.update("UPDATE video_agent_runs SET deadline_at=DATE_ADD(NOW(),INTERVAL 10 MINUTE) WHERE id='cancel-test'");
+        jdbc.update("UPDATE video_agent_runs SET deadline_at=? WHERE id='cancel-test'",
+                java.time.LocalDateTime.now().plusMinutes(10));
         long epoch=runs.beginAttempt("cancel-test",0).orElseThrow();
         try(var context=com.example.server.service.ai.StudyExecutionContext.open(command.preparedTask(),"cancel-test",epoch)) {
             runs.cancel("cancel-test",2L);

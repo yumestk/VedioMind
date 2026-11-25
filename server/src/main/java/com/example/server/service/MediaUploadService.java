@@ -230,24 +230,28 @@ public class MediaUploadService {
     }
 
     public void abort(String sessionId, Long userId) {
-        MediaUploadSession session = getOwnedSession(sessionId, userId);
-        if (ABORTED.equals(session.getStatus())) {
-            return;
-        }
-        if (COMPLETED.equals(session.getStatus())) {
-            throw new IllegalStateException("A completed upload cannot be aborted");
-        }
+        getOwnedSession(sessionId, userId);
+        RLock lock = redissonClient.getLock("lock:media-upload:" + sessionId);
+        lock.lock();
         try {
-            objectStorageService.abortMultipartUpload(session.getObjectKey(), session.getUploadId());
-        } catch (S3Exception exception) {
-            if (exception.awsErrorDetails() == null
-                    || !"NoSuchUpload".equals(exception.awsErrorDetails().errorCode())) {
-                throw exception;
+            MediaUploadSession session = getOwnedSession(sessionId, userId);
+            requireUploading(session);
+            try {
+                objectStorageService.abortMultipartUpload(session.getObjectKey(), session.getUploadId());
+            } catch (S3Exception exception) {
+                if (exception.awsErrorDetails() == null
+                        || !"NoSuchUpload".equals(exception.awsErrorDetails().errorCode())) {
+                    throw exception;
+                }
+            }
+            session.setStatus(ABORTED);
+            session.setUpdatedAt(LocalDateTime.now());
+            sessionMapper.updateById(session);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
             }
         }
-        session.setStatus(ABORTED);
-        session.setUpdatedAt(LocalDateTime.now());
-        sessionMapper.updateById(session);
     }
 
     private List<ObjectStorageService.StoredPart> validateParts(

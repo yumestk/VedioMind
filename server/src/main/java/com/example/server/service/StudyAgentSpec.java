@@ -2,6 +2,7 @@ package com.example.server.service;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.example.server.dto.PreparedStudyTask.Budget;
 import com.example.server.service.ai.AiCallLedger;
 
 import java.util.*;
@@ -153,7 +154,7 @@ public final class StudyAgentSpec {
     public static Map<String, String> snapshot() {
         return Map.of(
                 "runtime",
-                "bounded-study-v8",
+                Budget.BOUNDED_RUNTIME_VERSION,
                 "prompt",
                 AiCallLedger.sha256(systemPrompt()),
                 "tools",

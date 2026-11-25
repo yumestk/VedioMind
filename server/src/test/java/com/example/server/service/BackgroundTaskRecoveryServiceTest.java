@@ -60,7 +60,7 @@ class BackgroundTaskRecoveryServiceTest {
         jdbc = new JdbcTemplate(source);
         for (var type : BackgroundTaskRecoveryService.TaskType.values()) {
             jdbc.execute("CREATE TABLE " + type.table + " (id VARCHAR(36) PRIMARY KEY, media_id BIGINT, "
-                    + "status VARCHAR(24), progress INT DEFAULT 0, retry_count INT DEFAULT 0, "
+                    + "status VARCHAR(32), progress INT DEFAULT 0, retry_count INT DEFAULT 0, "
                     + "result_json VARCHAR(20000), error_message VARCHAR(2000), updated_at TIMESTAMP, finished_at TIMESTAMP, deadline_at TIMESTAMP,execution_epoch BIGINT DEFAULT 0,phase VARCHAR(40),stop_code VARCHAR(64),active_limit_ms BIGINT DEFAULT 120000,active_remaining_ms BIGINT DEFAULT 120000,active_started_at TIMESTAMP,waiting_ms BIGINT DEFAULT 0,wait_started_at TIMESTAMP,event_sequence BIGINT DEFAULT 0,learner_id BIGINT,prepared_task VARCHAR(10000))");
         }
         new ResourceDatabasePopulator(new ClassPathResource(
@@ -108,14 +108,38 @@ class BackgroundTaskRecoveryServiceTest {
     }
 
     @Test
-    void dispatchesCommittedIndexIntentsAndThrottlesDuplicateScans() {
+    void dispatchesBothKindsOfQueuedAnalysisAndThrottlesDuplicateScans() {
         insert(ANALYSIS);
         jdbc.update("UPDATE analysis_jobs SET job_type='KNOWLEDGE_INDEX', updated_at=? WHERE id='task-1'", now().minusMinutes(1));
         jdbc.update("INSERT INTO analysis_jobs (id, media_id, status, updated_at) VALUES ('ordinary',42,'QUEUED',?)", now().minusMinutes(1));
         service.recoverDueTasks();
         service.recoverDueTasks();
-        verify(messages, times(1)).syncSend(eq("video-analysis-topic"), any(Message.class), eq(5000L), eq(0));
+        verify(messages, times(2)).syncSend(eq("video-analysis-topic"), any(Message.class), eq(5000L), eq(0));
         assertThat(value(ANALYSIS, "retry_count")).isEqualTo(0);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "ANALYSIS, PREPARING", "ANALYSIS, EXTRACTING_AUDIO", "ANALYSIS, TRANSCRIBING",
+            "ANALYSIS, PROCESSING_VISUAL_EVIDENCE", "ANALYSIS, SUMMARIZING",
+            "ANALYSIS, GENERATING_CHAPTERS", "KNOWLEDGE_INDEX, BUILDING_KNOWLEDGE_INDEX"
+    })
+    void staleAnalysisStagesGetANewDispatchVersion(String jobType, String status) {
+        insert(ANALYSIS);
+        jdbc.update("UPDATE analysis_jobs SET job_type=?, status=?, updated_at=?",
+                jobType, status, now().minusSeconds(31));
+        service.recoverDueTasks();
+        assertThat(value(ANALYSIS, "dispatch_version")).isEqualTo(1L);
+        assertThat(value(ANALYSIS, "status")).isEqualTo("RETRYING");
+        verify(messages).syncSend(eq("video-analysis-topic"),
+                argThat((Message<?> message) -> "1".equals(message.getHeaders().get(BackgroundTaskRecoveryService.VERSION_HEADER))),
+                eq(5000L), eq(0));
+        service.execute(ANALYSIS, "task-1", 0, retries -> fail("Obsolete delivery was accepted"));
+        service.execute(ANALYSIS, "task-1", 1, retries -> {
+            assertThat(retries).isEqualTo(1);
+            succeed(ANALYSIS);
+        });
+        assertThat(value(ANALYSIS, "status")).isEqualTo("SUCCEEDED");
     }
 
     @Test

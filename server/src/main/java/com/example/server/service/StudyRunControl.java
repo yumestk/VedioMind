@@ -377,6 +377,13 @@ public class StudyRunControl {
                 Map.of("status", terminal, "code", code));
     }
 
+    /** The caller holds the run row lock and has saved the visible artifact and result. */
+    void finishDeliveredLocked(Map<String, Object> run, boolean complete, String code, String reason) {
+        if (complete && code == null) completeLocked(run);
+        else stopLocked(run, code == null ? "TASK_INCOMPLETE" : code,
+                reason == null ? "已交付部分笔记；所选材料覆盖或证据缺口尚未完成" : reason, "PARTIAL");
+    }
+
     public void completeLocked(Map<String, Object> r) {
         String id = (String) r.get("id");
         var now = now();

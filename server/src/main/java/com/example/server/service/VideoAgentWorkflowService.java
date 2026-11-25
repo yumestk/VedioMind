@@ -124,7 +124,7 @@ public class VideoAgentWorkflowService {
                                     .limit(3)
                                     .map(g -> run.getGoal() + "；待查：" + g)
                                     .toList();
-            int before = evidence.size();
+            Set<String> newRefs = new LinkedHashSet<>();
             for (int query = 0; query < queries.size(); query++) {
                 String stage = "RETRIEVAL_" + query;
                 String cached = runService.completedStep(id, stage, round).orElse(null);
@@ -150,10 +150,12 @@ public class VideoAgentWorkflowService {
                     // snapshot.
                     runService.saveCompletedStep(id, stage, round, queries.get(query), bundle);
                 }
-                bundle.evidence().forEach(value -> evidence.putIfAbsent(value.ref(), value));
+                for (var value : bundle.evidence()) {
+                    if (evidence.putIfAbsent(value.ref(), value) == null) newRefs.add(value.ref());
+                }
             }
             if (evidence.isEmpty()) throw new IllegalArgumentException("未检索到可用视频原文，无法生成有依据的笔记");
-            if (round > 0 && evidence.size() == before) {
+            if (round > 0 && newRefs.isEmpty()) {
                 runService.finishStopped(id, "补充检索未找到新增原文；仍有待核实项");
                 return;
             }
@@ -162,7 +164,12 @@ public class VideoAgentWorkflowService {
             else {
                 runService.markStage(
                         id, round == 0 ? "DRAFTING" : "REVISING", round == 0 ? 35 : 80);
-                current = generateNotes(run, current, evidence, round);
+                var generated = generateNotes(run, current, evidence, newRefs, round);
+                if (generated == null) {
+                    runService.finishStopped(id, "补充检索的新增原文未能装入修订请求；仍有待核实项");
+                    return;
+                }
+                current = generated;
                 if (!current.knowledgePoints().isEmpty())
                     runService.saveUsableResult(id, current, usedCitations(current, evidence));
                 runService.saveCompletedStep(id, "NOTES", round, queries, current);
@@ -184,11 +191,12 @@ public class VideoAgentWorkflowService {
             VideoAgentRun run,
             VideoAgentResult current,
             Map<String, VideoAgentCitation> evidence,
-            int round) {
+            Set<String> newRefs, int round) {
         String repair = "";
         for (int attempt = 0; attempt < VideoAgentRunService.MAX_GENERATION_CALLS; attempt++) {
             String prefix = notesPrefix(run, current) + repair;
-            Input input = input(prefix, evidence, current);
+            Input input = input(prefix, evidence, current, newRefs);
+            if (round > 0 && Collections.disjoint(input.refs(), newRefs)) return null;
             DeepSeekChatClient.ChatResult response;
             try (var purpose = StudyExecutionContext.purpose("NOTES:" + round + ":" + attempt)) {
                 response =
@@ -232,7 +240,8 @@ public class VideoAgentWorkflowService {
 
     /** Keep whole cited originals first; trim only optional originals against the exact request. */
     private Input input(
-            String prefix, Map<String, VideoAgentCitation> evidence, VideoAgentResult current) {
+            String prefix, Map<String, VideoAgentCitation> evidence, VideoAgentResult current,
+            Set<String> newRefs) {
         Set<String> required = new LinkedHashSet<>();
         if (current != null) {
             required.addAll(current.coreEvidenceRefs());
@@ -247,8 +256,11 @@ public class VideoAgentWorkflowService {
                                         evidence.get(ref), "Missing cited original")));
         budget.requireFits(
                 NOTES_PROMPT, List.of(new DeepSeekMessage("user", material(prefix, retained))));
-        for (var value : evidence.values()) {
-            if (required.contains(value.ref())) continue;
+        var optional = new LinkedHashSet<>(newRefs);
+        optional.addAll(evidence.keySet());
+        optional.removeAll(required);
+        for (var ref : optional) {
+            var value = evidence.get(ref);
             retained.add(value);
             if (!budget.fits(
                     NOTES_PROMPT, List.of(new DeepSeekMessage("user", material(prefix, retained)))))

@@ -140,7 +140,13 @@ class StudyTaskContextMySqlTest {
         when(retriever.searchMaterials(argThat(values -> values.stream().map(i -> i.context().mediaId()).toList().equals(List.of(10L,11L))),
                 eq("定义"),any(Runnable.class))).thenReturn(List.of(List.of(hit),List.of(hit)));
         var found=evidence.search(task,"定义");
-        assertThat(found).extracting(c -> c.evidence().ref()).containsExactlyInAnyOrderElementsOf(full.stream().map(c -> c.evidence().ref()).toList());
+        assertThat(found).extracting(c -> c.evidence().ref()).containsExactlyInAnyOrder(
+                "10:TRANSCRIPT:43:t1-v1-p1", "11:TRANSCRIPT:43:t1-v1-p1",
+                "10:OCR:42:t1-v1-p1", "11:OCR:42:t1-v1-p1");
+        var read = evidence.read(task, List.of("10:TRANSCRIPT:43:t1-v1-p1"));
+        assertThat(read.evidence()).extracting(VideoAgentCitation::ref)
+                .contains("10:TRANSCRIPT:42:t1-v1-p1")
+                .allMatch(ref -> ref.startsWith("10:"));
         verify(indexes,never()).requireReady(12L); verify(indexes,never()).requireReady(13L);
         var chronological=found.stream().sorted(Comparator.comparingLong(c -> c.evidence().startMs())).toList();
         int anchor=java.util.stream.IntStream.range(0,chronological.size()).filter(i -> chronological.get(i).evidence().ref().startsWith("10:TRANSCRIPT:43:")).findFirst().orElseThrow();
@@ -173,7 +179,8 @@ class StudyTaskContextMySqlTest {
         when(questions.answerPrepared(eq(task),any(),any(),any(),eq(true))).thenReturn(new VideoQuestionResponse("有依据的局部回答",List.of()));
         conversations.askPrepared(task);
         verify(retriever).searchMaterials(argThat(values -> values.size()==2 && values.stream().allMatch(v -> List.of(10L,11L).contains(v.context().mediaId()))),anyString(),any(Runnable.class));
-        verify(questions).answerPrepared(eq(task),argThat(values -> values.stream().anyMatch(c -> !c.core())),any(),any(),eq(true));
+        verify(questions).answerPrepared(eq(task),argThat(values -> values.stream().map(c -> c.evidence().ref()).toList().equals(
+                List.of("10:TRANSCRIPT:43:t1-v1-p1", "11:TRANSCRIPT:43:t1-v1-p1"))),any(),any(),eq(true));
         verifyNoInteractions(mq,model);
     }
 
