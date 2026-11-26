@@ -94,12 +94,10 @@ public class StudyAgentToolDispatcher {
         var task = StudyExecutionContext.require().task;
         runs.checkExecution(runId);
         tasks.assertCurrent(task);
-        if (!call.name().equals("read_skill") && !skills.contains("course-notes"))
-            throw StudyToolFeedback.business("", "执行前须先读取 course-notes Skill");
+        if (!skills.contains(StudyAgentSkills.REQUIRED_NOTE))
+            throw new GovernanceException("TASK_RESOURCE_CHANGED", "宿主尚未验证必读的 course-notes Skill");
         JSONObject result;
         switch (call.name()) {
-            case "read_skill" ->
-                    result = StudyAgentSkills.bundled().read(call.args().getString("name"));
             case "get_course_structure" ->
                     result = JSONObject.of("scope", task.scope(), "materials", task.materials());
             case "search_course_evidence" -> {

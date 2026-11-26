@@ -40,19 +40,9 @@ public class StudyAgentRuntime {
 
     public void execute(String runId) {
         var task = StudyExecutionContext.require().task;
-        List<JSONObject> history =
-                new ArrayList<>(
-                        List.of(
-                                JSONObject.of(
-                                        "role", "system", "content", StudyAgentSpec.systemPrompt()),
-                                JSONObject.of(
-                                        "role",
-                                        "user",
-                                        "content",
-                                        "宿主冻结任务：" + runs.getRequired(runId).getPreparedTask())));
         Map<String, VideoAgentCitation> discovered = new LinkedHashMap<>(),
                 read = new LinkedHashMap<>();
-        Set<String> skills = new HashSet<>(), seen = new HashSet<>(), callIds = new HashSet<>();
+        Set<String> seen = new HashSet<>(), callIds = new HashSet<>();
         int calls = 0, corrections = 0, noEvidence = 0;
         boolean finishing = false, hostReadCharged = false, pendingCorrection = false;
         int firstReadRound = -1;
@@ -61,6 +51,18 @@ public class StudyAgentRuntime {
         try {
             // A crash after candidate commit must finalize without another paid model decision.
             if (artifacts.deliver(runId, null, null)) return;
+            long loadStarted = System.nanoTime();
+            String storedSkill = runs.completedStep(runId, StudyAgentSkills.INITIALIZATION_STAGE, 0).orElse(null);
+            var skill = StudyAgentSkills.bundled().initializeNote(task, storedSkill);
+            if (storedSkill == null)
+                runs.saveCompletedStep(runId, StudyAgentSkills.INITIALIZATION_STAGE, 0,
+                        JSONObject.of("elapsedMs", (System.nanoTime() - loadStarted) / 1_000_000), skill);
+            Set<String> skills = Set.of(skill.getString("name"));
+            List<JSONObject> history = new ArrayList<>(List.of(
+                    JSONObject.of("role", "system", "content", StudyAgentSpec.systemPrompt(skill)),
+                    JSONObject.of("role", "user", "content",
+                            "宿主冻结任务：" + runs.getRequired(runId).getPreparedTask())));
+
             for (int round = 0; round < StudyAgentSpec.ROUNDS; round++) {
                 runs.checkExecution(runId);
                 String savedBudget = runs.completedStep(runId, "AGENT_BUDGET", round).orElse(null);
@@ -282,7 +284,6 @@ public class StudyAgentRuntime {
                         continue;
                     }
                     seen.add(call.name() + ":" + canonical(call.args()));
-                    if ("read_skill".equals(call.name())) skills.add(result.getString("name"));
                     if ("search_course_evidence".equals(call.name())) {
                         int before = discovered.size();
                         for (var hit : result.getJSONArray("hits").toList(JSONObject.class)) {

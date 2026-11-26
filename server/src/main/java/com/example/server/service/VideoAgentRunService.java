@@ -1,6 +1,7 @@
 package com.example.server.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.example.server.dto.VideoAgentCitation;
@@ -208,6 +209,13 @@ public class VideoAgentRunService {
                 StudyExecutionContext.epoch(runId),
                 "CHECKPOINT_SAVED",
                 java.util.Map.of("stage", stage, "round", round));
+        if (StudyAgentSkills.INITIALIZATION_STAGE.equals(stage)
+                && input instanceof JSONObject timing
+                && output instanceof JSONObject loaded) {
+            control.eventLocked(runId, StudyExecutionContext.epoch(runId), StudyAgentSkills.INITIALIZATION_STAGE,
+                    java.util.Map.of("skill", loaded.getString("name"), "version", loaded.getString("version"),
+                            "elapsedMs", timing.getLongValue("elapsedMs")));
+        }
         if (stage.startsWith("AGENT_TOOL_")
                 && input instanceof com.alibaba.fastjson2.JSONObject metadata) {
             String tool = metadata.getString("tool");

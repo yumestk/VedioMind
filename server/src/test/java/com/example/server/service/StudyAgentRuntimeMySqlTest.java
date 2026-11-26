@@ -523,7 +523,7 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     void script() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("get_course_structure", Map.of());
         provider.call("search_course_evidence", Map.of("query", "事务定义"));
         provider.call(
@@ -543,7 +543,7 @@ class StudyAgentRuntimeMySqlTest {
     @Test
     void aSaveCanOnlyCiteOriginalsSeenBeforeThatDecision() {
         var refs = originals.stream().map(VideoAgentCitation::ref).toList();
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "事务定义"));
         provider.call("read_evidence", Map.of("refs", List.of(refs.getFirst())));
         var save = Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note(),
@@ -560,10 +560,9 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void aRejectedBatchOfThreeToolsCostsOneCorrection() {
-        var batch = Provider.message("bad", "read_skill", Map.of("name", "course-notes", "extra", true));
+        var batch = Provider.message("bad", "get_learning_state", Map.of("extra", true));
         for (int i = 0; i < 2; i++) {
-            batch.getJSONArray("tool_calls").addAll(Provider.message("valid-" + i, "read_skill",
-                    Map.of("name", "course-notes")).getJSONArray("tool_calls"));
+            batch.getJSONArray("tool_calls").addAll(Provider.message("valid-" + i, "get_learning_state", Map.of()).getJSONArray("tool_calls"));
         }
         provider.replies.add(batch);
         script();
@@ -610,7 +609,7 @@ class StudyAgentRuntimeMySqlTest {
         }
         when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class)))
                 .thenReturn(List.of(List.of(hit), List.of(hit)));
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "定义"));
         var secondAnchors = List.of("10:TRANSCRIPT:44:t1-v1-p1", "11:TRANSCRIPT:44:t1-v1-p1");
         if (batchReads) {
@@ -647,7 +646,7 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void twoSearchesWithoutNewEvidenceKeepTheOptionToSaveAPartialNote() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "定义"));
         provider.call("read_evidence", Map.of("refs", originals.stream().map(VideoAgentCitation::ref).toList()));
         var searches = Provider.message("more-1", "search_course_evidence", Map.of("query", "例外"));
@@ -667,6 +666,7 @@ class StudyAgentRuntimeMySqlTest {
     @Test
     void nativeCrossVideoTaskDeliversExactlyOnePrivateNoteAndHonestUsage() {
         script();
+        provider.replies.remove();
         workflow.process("run", 0);
         assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
         assertThat(artifacts.list("run", 2L))
@@ -677,30 +677,25 @@ class StudyAgentRuntimeMySqlTest {
                             assertThat(a.citations()).hasSize(2);
                             assertThat(a.content().coreConclusion()).isEqualTo("共同定义");
                         });
-        assertThat(provider.requests.get(3).getJSONArray("tools").toList(JSONObject.class))
+        assertThat(provider.requests.get(2).getJSONArray("tools").toList(JSONObject.class))
                 .extracting(t -> t.getJSONObject("function").getString("name"))
                 .containsExactly("read_evidence");
         assertThat(provider.requests).allSatisfy(r -> assertThat(r.getIntValue("max_tokens")).isLessThanOrEqualTo(4096));
         assertThatThrownBy(() -> artifacts.list("run", 3L))
                 .isInstanceOf(NoSuchElementException.class);
         workflow.process("run", 0);
-        assertThat(provider.requests).hasSize(5);
+        assertThat(provider.requests).hasSize(4);
         String notes = StudyAgentSkills.bundled().read("course-notes").getString("instructions");
         String qa = StudyAgentSkills.bundled().read("video-qa").getString("instructions");
-        assertThat(JSON.toJSONString(provider.requests.getFirst()))
-                .contains("course-notes", "video-qa")
-                .doesNotContain(JSON.toJSONString(notes), JSON.toJSONString(qa), "## 执行步骤");
-        assertThat(
-                        JSON.parseObject(
-                                        provider.requests
-                                                .get(1)
-                                                .getJSONArray("messages")
-                                                .getJSONObject(3)
-                                                .getString("content"))
-                                .getString("instructions"))
-                .isEqualTo(notes);
-        assertThat(JSON.toJSONString(provider.requests.get(1)))
-                .doesNotContain(JSON.toJSONString(qa));
+        var first = provider.requests.getFirst();
+        assertThat(first.getJSONArray("messages")).hasSize(3);
+        var system = first.getJSONArray("messages").getJSONObject(0);
+        assertThat(system.getString("role")).isEqualTo("system");
+        assertThat(system.getString("content")).endsWith(notes).doesNotContain(qa, "read_skill");
+        assertThat(first.getJSONArray("tools").toList(JSONObject.class)).containsExactlyElementsOf(StudyAgentSpec.tools());
+        var checkpoint = JSON.parseObject(jdbc.queryForObject(
+                "SELECT output_json FROM video_agent_steps WHERE stage='HOST_SKILL_INITIALIZED' AND run_id='run'", String.class));
+        assertThat(checkpoint).containsEntry("instructions", notes).containsEntry("version", "4");
         assertThat(
                         provider.requests
                                 .getFirst()
@@ -726,10 +721,11 @@ class StudyAgentRuntimeMySqlTest {
                         jdbc.queryForObject(
                                 "SELECT COUNT(*) FROM ai_call_attempts WHERE run_id='run'",
                                 Integer.class))
-                .isEqualTo(6);
+                .isEqualTo(5);
         assertThat(control.events("run", 2L, 0))
                 .extracting(e -> e.get("type"))
-                .contains("ARTIFACT_CANDIDATE_SAVED", "ARTIFACT_DELIVERED", "TASK_COMPLETED");
+                .contains("ARTIFACT_CANDIDATE_SAVED", "ARTIFACT_DELIVERED", "TASK_COMPLETED")
+                .containsOnlyOnce("HOST_SKILL_INITIALIZED");
         assertThat(JSON.toJSONString(control.events("run", 2L, 0)))
                 .doesNotContain("核心定义及前提", "instructions", "test-key");
     }
@@ -772,6 +768,8 @@ class StudyAgentRuntimeMySqlTest {
         assertThat(control.recoverRunning("run", 0)).isTrue();
         workflow.process("run", 1);
         assertThat(provider.requests).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_steps WHERE stage='HOST_SKILL_INITIALIZED'",
+                Integer.class)).isZero();
         assertThat(artifacts.list("run", 2L)).hasSize(1);
         var artifact = artifacts.list("run", 2L).getFirst();
         var changed = note();
@@ -816,7 +814,7 @@ class StudyAgentRuntimeMySqlTest {
     @Test
     void repeatedInvalidArgumentsHaveAFiniteCorrectionBudget() {
         for (int i = 0; i < 3; i++)
-            provider.call("read_skill", Map.of("name", "course-notes", "learnerId", 3));
+            provider.call("get_learning_state", Map.of("learnerId", 3));
         workflow.process("run", 0);
         assertThat(runs.getRequired("run").getStopCode()).isEqualTo("INVALID_TOOL_ARGUMENTS");
         assertThat(provider.requests).hasSize(3);
@@ -836,7 +834,7 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void cancellationDuringProviderCallAccountsUsageAndCannotPublish() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.beforeReply = () -> control.cancel("run", 2L);
         workflow.process("run", 0);
         assertThat(runs.getRequired("run").getStatus()).isEqualTo("CANCELLED");
@@ -850,7 +848,7 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void changingANonAnchorMaterialBlocksTheNextPaidCall() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.beforeReply = () -> when(contexts.currentVersion(11L)).thenReturn("changed");
         workflow.process("run", 0);
         assertThat(provider.requests).hasSize(1);
@@ -939,8 +937,8 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void repeatedCallsStopAndWithdrawalOfAnotherMaterialFencesTheEntireTask() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
+        provider.call("get_learning_state", Map.of());
         workflow.process("run", 0);
         assertThat(runs.getRequired("run").getStopCode()).isEqualTo("NO_PROGRESS");
         assertThat(provider.requests).hasSize(2);
@@ -997,7 +995,7 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 3, 4})
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 3, 4})
     void recoveryAfterAResponseButBeforeDecisionCheckpointReusesIdenticalNativeHistory(
             int crashRound) {
         script();
@@ -1035,14 +1033,15 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"prompt", "toolFeedback", "v9"})
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"prompt", "toolFeedback", "skills", "v9", "v11"})
     void changedRuntimeResourcesAreRejectedBeforeAnyProviderExecution(String changed) {
         var snapshot = JSON.parseObject(JSON.toJSONString(task));
         var resources = snapshot.getJSONObject("resourceSnapshot");
-        if ("v9".equals(changed)) {
-            resources.put("runtime", "bounded-study-v9");
-            resources.remove("toolFeedback");
-            snapshot.getJSONObject("budget").put("runtimeVersion", "bounded-study-v9");
+        if ("v9".equals(changed) || "v11".equals(changed)) {
+            String runtime = "bounded-study-" + changed;
+            resources.put("runtime", runtime);
+            if ("v9".equals(changed)) resources.remove("toolFeedback");
+            snapshot.getJSONObject("budget").put("runtimeVersion", runtime);
         } else {
             resources.put(changed, "changed");
         }
@@ -1056,12 +1055,71 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @Test
+    void retiredSkillToolIsRejectedWithoutAnObservation() {
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        workflow.process("run", 0);
+        assertThat(runs.getRequired("run").getStopCode()).isEqualTo("TOOL_NOT_ALLOWED");
+        assertThat(provider.requests).hasSize(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM video_agent_steps WHERE stage LIKE 'AGENT_TOOL_%'", Integer.class)).isZero();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"before_commit", "after_commit"})
+    void skillInitializationRecoversOnEitherSideOfItsCheckpoint(String interruption) {
+        script();
+        String stage = "before_commit".equals(interruption) ? StudyAgentSkills.INITIALIZATION_STAGE : "AGENT_BUDGET";
+        jdbc.execute("CREATE TRIGGER fail_init BEFORE INSERT ON video_agent_steps FOR EACH ROW BEGIN "
+                + "IF NEW.stage='" + stage + "' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='interrupted'; END IF; END");
+        try {
+            assertThatThrownBy(() -> workflow.process("run", 0)).isInstanceOf(RuntimeException.class);
+            assertThat(provider.requests).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM video_agent_steps WHERE stage='HOST_SKILL_INITIALIZED'",
+                    Integer.class)).isEqualTo("before_commit".equals(interruption) ? 0 : 1);
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_init");
+        }
+        assertThat(control.recoverRunning("run", 0)).isTrue();
+        workflow.process("run", 1);
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(control.events("run", 2L, 0)).extracting(e -> e.get("type")).containsOnlyOnce("HOST_SKILL_INITIALIZED");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"tampered", "source", "cancelled", "epoch"})
+    void frozenSkillAndLeaseAreCheckedBeforeTheFirstRequest(String fault) {
+        var skill = StudyAgentSkills.bundled().initializeNote(task, null);
+        var runtime = new StudyAgentRuntime(runs, null, dispatcher, artifacts, new AiPromptBudget(64000, 8192));
+        long epoch = runs.beginAttempt("run", 0).orElseThrow();
+        try (var ignored = StudyExecutionContext.open(task, "run", epoch)) {
+            runs.saveCompletedStep("run", StudyAgentSkills.INITIALIZATION_STAGE, 0,
+                    JSONObject.of("elapsedMs", 1), skill);
+            if ("cancelled".equals(fault)) control.cancel("run", 2L);
+            if ("epoch".equals(fault)) {
+                assertThat(control.recoverRunning("run", 0)).isTrue();
+                runs.beginAttempt("run", 1).orElseThrow();
+            }
+            if ("source".equals(fault)) when(contexts.currentVersion(11L)).thenReturn("changed");
+            if ("tampered".equals(fault)) jdbc.update(
+                    "UPDATE video_agent_steps SET output_json=JSON_SET(output_json,'$.instructions','forged') WHERE stage='HOST_SKILL_INITIALIZED'");
+            if ("source".equals(fault))
+                assertThatThrownBy(() -> runtime.execute("run")).isInstanceOf(StudyTaskPreparationService.SourceChangedException.class);
+            else
+                assertThatExceptionOfType(GovernanceException.class).isThrownBy(() -> runtime.execute("run"))
+                        .satisfies(e -> assertThat(e.code()).isEqualTo(
+                                "tampered".equals(fault) ? "TASK_RESOURCE_CHANGED" : "STALE_EXECUTION"));
+        }
+        assertThat(provider.requests).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_call_attempts", Integer.class)).isZero();
+    }
+
+    @Test
     void aBatchOverTheToolBudgetCannotExecuteAnyTool() {
-        var message = Provider.message("id0", "read_skill", Map.of("name", "course-notes"));
+        var message = Provider.message("id0", "get_learning_state", Map.of());
         for (int i = 1; i < 11; i++)
             message.getJSONArray("tool_calls")
                     .addAll(
-                            Provider.message("id" + i, "read_skill", Map.of("name", "course-notes"))
+                            Provider.message("id" + i, "get_learning_state", Map.of())
                                     .getJSONArray("tool_calls"));
         provider.replies.add(message);
         workflow.process("run", 0);
@@ -1073,10 +1131,10 @@ class StudyAgentRuntimeMySqlTest {
 
     @Test
     void noReadEvidenceStopsBeforeFinalizationWithoutFabricatingANote() {
-        provider.call("read_skill", Map.of("name", "course-notes"));
         provider.call("get_course_structure", Map.of());
         provider.call("get_learning_state", Map.of());
-        provider.call("read_skill", Map.of("name", "video-qa"));
+        provider.call("read_evidence", Map.of("refs", List.of()));
+        provider.call("get_learning_state", Map.of("unexpected", true));
         provider.call("search_course_evidence", Map.of("query", "事务定义"));
         provider.call("search_course_evidence", Map.of("query", "事务条件"));
         workflow.process("run", 0);
@@ -1230,7 +1288,7 @@ class StudyAgentRuntimeMySqlTest {
                 List.of());
         when(contexts.build(11L)).thenReturn(context);
         when(indexes.requireReady(11L)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(), ""));
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "stack queue removal rules"));
         provider.call("read_evidence", Map.of("refs", List.of(originals.getFirst().ref())));
         provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note()));
@@ -1352,7 +1410,7 @@ class StudyAgentRuntimeMySqlTest {
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"tokens", "time", "generation"})
     void lowResourcesEnterFinalizationBeforeTheRoundLimit(String resource) {
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "事务定义"));
         provider.call(
                 "read_evidence",
@@ -1439,7 +1497,7 @@ class StudyAgentRuntimeMySqlTest {
         var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 300000, 600000, "", List.of(), 1,
                 List.of(42L, 43L, 44L), List.of());
         when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class))).thenReturn(List.of(List.of(hit), List.of(hit)));
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "事务"));
         provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:42:t1-v1-p1", "11:TRANSCRIPT:42:t1-v1-p1")));
         provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:43:t1-v1-p1", "11:TRANSCRIPT:43:t1-v1-p1")));
@@ -1482,7 +1540,7 @@ class StudyAgentRuntimeMySqlTest {
         var hit = new VideoKnowledgeRetriever.KnowledgeSearchHit(1, 0, 600000, "", List.of(), 1,
                 List.of(42L, 43L), List.of());
         when(retriever.searchMaterials(anyList(), anyString(), any(Runnable.class))).thenReturn(List.of(List.of(hit), List.of(hit)));
-        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("get_learning_state", Map.of());
         provider.call("search_course_evidence", Map.of("query", "事务"));
         provider.call("read_evidence", Map.of("refs", List.of("10:TRANSCRIPT:42:t1-v1-p1")));
         provider.call("read_evidence", Map.of("refs", originals.stream().map(VideoAgentCitation::ref).toList()));

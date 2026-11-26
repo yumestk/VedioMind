@@ -1,7 +1,10 @@
 package com.example.server.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONException;
 import com.alibaba.fastjson2.JSONObject;
+import com.alibaba.fastjson2.JSONReader;
+import com.example.server.dto.PreparedStudyTask;
 import com.example.server.service.ai.AiCallLedger;
 import com.example.server.service.ai.StudyExecutionContext.GovernanceException;
 
@@ -14,7 +17,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-/** Bundled, host-owned Skills. Only metadata enters the initial model context. */
+/** Bundled, host-owned Skills. */
 public final class StudyAgentSkills {
     private static final int MAX_BYTES = 32768;
     private static final StudyAgentSkills BUNDLED = discover();
@@ -89,6 +92,34 @@ public final class StudyAgentSkills {
                 "name", name,
                 "version", document.metadata().version(),
                 "instructions", document.body());
+    }
+
+    static final String REQUIRED_NOTE = "course-notes";
+    static final String INITIALIZATION_STAGE = "HOST_SKILL_INITIALIZED";
+    static final String NOTE_ASSEMBLY = "system-suffix-v1";
+
+    JSONObject initializeNote(PreparedStudyTask task, String stored) {
+        if (!"BOUNDED_AGENT".equals(task.executionStrategy())
+                || !task.deliverables().stream().map(PreparedStudyTask.OutputSlot::kind).toList().equals(List.of("NOTE")))
+            throw new GovernanceException("TOOL_NOT_ALLOWED", "当前任务不允许加载课程笔记 Skill");
+        String catalogSha = fingerprint();
+        if (!catalogSha.equals(task.resourceSnapshot().get("skills")) || !skills.containsKey(REQUIRED_NOTE))
+            throw new GovernanceException("TASK_RESOURCE_CHANGED", "冻结的课程笔记 Skill 不可用或已变化");
+        var checkpoint = read(REQUIRED_NOTE);
+        checkpoint.put("source", "classpath:skills/course-notes/SKILL.md");
+        checkpoint.put("sourceSha256", skills.get(REQUIRED_NOTE).fingerprint());
+        checkpoint.put("bodySha256", AiCallLedger.sha256(checkpoint.getString("instructions")));
+        checkpoint.put("catalogSha256", catalogSha);
+        checkpoint.put("assembly", NOTE_ASSEMBLY);
+        if (stored != null) {
+            try {
+                if (checkpoint.equals(JSON.parseObject(stored, JSONReader.Feature.DuplicateKeyValueAsArray))) return checkpoint;
+            } catch (JSONException invalid) {
+                // A malformed checkpoint is fenced in the same way as changed contents.
+            }
+            throw new GovernanceException("TASK_RESOURCE_CHANGED", "宿主 Skill 检查点与冻结资源不一致");
+        }
+        return checkpoint;
     }
 
     private static Document parse(Resource resource) {

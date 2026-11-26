@@ -35,7 +35,7 @@ class StudyAgentSkillsTest {
     }
 
     @Test
-    void initialContextContainsOnlyMetadataAndReadingLoadsOnlyTheSelectedBody() {
+    void initialContextContainsTheCompleteRequiredNotesSkill() {
         var skills = StudyAgentSkills.bundled();
         assertThat(skills.names()).containsExactly("course-notes", "video-qa");
         String notes = skills.read("course-notes").getString("instructions");
@@ -43,12 +43,50 @@ class StudyAgentSkillsTest {
         assertThat(notes).contains("# 课程学习笔记", "## 执行步骤").doesNotContain(qa);
         assertThat(qa).contains("# 视频课程问答").doesNotContain(notes);
         assertThat(StudyAgentSpec.systemPrompt())
-                .contains("course-notes", "video-qa", "description", "version")
-                .doesNotContain(notes, qa, "## 执行步骤");
-        assertThat(JSON.toJSONString(StudyAgentSpec.tools())).doesNotContain(notes, qa);
+                .contains("course-notes", "## 执行步骤")
+                .endsWith(notes).doesNotContain(qa, "video-qa", "read_skill");
+        assertThat(JSON.toJSONString(StudyAgentSpec.tools())).doesNotContain(notes, qa, "read_skill");
+        assertThat(StudyAgentSpec.tools()).extracting(t -> t.getJSONObject("function").getString("name"))
+                .containsExactly("get_course_structure", "search_course_evidence", "read_evidence", "get_learning_state", "save_note");
         assertThatThrownBy(() -> skills.read("../../application.properties"))
                 .isInstanceOf(GovernanceException.class)
                 .hasMessageContaining("允许");
+    }
+
+    @Test
+    void initializationRequiresTheBundledNoteSkillAndExactCheckpoint() throws Exception {
+        var resource = file("course-notes", document("course-notes", "Original body"));
+        var registry = new StudyAgentSkills(resource);
+        var task = noteTask(registry);
+        var checkpoint = registry.initializeNote(task, null);
+        assertThat(registry.initializeNote(task, checkpoint.toJSONString())).isEqualTo(checkpoint);
+        for (String field : java.util.List.of("instructions", "bodySha256", "source", "sourceSha256",
+                "version", "assembly", "catalogSha256")) {
+            var changed = JSON.parseObject(checkpoint.toJSONString());
+            changed.put(field, "forged");
+            assertThatExceptionOfType(GovernanceException.class)
+                    .isThrownBy(() -> registry.initializeNote(task, changed.toJSONString()))
+                    .satisfies(e -> assertThat(e.code()).isEqualTo("TASK_RESOURCE_CHANGED"));
+        }
+        var missing = new StudyAgentSkills(file("video-qa", document("video-qa", "Other skill")));
+        assertThatExceptionOfType(GovernanceException.class)
+                .isThrownBy(() -> missing.initializeNote(noteTask(missing), null))
+                .satisfies(e -> assertThat(e.code()).isEqualTo("TASK_RESOURCE_CHANGED"));
+        Files.writeString(resource.getFile().toPath(), document("course-notes", "Changed body"));
+        for (var catalog : java.util.List.of(registry, new StudyAgentSkills(resource))) {
+            assertThatExceptionOfType(GovernanceException.class)
+                    .isThrownBy(() -> catalog.initializeNote(task, checkpoint.toJSONString()))
+                    .satisfies(e -> assertThat(e.code()).isEqualTo("TASK_RESOURCE_CHANGED"));
+        }
+    }
+
+    private static com.example.server.dto.PreparedStudyTask noteTask(StudyAgentSkills catalog) {
+        return JSON.parseObject(com.alibaba.fastjson2.JSONObject.of("executionStrategy", "BOUNDED_AGENT",
+                "deliverables", java.util.List.of(com.alibaba.fastjson2.JSONObject.of("kind", "NOTE", "slotId", "slot",
+                        "constraints", java.util.Map.of())),
+                "resourceSnapshot", java.util.Map.of("skills", catalog.fingerprint()),
+                "materials", java.util.List.of(), "taskTypes", java.util.List.of("NOTE")).toJSONString(),
+                com.example.server.dto.PreparedStudyTask.class);
     }
 
     @Test
