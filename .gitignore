@@ -60,3 +60,6 @@ server/src/main/resources/application-local.yaml
 /ASYNC_ANALYSIS_REFACTOR.md
 /docs/
 /experiments/
+/evals/
+/server/src/test/resources/eval/eval-questions.json
+/server/src/test/java/com/example/server/service/StudyHostSupplementReplayTest.java
