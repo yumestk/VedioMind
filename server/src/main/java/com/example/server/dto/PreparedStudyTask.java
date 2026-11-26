@@ -62,7 +62,7 @@ public record PreparedStudyTask(
             long activeLimitMs,
             long wallLimitMs,
             String runtimeVersion) {
-        public static final String BOUNDED_RUNTIME_VERSION = "bounded-study-v10";
+        public static final String BOUNDED_RUNTIME_VERSION = "bounded-study-v11";
         /**
          * P4 tool-loop profile, deliberately separate from the currently enabled short workflows.
          */

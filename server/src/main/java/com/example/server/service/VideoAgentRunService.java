@@ -167,6 +167,15 @@ public class VideoAgentRunService {
     }
 
     @Transactional
+    public boolean claimHostSupplement(String runId, int round, com.alibaba.fastjson2.JSONObject claim) {
+        lockTask(runId);
+        control.lockLease(runId);
+        if (completedStep(runId, StudyHostSupplement.STAGE, round).isPresent()) return false;
+        saveCompletedStep(runId, StudyHostSupplement.STAGE, round, null, claim);
+        return true;
+    }
+
+    @Transactional
     public void saveCompletedStep(
             String runId, String stage, int round, Object input, Object output) {
         lockTask(runId);

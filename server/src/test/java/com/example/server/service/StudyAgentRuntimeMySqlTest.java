@@ -1216,6 +1216,109 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @Test
+    void hostSupplementReachesNativeSaveAndKeepsASettledCorrectionSlot() {
+        var prepared = JSON.parseObject(JSON.toJSONString(task));
+        prepared.put("originalRequest", "根据第14、15讲，对照 Stack 和 Queue");
+        prepared.getJSONArray("materials").getJSONObject(0).put("title", "14_Stack");
+        prepared.getJSONArray("materials").getJSONObject(1).put("title", "15_Queue");
+        jdbc.update("UPDATE video_agent_runs SET prepared_task=? WHERE id='run'", prepared.toJSONString());
+
+        var fixture = StudyTaskContextMySqlTest.context(11L);
+        var context = new VideoContext(11L, fixture.version(), fixture.transcriptSource(),
+                fixture.transcript(), fixture.visual(), List.of(
+                        new VideoContext.TranscriptEvidence(43L, 301_000, 302_000, "Stack and Queue have different removal rules")),
+                List.of());
+        when(contexts.build(11L)).thenReturn(context);
+        when(indexes.requireReady(11L)).thenReturn(new VideoKnowledgeIndexService.IndexSnapshot(context, List.of(), ""));
+        provider.call("read_skill", Map.of("name", "course-notes"));
+        provider.call("search_course_evidence", Map.of("query", "stack queue removal rules"));
+        provider.call("read_evidence", Map.of("refs", List.of(originals.getFirst().ref())));
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(), "note", note()));
+        provider.call("save_note", Map.of("slotId", task.deliverables().getFirst().slotId(),
+                "note", note(), "coverageMaterialIds", List.of(10L, 11L)));
+        provider.beforeReply = () -> {
+            if (provider.requests.size() != 3) return;
+            jdbc.update("UPDATE video_agent_runs SET accounted_tokens=70000 WHERE id='run'");
+            jdbc.update("UPDATE study_ai_requests SET accounted_tokens=70000 WHERE run_id='run'");
+        };
+
+        workflow.process("run", 0);
+
+        assertThat(runs.getRequired("run").getStatus()).isEqualTo("SUCCEEDED");
+        assertThat(provider.requests).hasSize(5);
+        for (int index : List.of(3, 4)) {
+            assertThat(provider.requests.get(index).getJSONArray("messages").toList(JSONObject.class).stream()
+                    .filter(m -> "user".equals(m.getString("role"))
+                            && m.getString("content").startsWith(StudyHostSupplement.PREFIX)).toList())
+                    .singleElement().satisfies(m -> {
+                        assertThat(m).containsOnlyKeys("role", "content");
+                        assertThat(m.getString("content")).contains(originals.getLast().ref());
+                    });
+        }
+        var step = JSON.parseObject(jdbc.queryForObject(
+                "SELECT output_json FROM video_agent_steps WHERE run_id='run' AND stage='HOST_SUPPLEMENT'", String.class));
+        assertThat(step).containsEntry("outcome", "READ_OK").containsEntry("reservedCorrections", 0)
+                .containsEntry("charged", true).containsEntry("visible", true);
+        var correction = JSON.parseObject(jdbc.queryForObject(
+                "SELECT output_json FROM video_agent_steps WHERE run_id='run' AND stage='HOST_SUPPLEMENT_CORRECTION'", String.class));
+        assertThat(correction).containsEntry("pendingCanSend", true);
+    }
+
+    @Test
+    void hostSupplementClaimSurvivesRecoveryAndRejectsStaleExecution() {
+        long first = runs.beginAttempt("run", 0).orElseThrow();
+        try (var ignored = StudyExecutionContext.open(task, "run", first)) {
+            assertThat(runs.claimHostSupplement("run", 3, JSONObject.of("outcome", "READ_CLAIMED"))).isTrue();
+            assertThat(runs.claimHostSupplement("run", 3, JSONObject.of("outcome", "READ_CLAIMED"))).isFalse();
+        }
+        assertThat(control.recoverRunning("run", 0)).isTrue();
+        long second = runs.beginAttempt("run", 1).orElseThrow();
+        try (var ignored = StudyExecutionContext.open(task, "run", first)) {
+            assertThatExceptionOfType(GovernanceException.class)
+                    .isThrownBy(() -> dispatcher.readHostSupplement("run", originals.getLast().ref()))
+                    .satisfies(e -> assertThat(e.code()).isEqualTo("STALE_EXECUTION"));
+        }
+        try (var ignored = StudyExecutionContext.open(task, "run", second)) {
+            assertThat(runs.claimHostSupplement("run", 3, JSONObject.of("outcome", "READ_CLAIMED"))).isFalse();
+            assertThat(dispatcher.readHostSupplement("run", originals.getLast().ref()).evidence())
+                    .extracting(VideoAgentCitation::ref).contains(originals.getLast().ref());
+            control.cancel("run", 2L);
+            assertThatExceptionOfType(GovernanceException.class)
+                    .isThrownBy(() -> dispatcher.readHostSupplement("run", originals.getLast().ref()))
+                    .satisfies(e -> assertThat(e.code()).isEqualTo("STALE_EXECUTION"));
+        }
+    }
+
+    @Test
+    void hostSupplementReadTimesOutOnDatabaseLock() throws Exception {
+        long epoch = runs.beginAttempt("run", 0).orElseThrow();
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var blocker = executor.submit(() -> new org.springframework.transaction.support.TransactionTemplate(manager).executeWithoutResult(status -> {
+                jdbc.queryForObject("SELECT id FROM media_files WHERE id=11 FOR UPDATE", Long.class);
+                locked.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) throw new IllegalStateException("Lock not released");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }));
+            try {
+                assertThat(locked.await(5, TimeUnit.SECONDS)).isTrue();
+                try (var ignored = StudyExecutionContext.open(task, "run", epoch)) {
+                    assertThatThrownBy(() -> dispatcher.readHostSupplement("run", originals.getLast().ref()))
+                            .satisfies(error -> assertThat(StudyAgentRuntime.readTimedOut(error)).isTrue());
+                }
+            } finally {
+                release.countDown();
+            }
+            blocker.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void wrongSlotAndOutOfScopeCoverageKeepTheirOriginalGovernance() {
         var wrongSlot = Provider.message("wrong-slot", "save_note",
                 Map.of("slotId", "other-slot", "note", note(), "coverageMaterialIds", List.of(10L, 11L)))

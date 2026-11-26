@@ -110,6 +110,13 @@ public class StudyEvidenceService {
         return new ReadWindow(values, List.copyOf(deferred));
     }
 
+    @org.springframework.transaction.annotation.Transactional(
+            isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED,
+            timeout = StudyHostSupplement.READ_TIMEOUT_SECONDS)
+    public ReadWindow readHostSupplement(PreparedStudyTask task, String ref) {
+        return read(task, List.of(ref));
+    }
+
     private void requireVersion(PreparedStudyTask.Material material, VideoContext context) {
         if (!material.materialId().equals(context.mediaId()) || !material.version().equals(context.version())
                 || !Objects.equals(material.visualState(), context.visual().state()))

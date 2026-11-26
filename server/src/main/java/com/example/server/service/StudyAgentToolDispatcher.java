@@ -78,6 +78,13 @@ public class StudyAgentToolDispatcher {
         return new Call(wire.getString("id"), name, args);
     }
 
+    StudyEvidenceService.ReadWindow readHostSupplement(String runId, String ref) {
+        runs.checkExecution(runId);
+        var result = evidence.readHostSupplement(StudyExecutionContext.require().task, ref);
+        runs.checkExecution(runId);
+        return result;
+    }
+
     public JSONObject execute(
             Call call,
             String runId,
