@@ -52,10 +52,17 @@ public class StudyArtifactService {
             var goal = goals.get(index);
             var indexes = goal.getList("pointIndexes", Integer.class);
             String gap = goal.getString("gap");
-            if (goal.getString("requirement").isBlank() || indexes.stream().anyMatch(i -> i < 0 || i >= points.size())
-                    || (indexes.isEmpty() && gap.isBlank()))
-                throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "goalCoverage[" + index
-                        + "]：目标须非空且下标指向实际知识点（从0开始）；无支持知识点时必须说明gap；部分覆盖可同时保留下标与gap");
+            String path = "/note/goalCoverage/" + index;
+            if (goal.getString("requirement").isBlank())
+                throw StudyToolFeedback.business(path + "/requirement", "填写非空的目标说明。");
+            for (int i = 0; i < indexes.size(); i++) {
+                int point = indexes.get(i);
+                if (point < 0 || point >= points.size())
+                    throw StudyToolFeedback.business(path + "/pointIndexes/" + i,
+                            "下标须指向本次实际提交的知识点，从 0 开始。无支持知识点时填写 gap。");
+            }
+            if (indexes.isEmpty() && gap.isBlank())
+                throw StudyToolFeedback.business(path + "/gap", "没有支持该目标的知识点时，填写尚未覆盖的内容。");
             if (!gap.isBlank()) gaps.add(goal.getString("requirement") + "：" + gap);
         }
         payload.remove("goalCoverage");
@@ -68,12 +75,29 @@ public class StudyArtifactService {
 
     public static VideoAgentResult validate(
             JSONObject payload, Map<String, VideoAgentCitation> evidence) {
-        if (!JSONSchema.of(StudyAgentSpec.noteSchema()).isValid(payload))
+        return validate(payload, evidence, true);
+    }
+
+    private static VideoAgentResult validate(
+            JSONObject payload, Map<String, VideoAgentCitation> evidence, boolean toolInput) {
+        var schema = StudyAgentSpec.noteSchema();
+        if (!JSONSchema.of(schema).isValid(payload)) {
+            if (toolInput) {
+                // Projected gaps are derived from goalCoverage; they are not a writable tool field.
+                if (!JSONSchema.of(schema.getJSONObject("properties").getJSONObject("gaps"))
+                        .isValid(payload.get("gaps")))
+                    throw StudyToolFeedback.business("/note/goalCoverage", "核对目标的缺口说明，使生成的 gaps 符合笔记数量和长度约定。");
+                throw StudyToolFeedback.schema(schema, payload, "/note");
+            }
             throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "笔记字段、类型、长度或知识点数量不符合约定");
+        }
         var note = payload.toJavaObject(VideoAgentResult.class);
         var refs = refs(note);
         var unread = refs.stream().filter(ref -> !evidence.containsKey(ref)).toList();
-        if (!unread.isEmpty())
+        if (!unread.isEmpty()) {
+            if (toolInput)
+                throw new StudyToolFeedback("UNREAD_REFERENCE", unreadPath(note, evidence),
+                        "引用未读取的原文。复核对应主张与引用，并逐项检查其余知识点。只保留已读原文支持的表述，未完成目标写入 gap，请勿只删改引用 ID。");
             throw new GovernanceException(
                     "INVALID_TOOL_ARGUMENTS",
                     "引用未读取的原文："
@@ -81,12 +105,35 @@ public class StudyArtifactService {
                             + "；本任务允许引用："
                             + JSON.toJSONString(new ArrayList<>(evidence.keySet()))
                             + "。请逐项复核整份笔记的标题、知识点标题和解释、引用及gaps，移除无已读原文支持的结论及对应引用，并把未完成目标列入gaps；不要只替换引用ID。宿主会根据修正后的知识点重新生成概览。");
-        if (note.title().isBlank()
-                || note.coreConclusion().isBlank()
-                || note.knowledgePoints().stream()
-                        .anyMatch(p -> p.title().isBlank() || p.explanation().isBlank()))
+        }
+        String blank = blankPath(note);
+        if (blank != null) {
+            if (toolInput) throw StudyToolFeedback.business(blank, "填写有实际内容的标题或解释。");
             throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "笔记标题、核心结论及知识点内容不能为空");
+        }
         return note;
+    }
+
+    private static String unreadPath(VideoAgentResult note, Map<String, VideoAgentCitation> evidence) {
+        for (int i = 0; i < note.knowledgePoints().size(); i++) {
+            var refs = note.knowledgePoints().get(i).evidenceRefs();
+            for (int j = 0; j < refs.size(); j++) {
+                if (!evidence.containsKey(refs.get(j)))
+                    return "/note/knowledgePoints/" + i + "/evidenceRefs/" + j;
+            }
+        }
+        return "/note/knowledgePoints";
+    }
+
+    private static String blankPath(VideoAgentResult note) {
+        if (note.title().isBlank()) return "/note/title";
+        if (note.coreConclusion().isBlank()) return "/note/knowledgePoints/0/title";
+        for (int i = 0; i < note.knowledgePoints().size(); i++) {
+            var point = note.knowledgePoints().get(i);
+            if (point.title().isBlank()) return "/note/knowledgePoints/" + i + "/title";
+            if (point.explanation().isBlank()) return "/note/knowledgePoints/" + i + "/explanation";
+        }
+        return null;
     }
 
     private static Set<String> refs(VideoAgentResult note) {
@@ -129,7 +176,7 @@ public class StudyArtifactService {
         if (!actual.equals(new HashSet<>(coverage))
                 || coverage.size() != actual.size()
                 || !task.scope().materialIds().containsAll(actual))
-            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "覆盖范围须与引用的材料一致且不能越界");
+            throw StudyToolFeedback.business("/coverageMaterialIds", "只填写笔记实际引用的、任务范围内的材料，且每项只填一次。");
         String operation = runId + ":" + slotId + ":1";
         // Deserialize into the closed DTO before hashing: JSON object ordering is not a semantic
         // change.
@@ -315,7 +362,7 @@ public class StudyArtifactService {
                 JSON.parseArray(row.get("citations_json").toString(), VideoAgentCitation.class);
         var map = new LinkedHashMap<String, VideoAgentCitation>();
         citations.forEach(e -> map.put(e.ref(), e));
-        var note = validate(edit.content(), map);
+        var note = validate(edit.content(), map, false);
         var used = refs(note).stream().map(map::get).toList();
         var coverage =
                 used.stream().map(VideoAgentCitation::materialId).distinct().sorted().toList();

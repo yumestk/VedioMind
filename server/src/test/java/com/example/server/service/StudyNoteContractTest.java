@@ -30,11 +30,17 @@ class StudyNoteContractTest {
     @Test void coverageRequiresExistingPointsOrAnExplicitGap() {
         var input = JSONObject.of("title", "笔记", "knowledgePoints", List.of(JSONObject.of(
                 "title", "有据结论", "explanation", "原文", "evidenceRefs", List.of("ref"))), "quiz", List.of());
-        for (var goal : List.of(JSONObject.of("requirement", "目标", "pointIndexes", List.of(1), "gap", ""),
-                JSONObject.of("requirement", "目标", "pointIndexes", List.of(), "gap", ""))) {
-            input.put("goalCoverage", List.of(goal));
-            assertThatThrownBy(() -> StudyArtifactService.noteFromPoints(input)).hasMessageContaining("goalCoverage[0]");
-        }
+        input.put("goalCoverage", List.of(JSONObject.of("requirement", "目标", "pointIndexes", List.of(1), "gap", "")));
+        assertThatExceptionOfType(StudyToolFeedback.class)
+                .isThrownBy(() -> StudyArtifactService.noteFromPoints(input))
+                .satisfies(error -> assertThat(StudyToolFeedback.observation(error))
+                        .containsEntry("kind", "BUSINESS_CONTRACT")
+                        .containsEntry("path", "/note/goalCoverage/0/pointIndexes/0"));
+        input.put("goalCoverage", List.of(JSONObject.of("requirement", "目标", "pointIndexes", List.of(), "gap", "")));
+        assertThatExceptionOfType(StudyToolFeedback.class)
+                .isThrownBy(() -> StudyArtifactService.noteFromPoints(input))
+                .satisfies(error -> assertThat(StudyToolFeedback.observation(error))
+                        .containsEntry("path", "/note/goalCoverage/0/gap"));
     }
     @Test void partiallySupportedGoalKeepsSupportedPointsAndDeclaresItsGap() {
         var input = JSONObject.of("title", "部分对比", "knowledgePoints", List.of(JSONObject.of(

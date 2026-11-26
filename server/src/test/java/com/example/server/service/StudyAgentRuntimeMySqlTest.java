@@ -1034,10 +1034,18 @@ class StudyAgentRuntimeMySqlTest {
         assertThat(artifacts.list("run", 2L)).hasSize(1);
     }
 
-    @Test
-    void changedRuntimeResourcesAreRejectedBeforeAnyPaidExecution() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"prompt", "toolFeedback", "v9"})
+    void changedRuntimeResourcesAreRejectedBeforeAnyProviderExecution(String changed) {
         var snapshot = JSON.parseObject(JSON.toJSONString(task));
-        snapshot.getJSONObject("resourceSnapshot").put("prompt", "changed");
+        var resources = snapshot.getJSONObject("resourceSnapshot");
+        if ("v9".equals(changed)) {
+            resources.put("runtime", "bounded-study-v9");
+            resources.remove("toolFeedback");
+            snapshot.getJSONObject("budget").put("runtimeVersion", "bounded-study-v9");
+        } else {
+            resources.put(changed, "changed");
+        }
         jdbc.update(
                 "UPDATE video_agent_runs SET prepared_task=? WHERE id='run'",
                 snapshot.toJSONString());
@@ -1144,7 +1152,7 @@ class StudyAgentRuntimeMySqlTest {
     }
 
     @Test
-    void unreadCitationFeedbackNamesRejectedAndAllowedRefsBeforeAValidRepair() {
+    void unreadCitationFeedbackLocatesTheClaimBeforeAValidRepair() {
         script();
         provider.replies.remove(provider.replies.stream().reduce((a, b) -> b).orElseThrow());
         String unread = "11:TRANSCRIPT:999:t1-v1-p1";
@@ -1175,17 +1183,18 @@ class StudyAgentRuntimeMySqlTest {
         assertThat(
                         messages.stream()
                                 .filter(m -> "tool".equals(m.getString("role")))
-                                .map(m -> m.getString("content"))
+                                .map(m -> JSON.parseObject(m.getString("content")))
                                 .toList())
                 .anySatisfy(
                         error ->
-                                assertThat(error)
-                                        .contains(
-                                                unread,
-                                                "本任务允许引用",
-                                                "不要只替换引用ID",
-                                                originals.getFirst().ref(),
-                                                originals.getLast().ref()));
+                                {
+                                    assertThat(error)
+                                            .containsEntry("error", "INVALID_TOOL_ARGUMENTS")
+                                            .containsEntry("kind", "UNREAD_REFERENCE")
+                                            .containsEntry("path", "/note/knowledgePoints/0/evidenceRefs/2");
+                                    assertThat(error.toJSONString()).contains("复核对应主张与引用")
+                                            .doesNotContain(unread, originals.getFirst().ref(), originals.getLast().ref());
+                                });
         assertThat(messages.getLast().getString("content"))
                 .contains(
                         "allowedEvidenceRefs",
@@ -1204,6 +1213,37 @@ class StudyAgentRuntimeMySqlTest {
                                 assertThat(a.citations())
                                         .extracting(c -> c.evidence().ref())
                                         .doesNotContain(unread));
+    }
+
+    @Test
+    void wrongSlotAndOutOfScopeCoverageKeepTheirOriginalGovernance() {
+        var wrongSlot = Provider.message("wrong-slot", "save_note",
+                Map.of("slotId", "other-slot", "note", note(), "coverageMaterialIds", List.of(10L, 11L)))
+                .getJSONArray("tool_calls").getJSONObject(0);
+        assertThatExceptionOfType(GovernanceException.class)
+                .isThrownBy(() -> dispatcher.validate(wrongSlot, task))
+                .satisfies(error -> assertThat(error.code()).isEqualTo("TOOL_NOT_ALLOWED"));
+        long epoch = runs.beginAttempt("run", 0).orElseThrow();
+        Map<String, VideoAgentCitation> read = new LinkedHashMap<>();
+        originals.forEach(e -> read.put(e.ref(), e));
+        try (var context = StudyExecutionContext.open(task, "run", epoch)) {
+            assertThatExceptionOfType(GovernanceException.class)
+                    .isThrownBy(() -> artifacts.saveAndDeliver("run", "other-slot", note(), List.of(10L, 11L), read))
+                    .satisfies(error -> assertThat(error.code()).isEqualTo("TOOL_NOT_ALLOWED"));
+            assertThatExceptionOfType(StudyToolFeedback.class)
+                    .isThrownBy(() -> artifacts.saveAndDeliver("run", task.deliverables().getFirst().slotId(),
+                            note(), List.of(10L, 11L, 999L), read))
+                    .satisfies(error -> assertThat(StudyToolFeedback.observation(error))
+                            .containsEntry("error", "INVALID_TOOL_ARGUMENTS")
+                            .containsEntry("kind", "BUSINESS_CONTRACT")
+                            .containsEntry("path", "/coverageMaterialIds"));
+            when(contexts.currentVersion(11L)).thenReturn("changed");
+            assertThatExceptionOfType(StudyTaskPreparationService.SourceChangedException.class)
+                    .isThrownBy(() -> artifacts.saveAndDeliver("run", task.deliverables().getFirst().slotId(),
+                            note(), List.of(10L, 11L), read));
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM study_artifacts WHERE run_id='run'", Integer.class)).isZero();
+        assertThat(provider.requests).isEmpty();
     }
 
     @org.junit.jupiter.params.ParameterizedTest

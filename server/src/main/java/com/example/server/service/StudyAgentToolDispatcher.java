@@ -44,15 +44,27 @@ public class StudyAgentToolDispatcher {
                         .orElseThrow(
                                 () -> new GovernanceException("TOOL_NOT_ALLOWED", "工具不在当前任务允许列表中"));
         String raw = f.getString("arguments");
+        if (raw != null && raw.length() > 30000)
+            throw new StudyToolFeedback("ARGUMENT_SIZE", "", "将参数缩减至 30000 字符以内。");
         JSONObject args;
+        var schema = definition.getJSONObject("parameters");
         try {
-            if (raw == null || raw.length() > 30000 || !JSON.isValidObject(raw))
-                throw new IllegalArgumentException();
+            if (raw == null || !JSON.isValidObject(raw))
+                throw raw != null && JSON.isValid(raw)
+                        ? new StudyToolFeedback("SCHEMA", "", "工具参数须为 JSON 对象。")
+                        : new StudyToolFeedback("JSON_SYNTAX", "", "重新提交可解析的 JSON 对象。");
             args = JSON.parseObject(raw, JSONReader.Feature.DuplicateKeyValueAsArray);
-            if (!JSONSchema.of(definition.getJSONObject("parameters")).isValid(args))
-                throw new IllegalArgumentException();
+        } catch (StudyToolFeedback invalid) {
+            throw invalid;
         } catch (RuntimeException invalid) {
-            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "工具参数字段、类型或范围无效：" + name);
+            throw new StudyToolFeedback("JSON_SYNTAX", "", "重新提交可解析的 JSON 对象。");
+        }
+        try {
+            if (!JSONSchema.of(schema).isValid(args)) throw StudyToolFeedback.schema(schema, args, "");
+        } catch (StudyToolFeedback invalid) {
+            throw invalid;
+        } catch (RuntimeException invalid) {
+            throw new StudyToolFeedback("SCHEMA", "", "按工具 Schema 修正参数。");
         }
         if (!"BOUNDED_AGENT".equals(task.executionStrategy()))
             throw new GovernanceException("TOOL_NOT_ALLOWED", "当前策略不允许工具执行");
@@ -76,7 +88,7 @@ public class StudyAgentToolDispatcher {
         runs.checkExecution(runId);
         tasks.assertCurrent(task);
         if (!call.name().equals("read_skill") && !skills.contains("course-notes"))
-            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "执行前须先读取 course-notes Skill");
+            throw StudyToolFeedback.business("", "执行前须先读取 course-notes Skill");
         JSONObject result;
         switch (call.name()) {
             case "read_skill" ->

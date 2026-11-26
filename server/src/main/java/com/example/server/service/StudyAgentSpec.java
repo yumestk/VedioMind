@@ -159,6 +159,8 @@ public final class StudyAgentSpec {
                 AiCallLedger.sha256(systemPrompt()),
                 "tools",
                 AiCallLedger.sha256(JSON.toJSONString(tools())),
+                "toolFeedback",
+                AiCallLedger.sha256(StudyToolFeedback.VERSION),
                 "skills",
                 StudyAgentSkills.bundled().fingerprint());
     }

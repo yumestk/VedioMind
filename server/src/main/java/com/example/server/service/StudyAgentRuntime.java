@@ -116,23 +116,21 @@ public class StudyAgentRuntime {
                     try {
                         var call = dispatcher.validate(value, task);
                         if (finishing && !"save_note".equals(call.name()))
-                            throw new GovernanceException(
-                                    "INVALID_TOOL_ARGUMENTS", "收尾阶段仅允许save_note；请使用已读证据并如实列出gaps");
+                            throw StudyToolFeedback.business("", "收尾阶段仅允许save_note；请使用已读证据并如实列出gaps");
                         if ("READ".equals(state.getString("phase"))
                                 && !Set.of("read_evidence", "save_note").contains(call.name()))
-                            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "READ阶段须读取已有线索或保存；不得把最后的证据获取机会用于继续搜索");
+                            throw StudyToolFeedback.business("", "READ阶段须读取已有线索或保存；不得把最后的证据获取机会用于继续搜索");
                         if ("search_course_evidence".equals(call.name())
                                 && state.getIntValue("retrievalCallsRemaining") == 0)
-                            throw new GovernanceException("INVALID_TOOL_ARGUMENTS", "检索额度耗尽，请读取现有线索或保存");
+                            throw StudyToolFeedback.business("", "检索额度耗尽，请读取现有线索或保存");
                         if (reservedSlots)
-                            throw new GovernanceException(
-                                    "INVALID_TOOL_ARGUMENTS", "整批工具未执行：须为保存及修正保留工具额度，下一轮进入收尾");
+                            throw StudyToolFeedback.business("", "整批工具未执行：须为保存及修正保留工具额度，下一轮进入收尾");
                         batch.add(call);
                         errors.add(null);
                     } catch (GovernanceException e) {
                         if (!"INVALID_TOOL_ARGUMENTS".equals(e.code())) throw e;
                         batch.add(null);
-                        errors.add(JSONObject.of("error", e.code(), "message", e.getMessage()));
+                        errors.add(StudyToolFeedback.observation(e));
                     }
                 }
                 if (reservedSlots) finishing = true;
@@ -160,11 +158,8 @@ public class StudyAgentRuntime {
                         if (invalidBatch)
                             result =
                                     errors.get(i) == null
-                                            ? JSONObject.of(
-                                                    "error",
-                                                    "INVALID_TOOL_ARGUMENTS",
-                                                    "message",
-                                                    "本批参数未全部通过，请修正后重新调用")
+                                            ? StudyToolFeedback.observation(new StudyToolFeedback(
+                                                    "BATCH_REJECTED", "", "本批参数未全部通过，请修正后重新调用"))
                                             : errors.get(i);
                         else {
                             String signature = call.name() + ":" + canonical(call.args());
@@ -183,7 +178,7 @@ public class StudyAgentRuntime {
                                     result = JSONObject.of("error", "NO_PROGRESS");
                             } catch (GovernanceException e) {
                                 if (!Set.of("INVALID_TOOL_ARGUMENTS", "EVIDENCE_WINDOW_TOO_LARGE").contains(e.code())) throw e;
-                                result = JSONObject.of("error", e.code(), "message", e.getMessage());
+                                result = StudyToolFeedback.observation(e);
                             }
                         }
                         if (!invalidBatch && (!read.isEmpty() || "read_evidence".equals(call.name()))
