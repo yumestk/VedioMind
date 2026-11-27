@@ -1,413 +1,223 @@
 # VedioMind
 
-面向长视频的 AI 内容理解平台。用户可以上传本地视频，或粘贴 Bilibili/YouTube 公共视频链接；系统复用本地 ASR 或平台字幕完成内容总结、章节生成和带引用问答，并在前端展示可恢复的任务进度。
+**Evidence-grounded Video Learning Agent**
 
-> 当前为单体原型，已接入 Spring Security 登录认证、个人资源隔离，以及课程作者/学习者权限。
+长视频的原始字幕容易撑满模型上下文，只做语音转写又会漏掉课件文字。VedioMind 把带时间戳的字幕和画面 OCR 组织成可检索的证据，用于视频总结、带引用问答和结构化学习笔记。读者可从引用跳回视频核对原文。
+
+[产品展示](#产品展示) · [系统架构](#系统架构) · [Evaluation](#evaluation) · [Quick Start](#quick-start) · [Source Code & Testing](#source-code--testing)
+
+## 产品展示
+
+<p><img src="assets/demo/video-workspace.jpg" width="860" alt="第 15 讲的循环队列课件与右侧 AI 总结"></p>
+**视频工作台** · 左侧停在循环队列课件，右侧展示已有 AI 总结，可切换时间轴和 AI 助手。
+
+<p><img src="assets/demo/home-media-library.jpg" width="670" alt="冰川蓝首页的本地视频入口、链接导入与媒体库"></p>
+**首页与媒体库** · 统一入口支持本地视频上传或公开链接解析。
+
+<p><img src="assets/demo/deep-note.jpg" width="670" alt="单视频深度学习笔记的核心结论、原文引用及定位后的课件"></p>
+**单视频深度学习笔记** · 真实部分交付的笔记节选，展示核心结论、原文引用和定位后的课件。
 
 ## 核心能力
 
-- 本地视频进入 Study Mode：浏览器使用 S3 Multipart 直传 MinIO，支持暂停、续传、取消、真实进度和失败分片重试；Bilibili/YouTube URL 进入 Quick Insight，只读取平台字幕，不下载完整视频。
-- Study Mode 会并行提取场景关键帧，使用 3 秒场景防抖、dHash 去重和 Tesseract 中英文 OCR 建立视觉证据；图片、时间戳、OCR 质量和处理版本分别持久化到 MinIO 与 MySQL，并与句级字幕组装为内部 VideoContext。
-- Study Mode 将 VideoContext 聚合为版本化的 5 分钟知识块，逐块将摘要、关键词和阿里云 `text-embedding-v4` 向量持久化到 MySQL，并将就绪向量同步到可重建的 Qdrant 检索索引；失败后从未完成块继续，最终总结覆盖全部知识块而不是只读取召回片段。
-- Study Mode 问答使用当前问题与上一轮对话从 Qdrant 召回 Chunk 候选，并结合 MySQL 关键词和原始向量精排，合并命中时间区间后补充外侧相邻字幕，再生成带引用回答；Qdrant 缺失或不可用时自动退回 MySQL 精确扫描，Quick Insight 继续直接使用平台字幕。
-- Study Mode 提供持久化学习助手：单视频笔记先检索、再生成，只围绕具体证据缺口补充一次；默认不生成自测题，按需生成。宿主验证结构和引用，保存可用成果与检查点。
-- 视频内容工作台集成本地原生播放器、平台官方嵌入播放器、自动章节导航、时间戳字幕联动、AI 总结、字幕搜索、复制、导出和带原文引用的持久化多轮问答。
-- MinIO Bucket 保持私有，数据库只保存对象 Key，播放使用短时效预签名 URL。
-- FFmpeg 提取 16kHz 单声道 PCM，阿里云 Paraformer 输出句子级时间戳；DeepSeek 生成分块摘要、全局总结和语义章节。
-- RocketMQ 事务消息保证“任务落库”和“消息投递”不会只成功一边。
-- 独立 `AnalysisJob` 状态机记录阶段、进度、重试次数和失败原因。
-- 供应商瞬时故障先在客户端有限重试，耗尽后再由 RocketMQ 恢复当前任务阶段；鉴权和参数等永久错误直接标记 `FAILED`，不做无效重投。
-- Redisson Job 锁与数据库终态检查共同处理重复投递和并发消费。
-- Redis / Redisson 实现用户级、全局和供应商级限流；供应商返回可重试 HTTP 状态时，采用带抖动的指数退避，单次逻辑调用最多 3 次实际尝试。DeepSeek / Embedding 每次出网独立记账；连接中断等远端结果未知情形保留预算预留并停止自动重投。ASR 继续使用其独立分析恢复策略。
-- 后台额度不足进入 `WAITING_FOR_QUOTA` 并延迟恢复，不增加失败重试次数；数据库保存恢复轮次与到期时间，定时补发可修复消息发送失败和进程重启。分析任务额度等待上限默认 30 分钟；Agent 活动时间累计最多 120 秒，额度等待与队列退避暂停活动计时，创建请求起 10 分钟总截止持续计时。
-- 视觉分支使用媒体级锁、受限线程池和阶段 Checkpoint；画面处理失败不会阻塞字幕总结、章节和问答，用户可以重新分析以只补失败产物。
-- 时间戳 Transcript Segment 在 ASR 完成后立即持久化，重试不会重复执行已经成功的昂贵阶段。
-- URL 导入采用平台白名单、规范化地址和受限重定向；Bilibili 使用专用元数据/字幕 API，YouTube 由 yt-dlp 只解析元数据和字幕地址。
-- 章节生成只返回 Transcript Segment ID，后端校验锚点并派生章节时间；已保存章节在任务重试时直接复用。
-- 前端按媒体查询活动 Job，页面刷新后仍可恢复当前任务。
-- Flyway 管理数据库结构，新环境无需手工建表。
+| 能力 | 实现 |
+| --- | --- |
+| 视频接入 | 本地大文件通过预签名 S3 Multipart 直传 MinIO，支持断点续传。Bilibili / YouTube 链接导入平台字幕。 |
+| 多模态处理 | 带时间戳 ASR 与场景抽帧、dHash 去重、OCR 并行，组装为版本化 `VideoContext`。 |
+| 长视频 RAG | 向量与关键词混合检索，按命中区间回源并扩展邻域，按请求容量装入原文，返回可跳转引用。 |
+| AI 学习助手 | 快速问答和结构化笔记共用持久化会话。异步任务可恢复，学生的会话与成果按归属隔离。 |
+| 工程可靠性 | 事务消息协调任务创建与投递，Checkpoint 和调用账本管理恢复与预算，笔记交付支持幂等重放。 |
 
-## 视频内容工作台
+## 系统架构
 
-上传本地视频或解析网络链接后，前端会进入 `/media/{mediaId}`：
-
-- 本地上传通过 MinIO 预签名 URL 直接播放，支持 Range 请求与时间跳转。
-- URL 来源不下载第三方视频，使用 Bilibili/YouTube 官方嵌入播放器；点击章节、字幕时间或问答引用会在工作台内定位到对应位置。
-- 工作台按媒体恢复正在执行的分析任务，不依赖浏览器保存 `jobId`。
-- AI 总结使用 Marked 渲染，并通过 DOMPurify 清理不可信 HTML。
-- 章节导航随本地视频播放进度高亮；点击章节可跳转本地播放器或更新平台嵌入播放器的起始位置。
-- 字幕支持本地播放高亮、点击时间跳转、搜索、复制，以及带时间码的 TXT/Markdown 导出。
-- 关键帧和 OCR 作为内部证据供后续检索、问答与 Agent 使用，不直接向普通用户展示原始 OCR 卡片；URL 视频因不下载原文件，其 VideoContext 明确标记视觉模态不适用。
-- 工作台使用统一“AI 助手”对话框：可自动识别快速问答与深度学习任务，也允许手动覆盖；URL 视频固定使用快速问答，两种模式共享同一会话时间线，但继续复用各自独立的执行链路。
-- 快速问答按媒体持久化会话、消息与引用快照，支持会话切换和刷新恢复；最近 6 轮对话帮助模型理解指代，Study Mode 使用上一轮问答召回 Top 4 知识块并回源原始句级字幕，URL 视频继续使用完整平台字幕。
-- 深度学习任务以 Agent 任务卡嵌入当前会话，异步生成结构化学习笔记；刷新后可恢复当前阶段，字幕与画面文字引用均可点击跳转播放器。
-- 用户可在深度任务完成后继续留在原会话快速追问；Agent 结果只辅助理解追问和改写检索，最终回答仍必须由原始字幕证据支持。
-- 模型只返回 Segment ID，后端校验后再回填原文和时间戳；引用以快照保存，点击后按来源跳转本地播放器或平台嵌入播放器。
-- 当前保证浏览器兼容视频的直接播放；其他 FFmpeg 可处理的格式仍可分析，并显示明确的播放失败状态。
-
-## 课程与个人学习空间（P1）
-
-- 导航“课程”支持创建课程、添加课程章节、将本人视频加入章节、发布和撤回；章节按添加时的位置排序。课程章节与视频时间轴章节是两种不同结构。
-- 登录用户可读取已发布课程的视频、字幕与时间轴，复用原有工作区提问。作者管理本人材料；观看权不授予重新分析或付费索引准备权，资料未就绪时需由作者准备。
-- 会话与 Agent Run 直接记录 learnerId、courseId、conversationId 和单视频 taskScope。会话、消息、任务与成果只对所属学生开放，课程作者也不能查看其他学生的私人学习记录。
-- 同一会话最多一个活动深度任务，数据库唯一约束防止并发重复；不同学生学习同一视频互不占用该约束。
-- “我的学习”保留个人记录。撤回课程或移除视频会禁用失去访问权者的来源，并停止相关活动任务；视频删除使用来源墓碑，保留学生成果和任务历史，原文证据快照不再返回，引用显示来源失效。已签发的对象地址仍有到期窗口。
-- 对象或向量清理失败会记录媒体 ID；作者可重复调用 `DELETE /media/{mediaId}` 重试清理。撤权已经在数据库生效，不因清理服务故障恢复来源访问。
-- 已接通章节/课程范围问答与跨视频引用；单视频笔记保留短流程。跨视频笔记已接通原生工具循环及私人笔记成果；真实答卷属于后续阶段。
-
-新增 API：`GET/POST /courses`、`GET /courses/{id}`、`POST /courses/{id}/sections`、`POST /courses/{id}/sections/{sectionId}/materials`、`DELETE /courses/{id}/materials/{materialId}`、`PUT /courses/{id}/visibility`（`{published:true|false}`）、`GET /conversations`（本人记录）。课程对话列表接受 `courseId` 查询参数，助手请求需携带同一 `courseId`；身份始终来自签名凭据。
-
-### 既有 V18 数据升级
-
-新空库可直接运行 Flyway 至最新 V21。有历史学习记录的数据库必须先停止后端、盘点并备份，执行显式转换后再启动；应用启动不会推断旧记录归属。V19 只加结构，V20 强制学生归属和会话关联，不能带空归属运行。
-
-```sh
-# 仓库根目录；只读盘点，不输出原文或凭据
-bash scripts/study-agent-p0-audit.sh
-# 仅用于已确认所有旧材料属于同一用户的数据库。
-# 参数为明确确认的用户 ID、盘点得到的无会话旧 Run 数；多用户历史须单独制定转换清单。
-bash scripts/study-agent-p1-upgrade.sh <confirmed-owner-id> <expected-unlinked-run-count>
-```
-
-转换脚本先将整个数据库加密备份至 `~/.vediomind/backups/`（目录 700、文件 600，使用原有外部认证密钥），然后运行 V19、事务写入已确认的归属，并完成 V20 及后续迁移。无会话的旧任务分别进入标注“导入的历史任务”的私人会话，只添加历史任务卡，不伪造旧聊天；不创建课程或公开材料。密钥与备份需分别妥善保管。
-
-脚本默认 Docker 容器 `mysql-media`、数据库 `media_db`，可使用 `P1_MYSQL_CONTAINER` / `P1_MYSQL_DATABASE` / `P1_BACKUP_DIR` 覆盖，离线数据库配置沿用 `AUTH_DB_*`。如在 V19 转换后中断，先重新盘点；数据事务会回滚未提交的部分，已经提交的转换需要用新的实际无会话 Run 数重新执行。已完成 V20 归属转换时，重复执行只校验并应用未执行的结构迁移，不重复创建会话。DDL 失败不要直接执行 Flyway repair，应先在隔离库从加密备份恢复核查。
-
-`python3 scripts/test-study-agent-p1.py` 会创建临时 MySQL 库，执行真实 Flyway 新建/升级/重复验证，以及学生隔离、无副作用拒绝、撤权保留、外键/唯一约束和事务测试，并在结束时删除临时库；依赖本地 Docker MySQL 容器。未配置专用数据库时，普通 Maven 测试会明确跳过 MySQL 专用检查。
-
-## 任务准备、课程证据与上下文（P2）
-
-同一助手入口 `POST /media/{mediaId}/assistant/dispatch` 接受可选范围：
-
-```json
-{"content":"解释第三章的事务隔离","mode":"QUICK","conversationId":7,"courseId":1,"scope":{"type":"SECTION","sectionId":3}}
-```
-
-- 范围支持 `VIDEO`（当前视频）、`SECTION`（`sectionId`）、`COURSE` 及 `MATERIALS`（`materialIds` 为课程视频 ID 列表）。未传时匹配明确章节名称，无法唯一匹配则澄清；普通问题默认当前视频。页面明确选择优先。最多 12 个视频，超出时要求缩小范围，不静默截取。
-- `PreparedStudyTask` 由宿主冻结学生、会话、课程结构、材料版本/视觉状态、目标、执行策略、输出槽、来源策略和预算。权限/范围先校验，再路由、扣请求额度和执行；模型不能覆盖权限或材料。`NEEDS_INPUT` 澄清不创建会话/Run、不发 MQ、不调用模型或扣请求额度，前端保留输入。成功问答随回答保存快照，深度任务随 Run 保存快照。
-- 原文放得下优先全文，超预算才限定检索。课程问答可用字幕及成功 OCR；单视频快速流程仍只读字幕。多材料只生成一次查询向量，然后按每个允许媒体 ID 和上下文版本进入 SQL/Qdrant，补邻域、去重；不先全库召回再过滤。
-- 课程证据稳定引用为 `materialId:TRANSCRIPT|OCR:sourceId:contextVersion`。单视频内部 ID 由任务的材料/版本限定，持久化引用也保存材料、模态和版本。`materialId` 为视频源 ID，`courseMaterialId` 为课程挂接记录。
-- 必需任务和原文不被旧聊天挤掉；先裁旧聊天/成果，再按完整邻域打包。预算计量与 HTTP 客户端相同的 JSON 请求，包含转义、模型参数、消息，并提供覆盖工具 Schema/调用消息的估算入口；预留输出和安全余量。仍是字节级保守估算，并非精确 tokenizer。
-- 读取、付费请求前和交付前复验权限、结构、版本与视觉状态；最终保存锁住来源。发生版本变化用 `409` / `SOURCE_CHANGED` 明确停止；预算配置变化也要求重新准备，恢复不会扩大冻结预算。
-- 引用返回 `materialId`、`contextVersion`、`evidenceRef`、`type`、`sourceAvailable`。跨视频点击按当前课程重验权限/签发播放地址，元数据加载后定位，保留原学习会话。失效引用隐藏原文、禁用跳转，保留学生回答。
-- 缺资料需作者准备；超长范围的完整概括要求缩小范围，不把检索片段冒充全覆盖。跨视频笔记通过 P4 有界工具策略执行；跨视频测验仍要求先只生成笔记，不悄悄变成当前视频笔记。运行已有调用账本、取消和执行中 NEEDS_INPUT 终态。
-
-V21 新增任务快照和引用来源字段；历史引用来源由原会话确定，未知历史任务/版本不伪造。旧完成结果保留，缺快照的旧任务不自动恢复。升级前停应用、确认无活动任务并备份。复用 `python3 scripts/test-study-agent-p1.py` 在隔离 MySQL 验证新建、历史升级、重复迁移、授权、版本和事务，不向业务库导入测试课程。
-
-## 工具型学习 Agent 与笔记交付（`bounded-study-v12`）
-
-同一助手入口在 `mode=DEEP` 且范围为章节、课程或指定材料时选择 `BOUNDED_AGENT`；快速问答继续短流程，单视频笔记沿用原策略。任务准备时固定材料、输出槽、预算和运行资源；恢复时复验 Prompt、工具 Schema、Skill 指纹及 runtime 版本。
-
-- 宿主按冻结的 `BOUNDED_AGENT` / `NOTE` 任务，从 JAR 加载必读的 `course-notes`，将完整正文放进首轮 system 消息。初始化 Checkpoint 记录正文、版本、可信来源和指纹，恢复时复核这些资源。加载由宿主独立记录，无需模型决策或原生工具调用。
-- 模型通过 DeepSeek 原生工具协议自主探索、读取和保存。工具依次为 `get_course_structure`、`search_course_evidence`、`read_evidence`、`get_learning_state`、`save_note`。搜索返回线索，保存只接受发出该轮请求前已对模型可见的原文引用。每次读取最多选择 4 个锚点，原文窗口合计受 14k 字节估算限制。完整消息与工具 Schema 一起计入输入预算。
-- 首次成功读取后，若探索预算要求收尾，宿主会检查用户明确要求的来源是否仍缺原文，以及此前发现的线索能否补上这一缺口。容量延后与从未选读的锚点分别记录。满足准入时，宿主限时读取至多一个锚点，计入一个工具等价槽，无需新增模型决策。原文通过请求容量与 `fitsSave()` 的完整首存预留检查后才以数据装入下一轮；模型仍负责判断语义覆盖和选择引用。
-- 整批工具先检查工具名和严格参数契约，再串行执行。`INVALID_TOOL_ARGUMENTS` 提供 `kind`、JSON Pointer `path` 和修正提示，例如把 `/note/coverageMaterialIds` 移到 `/coverageMaterialIds`。未读引用提示模型复核对应主张与证据。参数修正按决策轮计数，后续能否修正取决于账本结算与剩余预算。
-- Skill 初始化、预算、模型决策、工具观察、宿主补读和候选成果均有持久 Checkpoint。Call Ledger 在供应商请求前预留预算，结算后复用同一请求指纹下的已知响应；结果为 `UNKNOWN` 的调用不自动重发。执行与交付复验权限、来源版本和执行代次，恢复优先尝试交付已验收候选。
-- NOTE 内容为标题、结论、知识点、引用、覆盖材料和缺口；现阶段不保存 QUIZ。宿主分配 `outputSlot` / `operationId` / `baseVersion=0`，同操作同参数重放原回执，同操作不同内容冲突；候选笔记对学生不可见。正式成果、Run 结果、终态与完成事件在同一事务提交。覆盖不足或仍有必要缺口为 PARTIAL；结构和引用验收不代表语义已被证明正确。
-- 学生只能读取自己的正式成果；来源失效后隐藏原文、禁用播放，保留笔记及手工编辑。
-- `GET /agent-runs/{id}/artifacts` 读取本人成果；`PUT /study-artifacts/{id}` 接受 `{baseVersion,content}` 手工修改，版本不符返回 409，不覆盖草稿。首次模型保存只创建新成果；不提供覆盖手工版本的模型工具。前端沿用任务轮询，展示笔记卡、编辑、跨视频引用、工具事件、停止原因及活动/等待耗时。
+Vue 3 工作台连接 Java 21 / Spring Boot **单体应用**。视频处理产出字幕和 OCR 证据，学习运行时在问答或写笔记时按需检索和读取原文。
 
 ```mermaid
-flowchart TD
-    A[冻结任务与输出槽] --> S[宿主加载并冻结 course-notes]
-    S --> B[原生模型决策与调用记账]
-    B --> C[整批参数校验与串行执行]
-    C -->|搜索或读取| D[保存工具观察]
-    D -->|继续探索或读取| B
-    D -->|首次读取后命中收尾与补读准入| E[宿主限时补读并记录 Checkpoint]
-    E -->|按容量和首存预留装入原文| B
-    C -->|可修正错误且预算允许| B
-    C -->|保存笔记| F[验证引用并幂等保存候选]
-    F --> G[同事务提交成果 Run 终态与完成事件]
+---
+config:
+  flowchart:
+    nodeSpacing: 24
+    rankSpacing: 28
+    wrappingWidth: 230
+    curve: linear
+---
+flowchart TB
+    UI["Vue 3 学习工作台<br/>本地上传 · 链接导入<br/>问答 · 笔记"]
+
+    subgraph APP["Spring Boot 单体"]
+        direction LR
+        Pipeline["Video Pipeline<br/>ASR · 场景抽帧<br/>dHash · OCR"]
+        Evidence["Evidence Retrieval<br/>VideoContext · 混合检索<br/>原文装包"]
+        Runtime["Learning Runtime<br/>RAG 问答 · 学习笔记<br/>Agent Harness"]
+
+        Pipeline --> Evidence
+        Evidence --- Runtime
+    end
+
+    UI --> APP
+    APP --> Data["数据与存储<br/>MySQL · MinIO · Qdrant"]
+    APP --> Tasks["任务与治理<br/>RocketMQ · Redis / Redisson"]
+
+    classDef core fill:transparent,stroke:#658bb2,stroke-width:1.5px
+    classDef neutral fill:transparent,stroke:#7d8590
+    class Pipeline,Evidence,Runtime core
+    class UI,Data,Tasks neutral
+    style APP fill:transparent,stroke:#7d8590
 ```
 
-工程验收使用隔离 MySQL 和本地脚本供应商；它验证控制与恢复，不替代真实模型对课程笔记语义的评测。`get_learning_state` 目前只读取本人在指定范围的笔记记录，无真实答卷时明确返回掌握度未知。测验、作答、评价及复习计划分别在后续阶段接入。
+MySQL 持久化证据和任务状态，MinIO 存放视频和关键帧，Qdrant 提供可重建的向量索引。RocketMQ 调度异步任务，Redis / Redisson 负责限流和并发控制。
 
-### N02 开发案例探索性对照
+## 核心工程设计
 
-同一个跨视频笔记开发案例在四个 Runtime 版本上各运行一次。各次使用相同的模型、任务硬预算及检索配置。这四次探索性试跑未形成正式 Benchmark，样本不足以证明稳定提升或建立严格因果关系。`SUCCEEDED` 表示通过宿主交付验收，仍需人工复核事实、引用支持及用户目标覆盖。
+### Multimodal Video Pipeline
 
-| 指标 | v9 | v10 | v11 | v12 |
-| --- | ---: | ---: | ---: | ---: |
-| 模型决策轮次 | 6 | 5 | 4 | 3 |
-| 保存拒绝次数 | 3 | 1 | 0 | 0 |
-| 生成输入 Token | 40,111 | 30,069 | 21,546 | 16,313 |
-| 生成输出 Token | 4,377 | 3,755 | 1,829 | 1,782 |
-| 交付状态 | `FAILED` | `PARTIAL` | `SUCCEEDED` | `SUCCEEDED` |
+本地视频由 FFmpeg 提取音频与场景关键帧。音频送阿里云 Paraformer，视觉分支先用 dHash 去重，再对保留帧执行 Tesseract OCR 和质量过滤。ASR 分片与 OCR 使用受限并发，保留句级时间戳与帧位置。外链路径读取平台字幕，视觉模态标记为不适用。
 
-## 异步分析链路
+字幕、关键帧、就绪知识块和任务进度分阶段持久化。重试复用已完成产物，视觉分支失败时仍可继续生成字幕侧结果。入口见 [分析消费者][consumer]、[视觉证据处理][visual] 和 [VideoContext][context]。
 
-```mermaid
-flowchart TD
-    A[POST 创建分析任务] --> B[RocketMQ 事务半消息]
-    B --> C[本地事务创建 AnalysisJob]
-    C -->|COMMIT| D[消息对消费者可见]
-    C -->|ROLLBACK| E[撤销半消息]
-    B -. 状态不确定 .-> F[Broker 事务回查]
-    F --> C
+### Evidence-grounded RAG
 
-    D --> G[按 jobId 获取 Redisson 锁]
-    G --> H{任务是否已终结}
-    H -->|是| I[幂等确认]
-    H -->|否| V{本地 Study 视频?}
-    V -->|是，并行| W[场景提帧 / dHash / OCR]
-    W --> X[版本化关键帧写入 MinIO 与 MySQL]
-    V --> R{已有 Transcript?}
-    R -->|否| J[提取音频]
-    J --> K[ASR 并持久化 Transcript]
-    K --> Y[等待视觉证据完成]
-    R -->|是| Y
-    X --> Y
-    W -->|异常| Z[记录视觉告警与可恢复 Checkpoint]
-    Z --> Y
-    Y --> AA{本地 Study 视频?}
-    AA -->|是| AB[按 5 分钟生成版本化知识块]
-    AB --> AC[逐块摘要并批量生成 Embedding]
-    AC --> L[基于全部 Chunk 生成全局 Summary]
-    AC -. 最佳努力同步 .-> AE[(Qdrant 可重建索引)]
-    AA -->|否| AD[基于平台 Transcript 生成 Summary]
-    AD --> Q[生成并校验语义章节]
-    L --> Q
-    Q --> M[标记 SUCCEEDED]
+索引绑定材料和处理版本。需要检索时，在获准材料及版本内生成查询向量并召回候选，结合关键词信号排序，回源到带时间戳的字幕或 OCR。问答优先装入放得下的完整原文，超预算时按任务范围走检索。装包对实际序列化请求做保守估算并预留输出，保存时验收引用是否来自该次可见证据。
 
-    J -->|异常| N[RocketMQ 重试]
-    K -->|异常| N
-    AB -->|异常| N
-    AC -->|异常| N
-    L -->|异常| N
-    Q -->|异常| N
-    N -->|超过上限| O[FAILED / DLQ]
+默认本地长视频索引是 **v1 的 5 分钟知识块**，检索分支最多取 **4 块**，Qdrant 不可用时可回退 MySQL 精确扫描。v2 细粒度索引按指定媒体启用。下文 v3 的紧凑装包与 Rerank 是历史消融配置。入口见 [索引][index]、[检索][retrieval]、[证据窗口][evidence] 和 [请求预算][budget]。
 
-    P[前端轮询 Job API] --> C
-    P --> J
-    P --> K
-    P --> AB
-    P --> L
-    P --> Q
-    P --> M
-```
+### Agent Harness
 
-任务状态流转：
-
-```text
-QUEUED
-  → PREPARING
-  → EXTRACTING_AUDIO
-  → TRANSCRIBING
-  → PROCESSING_VISUAL_EVIDENCE（仅在视觉分支仍在运行时出现）
-  → BUILDING_KNOWLEDGE_INDEX（仅本地 Study 视频）
-  → SUMMARIZING
-  → GENERATING_CHAPTERS
-  → SUCCEEDED
-
-真实执行阶段异常 → RETRYING → 下一次消费
-超过重试上限     → FAILED
-```
-
-本地供应商额度不足时，任务进入 `WAITING_FOR_QUOTA`，保留检查点并延迟继续；该等待不增加失败重试次数。
-
-这里选择 RocketMQ 事务消息而不是额外引入 Outbox：项目已经依赖 RocketMQ，事务消息能够以更少的组件完成当前所需的“本地任务记录 + MQ 投递”一致性。消费者侧的幂等、状态恢复和重试仍由 `AnalysisJob`、Redisson 与 RocketMQ 共同完成。
-
-单视频笔记复用同一事务生产者，但使用独立 Topic、Consumer 和持久化状态：
+单视频笔记沿用固定工作流。实验性的跨视频深度笔记采用 `bounded-study-v12`。宿主冻结权限、材料版本、交付槽和预算，预加载声明式 [course-notes Skill][skill]。模型通过原生工具调用搜索、阅读和保存，宿主校验工具参数，返回类别与 JSON Pointer 路径，并按剩余预算允许修正。收尾前若满足强来源缺口和预算条件，宿主可补读一次。保存只接受该轮请求发出前已对模型可见的原文。
 
 ```mermaid
 flowchart LR
-    A[提交学习目标] --> B[RocketMQ 事务消息]
-    B --> C[持久化 AgentRun]
-    C --> D[检索原文并保存检查点]
-    D --> E[预留调用预算]
-    E --> F[调用供应商并先保存响应]
-    F --> G[宿主校验结构与引用]
-    G -->|可交付| H[保存学习笔记]
-    G -->|存在具体缺口，最多两轮| D
-    D -.-> I[(AgentStep)]
-    F -.-> J[(CallAttempt)]
-    H -.-> K[(有序 RunEvent)]
+    Task["冻结任务 · 加载 Skill"] --> Turn["有界模型决策 · 账本"]
+    Turn --> Gate["校验工具与参数"]
+    Gate -->|搜索或读窗| Evidence["记录证据与工具观察"]
+    Evidence -->|继续或条件式补读| Turn
+    Gate -->|错误反馈及剩余预算允许| Turn
+    Gate -->|保存| Save["验收引用 · 事务交付"]
 ```
 
-当前单视频笔记最多 3 次实际生成、6 次 Embedding 尝试、两轮检索，路由与修复也包含在上限内；累计治理 Token 上限为 200,000。完整请求仍受配置的输入估算与输出上限约束。跨视频工具任务使用独立预算，最多 6 轮决策、10 个工具等价槽、2 次参数修正、8 次实际模型尝试、6 次检索及 96,000 治理 Token。路由和 HTTP 重试一并计入。
+实现入口见 [有界循环][runtime]、[工具校验][tools] 和 [条件式补读][supplement]。
 
-`study_ai_requests` 保存每个学生请求的累计用量，`ai_call_attempts` 在出网前独立事务预留调用次数和 Token。收到响应后先保存原始响应，再做业务解析；已知 usage 幂等替换预留，未知 usage 保留估算。治理 Token 不是供应商账单，也不承诺远端调用 exactly-once。旧历史不推测补造账本，视频预处理的独立费用记录不归入学生问答用量；当前没有启用跨 Run 月度额度。
+### Reliable Execution
 
-执行代次和消息投递版本由数据库校验。取消、超时、撤权会阻止旧 worker 保存检查点或成果；本机 HTTP 取消尽力执行，供应商仍可能计费，迟到 usage 可补记但不能恢复结果交付。恢复优先复用已落库响应和检查点；预留后或出网中的崩溃、收到响应但未可靠落库，均按 `MODEL_OUTCOME_UNKNOWN` 停止自动重投。只有确定未出网的预留可以释放。
+分析任务使用 RocketMQ 事务消息关联本地任务入库与消息投递，消费者用 Redisson 锁、数据库状态和执行代次隔离重复或过期执行。Redis 负责限流，可重试失败有带抖动的指数退避，额度等待和故障重试分别处理。Checkpoint 允许从已完成阶段继续。
 
-任务卡展示阶段、活动/等待时间、治理用量、停止原因、取消按钮与执行事件。生命周期终态统一为 `SUCCEEDED` / `PARTIAL` / `FAILED` / `CANCELLED` / `NEEDS_INPUT`；检索、生成、修订作为 phase。事件只返回安全元数据，原始模型响应、提示和隐藏答案不通过学生接口暴露。
+调用账本在出网前预留预算，可复用同指纹的已确认响应。请求结果为 `UNKNOWN` 时保留预留并停止自动重投，远端调用结果可能仍未知。笔记通过幂等操作标识去重，正式成果、Run 终态和完成事件在同一数据库事务提交。入口见 [事务消息回查][transaction]、[任务接管][recovery]、[调用账本][ledger] 和 [成果交付][artifact]。
 
-### 检索后的相邻上下文与预算
+## Evaluation
 
-保留现有 5 分钟 Chunk、Embedding 和 Qdrant 索引。检索使用同一版本的 VideoContext 回源，将相邻或重叠的命中区间合并，只在合并区间两端补充上下文。默认每侧最多 3 条字幕，距离边界不超过 30 秒；跨边界的完整字幕也保留。单视频快速问答只使用字幕，课程问答和 Agent 另外补充每侧最多 3 条成功且非空的 OCR。使用 `TRANSCRIPT:id` / `OCR:id` 去重，避免两类证据同号冲突；原始 ID、时间戳和文本保持完整。
+- **约 90 分钟视频，同一素材单次本机对照。** 从 PCM 提取完成到 ASR 和视觉两分支结束，墙钟从 **1,120.390 s** 降到 **254.413 s**（**77.29%**）。原配置为单路 ASR、单路 OCR，复测为 5 路 ASR、6 路 OCR。
+- **同一视频的抽帧漏斗。** 1 fps 均匀参考为 **5,430** 帧，场景抽帧选出 **198** 帧，dHash 后保留 **188** 帧（场景候选中去重 **5.05%**）。其中 **183** 帧检出文字，**161** 帧通过 OCR 质量门槛。
 
-核心证据按命中排序轮流选取，之后再取距离较近的补充证据。快速问答的完整输入预算包含系统提示、问题、对话历史、Agent 辅助结果和证据 JSON；超预算时先移除较远的补充证据，再移除旧对话、辅助结果，最后按优先级保留能完整放入的核心证据。模型只可引用最终输入中保留的 ID。Quick Insight 的平台字幕问答同样受输入预算约束。
+历史 RAG 对照使用同一长视频的 30 道锁定题，其中 10 道跨章节题。命中按知识块与标注时间区间相交计算。跨章节全覆盖统计最终装入 Prompt 的原文是否覆盖全部所需区间。
 
-单视频笔记将检索证据装入输入预算，并给任务提示与当前笔记留出空间。扩展、去重和选择完成后才保存检索 Checkpoint，额度等待后复用该结果，不重复生成查询向量。补充生成保留当前笔记已经引用的必要证据。每次发送前重新检查完整请求；必要证据仍放不下或输出触及上限时明确失败，不通过失败重试重复付费。
+| 历史配置 | 命中题数 | 跨章节原文全覆盖 | 平均请求输入估算 Token |
+| --- | ---: | ---: | ---: |
+| v1 原混合，K=4 | 30/30 | 8/10 | 53,290.1 |
+| v2 细粒度最终混合，K=6 | 29/30 | 8/10 | 29,822.4 |
+| v3 紧凑装包、Rerank 与覆盖保护，K=6 | 29/30 | 10/10 | 23,324.8 |
 
-配置位于 `server/src/main/resources/application.example.properties`：
+同实验全量字幕基线为 **141,743.2** 估算 Token，v3 较该基线减少 **83.54%**，视觉组命中从 **10/10** 降到 **9/10**。本组只评价检索与装包，没有生成答案。
 
-| 配置 | 默认值 | 含义 |
-| --- | --- | --- |
-| `ai.context.neighbor-segments` | `3` | 每侧每类补充证据的数量上限，`0` 关闭扩展 |
-| `ai.context.neighbor-seconds` | `30` | 区间两端的邻域时间范围 |
-| `ai.context.max-estimated-context-tokens` | `32000` | 估算输入、输出预留和安全余量的总预算 |
-| `ai.context.max-output-tokens` | `8192` | 输出预留，同时作为供应商请求的 `max_tokens` |
+历史 E2E 跑了 **9 道快速问答和 2 份笔记**。首次原始输出同时通过结构和引用校验 **9/11**，末次 **10/11**。最终保存的 **55/55** 条引用可映射到已装入或已读原文及合法时间戳。两份笔记均为 `PARTIAL`。未读引用、工具数量和生成预算另有本地守卫回归。引用身份合规无法衡量主张的语义支持或回答正确率。
 
-沿用现有模型和供应商思考模式设置，输出预算需给思考及最终 JSON 留出空间；触及上限时可按错误提示调整预算。另保留 512 的安全余量。当前用 UTF-8 字节数及消息格式开销作保守 Token 估算，**不是精确的模型 Token 计数，也不承诺任意 tokenizer 的严格上界**；调整配置时应结合实际模型上下文限制。扩展日志记录核心/补充/重复数量和耗时，选择日志记录裁剪数量，调用日志分别记录估算输入与供应商返回的实际输入/输出 Token。
+| N02 开发案例 | v9 | v10 | v11 | v12 |
+| --- | ---: | ---: | ---: | ---: |
+| 模型决策轮次 | 6 | 5 | 4 | 3 |
+| 保存拒绝次数 | 3 | 1 | 0 | 0 |
+| 供应商实际生成输入 Token | 40,111 | 30,069 | 21,546 | 16,313 |
+| 供应商实际生成输出 Token | 4,377 | 3,755 | 1,829 | 1,782 |
+| 宿主交付状态 | FAILED | PARTIAL | SUCCEEDED | SUCCEEDED |
 
-边界回归样例可运行 `./mvnw -Dtest=VideoEvidenceContextServiceTest,VideoQuestionServiceTest,VideoAgentWorkflowServiceTest test`。样例对照固定分块与扩展后的证据覆盖，包含边界前提/结论、OCR、相邻区间合并、静默和预算裁剪；这是确定性证据验证，尚未进行真实模型的回答质量、延迟和费用对照评测。
+N02 参与了调优，模型、任务硬预算和检索配置一致，每版只试跑一次。观察限于该开发案例。另有两道课内新题进行单轮 Workflow 与历史 v12 Agent 对照。两臂都交付 **2/2**，完整内容各 **0/2**。Workflow 生成 **2 次**，Agent **9 次**，Agent 完整覆盖了更多必要事实。两臂运行时段不同，参考事实及最终质量均为 AI 辅助审核。课程数据、完整报告和原始 Trace 仅本地保存。
 
-## 技术栈
+## Quick Start
 
-| 层次 | 技术 |
+**环境** · JDK 21、Node.js 22.12+、Docker Compose、FFmpeg、Tesseract 及 `chi_sim` / `eng` 语言数据、yt-dlp。启用 AI 功能需配置 DeepSeek 和阿里云 API Key。
+
+1. 从仓库根目录启动 [Docker Compose](docker-compose.yml)，检查 MySQL、Redis、Qdrant、MinIO 和 RocketMQ 的状态。
+
+   ```bash
+   docker compose up -d
+   docker compose ps
+   ```
+
+2. 从仓库根目录复制 [后端配置模板](server/src/main/resources/application.example.properties)。设置密钥与本机工具路径，再初始化持久认证密钥。
+
+   ```bash
+   cp server/src/main/resources/application.example.properties server/src/main/resources/application.properties
+   export DEEPSEEK_API_KEY='替换为你的 DeepSeek Key'
+   export ALIYUN_API_KEY='替换为你的阿里云 Key'
+   export FFMPEG_DIR="$(dirname "$(command -v ffmpeg)")"
+   export TESSERACT_PATH="$(command -v tesseract)"
+   export YTDLP_PATH="$(command -v yt-dlp)"
+   ./scripts/auth-admin.sh init-key
+   ```
+
+3. 在同一个终端启动后端。首次启动时 Flyway 会在空库建表。
+
+   ```bash
+   cd server
+   ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+   ```
+
+4. 在另一个终端从仓库根目录启动前端，打开 [localhost:5173](http://localhost:5173) 注册并登录。Vite 将同源 `/api` 代理到本机 `9090`。
+
+   ```bash
+   cd client
+   npm ci
+   npm run dev
+   ```
+
+<details>
+<summary>本地安全与旧数据库升级</summary>
+
+- Compose 的默认凭据与端口映射仅用于本地开发。避免在共享网络暴露这些端口。MinIO 视频桶必须保持私有，预签名地址需要浏览器可达。生产部署使用 HTTPS 和默认 Secure Cookie，`dev` Profile 仅用于本地 HTTP。
+- 认证密钥默认位于 `~/.vediomind/auth.key`，首次生成后持久保存。敏感配置仅写入环境变量或 Git 忽略的本地配置。已有密钥时直接复用。
+- 旧库升级前先停止后端、确认无活动任务，盘点并备份。旧明文密码先按照 [认证工具][auth] 的 `audit`、`hash-passwords <new-encrypted-backup-file>` 流程转换，保留原密钥以便恢复。
+- V18 私人学习数据先运行 [只读盘点][audit]。仅在确认全部旧材料都属于同一用户时，才运行 [归属转换脚本][upgrade]，显式传入已确认的用户 ID 和盘点得到的无会话 Run 数。多用户旧库需要单独制定转换清单，转换完成再启动后端。
+
+</details>
+
+## Source Code & Testing
+
+| 想了解的链路 | 阅读入口 |
 | --- | --- |
-| 前端 | Vue 3、Vue Router、Axios、Vite、Marked、DOMPurify |
-| 后端 | Java 21、Spring Boot 3、Spring Security、MyBatis-Plus、Undertow |
-| 异步任务 | RocketMQ 4.9.4、Redisson |
-| 数据 | MySQL 8、Redis、Qdrant、Flyway |
-| 对象存储 | MinIO |
-| 媒体处理 | FFmpeg、Tesseract OCR、yt-dlp |
-| AI | 阿里云 Paraformer ASR、text-embedding-v4、DeepSeek |
-
-## 认证与资源隔离
-
-支持公开注册、密码登录、退出和页面重开后的登录恢复。使用短期 JWT 与 MySQL 持久续期会话，用户主动使用时延长 30 天，后台轮询不保活。后端从已验证凭据取得用户 ID，视频及其关联资源均校验归属。
-
-## 主要接口
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `GET` | `/user/csrf` | 获取 CSRF Token |
-| `POST` | `/user/register` | 公开注册 |
-| `POST` | `/user/login` | 密码登录并签发访问凭据 |
-| `POST` | `/user/refresh` | 轮换续期凭据并恢复访问 |
-| `POST` | `/user/logout` | 撤销长期会话 |
-| `GET` | `/user/me` | 获取当前用户安全信息 |
-| `POST` | `/media/uploads` | 创建本地视频 Multipart 上传会话 |
-| `GET` | `/media/uploads/{sessionId}` | 查询上传会话与已上传分片 |
-| `POST` | `/media/uploads/{sessionId}/parts/{partNumber}/url` | 获取分片预签名上传地址 |
-| `POST` | `/media/uploads/{sessionId}/complete` | 校验分片、完成合并并创建媒体 |
-| `DELETE` | `/media/uploads/{sessionId}` | 取消上传 |
-| `POST` | `/media/import-url` | 通过 Bilibili/YouTube 平台字幕导入内容 |
-| `GET` | `/media` | 查询当前用户的轻量媒体列表 |
-| `GET` | `/media/{mediaId}` | 查询媒体详情与预签名播放地址 |
-| `GET` | `/media/{mediaId}/transcript` | 查询句子级时间戳字幕 |
-| `GET` | `/media/{mediaId}/chapters` | 查询自动生成的语义章节 |
-| `GET` | `/media/{mediaId}/conversations` | 查询媒体的问答会话 |
-| `GET` | `/conversations/{conversationId}/messages` | 查询会话消息及引用快照 |
-| `POST` | `/agent-runs/{runId}/cancel` | 取消本人任务，阻止旧执行器提交结果 |
-| `GET` | `/agent-runs/{runId}/events?after=0` | 按序读取本人任务事件，每批最多 100 条 |
-| `GET` | `/user/ai-usage` | 当前学生新版账本累计用量（含未知预留） |
-| `POST` | `/media/{mediaId}/assistant/dispatch` | 自动或显式路由到快速 RAG 问答、深度 Agent 任务 |
-| `GET` | `/agent-runs/{runId}` | 查询学习任务阶段、用量与结构化结果 |
-| `DELETE` | `/media/{mediaId}` | 删除媒体与 MinIO 对象 |
-| `POST` | `/analysis/media/{mediaId}` | 创建或返回该媒体正在执行的分析任务 |
-| `GET` | `/analysis/media/{mediaId}/active-job` | 查询媒体当前活动任务 |
-| `GET` | `/analysis/jobs/{jobId}` | 查询任务状态与进度 |
-
-分析任务提交成功返回 HTTP `202 Accepted`，响应示例：
-
-```json
-{
-  "id": "84473eac-7f71-4307-a11c-d3ebd7654cef",
-  "mediaId": 42,
-  "status": "QUEUED",
-  "progress": 0,
-  "retryCount": 0,
-  "errorMessage": null,
-  "warningMessage": null,
-  "createdAt": "2026-09-28T14:30:00",
-  "startedAt": null,
-  "finishedAt": null
-}
-```
-
-RocketMQ 无法接收任务时，接口返回 HTTP `503 Service Unavailable` 和错误码 `ROCKETMQ_UNAVAILABLE`；前端会提示确认 NameServer 与 Broker 已启动后重试。
-
-## 本地运行
-
-### 1. 环境要求
-
-- JDK 21
-- Node.js 22（Vite 最低要求为 20.19）
-- Docker 与 Docker Compose
-- FFmpeg
-- Tesseract 5，并安装 `chi_sim` 和 `eng` 语言数据
-- yt-dlp
-
-### 2. 启动中间件
+| 视频接入与分析 | [分片上传][upload] → [分析消费者][consumer] → [视觉证据][visual] |
+| 长视频检索与问答 | [知识索引][index] → [混合检索][retrieval] → [会话问答][conversation] |
+| 助手路由与工具执行 | [助手分发][dispatch] → [有界 Runtime][runtime] → [工具校验][tools] |
+| 执行治理与成果 | [Run 控制][run-control] → [调用账本][ledger] → [成果交付][artifact] |
 
 ```bash
-docker compose up -d
+(cd server && ./mvnw test)
+(cd client && npm ci && npm test && npm run build)
 ```
 
-默认会启动 MySQL、Redis、Qdrant、MinIO、RocketMQ NameServer、Broker 和 Dashboard。端口见 [docker-compose.yml](docker-compose.yml)。
+隔离 MySQL 验收从仓库根目录运行 `python3 scripts/test-study-agent-p1.py`，需 Python 3 和运行中的 Compose MySQL。脚本创建并清理临时库，验证迁移、权限隔离、调用预留与恢复、引用准入和原子交付，供应商行为由本地夹具提供。
 
-演示前可确认 RocketMQ 两个核心容器均为 `Up`：
+## Limitations & Future Work
 
-```bash
-docker compose ps rmqnamesrv rmqbroker
-```
+- 跨视频笔记仍处于实验阶段，尤其需要验证分散证据的获取与多目标语义覆盖。
+- 视觉证据主要来自 OCR，课件图表关系与无文字画面需要主动视觉感知。
+- 扩充跨课程保留集，并用新案例评估固定 Workflow 与 Agent 的自适应路由。
 
-### 3. 配置后端
-
-```bash
-cp server/src/main/resources/application.example.properties \
-   server/src/main/resources/application.properties
-
-export DEEPSEEK_API_KEY=your_deepseek_key
-export ALIYUN_API_KEY=your_aliyun_key
-export FFMPEG_DIR=/path/to/ffmpeg/bin
-export TESSERACT_PATH=/path/to/tesseract
-export YTDLP_PATH=/path/to/yt-dlp
-```
-
-后台额度等待与故障恢复通过 Flyway V16 增加的任务字段持久化。`ai.task-recovery.analysis-quota-wait-minutes` 默认 30（首次额度等待起计时），`ai.task-recovery.scan-interval-ms` 默认 10000；Agent 通过 V22 持久化 120 秒活动余额和创建请求起 10 分钟的总截止；等待/退避暂停活动计时，恢复不重置次数、Token 或总截止。恢复消息使用 RocketMQ 4.x 默认延迟档位，真实故障最多重试 3 轮（10、30、60 秒），额度等待不占这些次数。
-
-数据库连接、MinIO、Redis、Qdrant 和 RocketMQ 均提供了适配本仓库 Docker Compose 的默认值。真实密钥只应放在环境变量或被 Git 忽略的本地配置中。Qdrant 默认使用 gRPC `localhost:6334` 和集合 `video_knowledge_chunks_v1`；远程部署时可通过 `QDRANT_HOST`、`QDRANT_GRPC_PORT`、`QDRANT_COLLECTION` 与 `QDRANT_API_KEY` 覆盖。AI 入口默认限制为单用户每分钟 5 次、全局每分钟 30 次，供应商调用额度可通过 `AI_RATE_LIMIT_*` 环境变量调整。
-
-本地上传默认上限为 10 GiB，可通过 `MEDIA_UPLOAD_MAX_FILE_SIZE_BYTES` 修改。预签名地址必须使用浏览器能够访问的 MinIO 地址；远程部署时设置 `MINIO_PUBLIC_ENDPOINT` 与 `MINIO_CORS_ALLOW_ORIGIN`。若本机的 `9000/9001` 已被占用，可在启动 Compose 前设置 `MINIO_API_PORT` 与 `MINIO_CONSOLE_PORT`，并同步调整 `MINIO_ENDPOINT`、`MINIO_PUBLIC_ENDPOINT`。
-
-### 4. 启动后端
-
-先在项目根目录运行 `./scripts/auth-admin.sh init-key`，初始化外部持久认证密钥；旧库需先备份并转换密码。MinIO 视频桶必须关闭匿名访问，启动会检查。
-
-```bash
-cd server
-./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
-```
-
-后端默认监听 `http://localhost:9090`。首次启动时 Flyway 会创建所需表；对于已有但尚未由 Flyway 管理的数据库，会从基线版本 `0` 接管。
-
-### 5. 启动前端
-
-```bash
-cd client
-npm install
-npm run dev
-```
-
-前端默认访问 `http://localhost:5173`，API 经同源 `/api` 代理；访问凭据只保存在内存，长期登录使用 HttpOnly Cookie。生产环境使用 HTTPS，并保持默认 Secure Cookie。
-
-## 验证
-
-```bash
-cd server
-./mvnw test
-
-cd ../client
-npm test
-npm run build
-```
-
-运行真实 MySQL 迁移、授权与调用治理验收：在仓库根目录执行 `python3 scripts/test-study-agent-p1.py`，需先启动 Compose 的 MySQL。脚本只创建和清理独立临时库，覆盖 V21→V22→V23、取消后写入隔离、调用预留/结算、UNKNOWN、响应复用、并发准入，以及跨视频工具链、成果原子交付和编辑冲突，供应商使用本地合成响应，不产生真实模型费用。
-
-常规测试使用合成夹具。真实课程评测及历史 Trace 回放依赖本地数据，公开仓库不包含这些资料。
-
-后端测试覆盖事务消息提交/回查、Spring Bean 构造器装配、RocketMQ 不可用错误映射、Redisson 限流与退避重试、消费重试与失败终态、Multipart 会话与完整分片校验、预签名读写地址、阿里云时间戳响应解析、关键帧时间戳解析与场景防抖、dHash、OCR 置信度门控、视觉部分失败、版本化 VideoContext、长视频分块边界、知识索引恢复、Qdrant Point/过滤条件与故障回退、混合检索、助手模式识别与分发、Study/URL 问答路由、问答引用校验、多轮上下文编排、Agent 结果关联问答、Agent 引用校验与 Checkpoint 恢复、Bilibili/YouTube 字幕解析、章节锚点校验，以及昂贵分析产物的重试复用。
-
-## Roadmap
-
-- 建立中英文长视频问答集，评测 Chunk Recall@4、无答案拒答率、引用准确率和上下文压缩比例。
-- 建立学习助手评测集，对比单次生成与 Agent 的目标覆盖率、事实支持率、引用准确率、耗时和 Token 成本。
-- 无平台字幕时的音频 ASR 回退，以及登录、地区限制等第三方平台能力治理。
-- 章节人工编辑、合并拆分和播放器进度条标记。
-- Study Mode 的图片模型理解；当前视觉模态仅消费 OCR 文本，不理解图表和无文字画面。
-- 任务错误码、模型/Prompt 版本、耗时、Token 与成本统计。
+[upload]: server/src/main/java/com/example/server/service/MediaUploadService.java
+[consumer]: server/src/main/java/com/example/server/consumer/VideoAnalysisConsumer.java
+[visual]: server/src/main/java/com/example/server/service/VisualEvidenceService.java
+[context]: server/src/main/java/com/example/server/service/context/VideoContextService.java
+[index]: server/src/main/java/com/example/server/service/VideoKnowledgeIndexService.java
+[retrieval]: server/src/main/java/com/example/server/service/VideoKnowledgeRetriever.java
+[evidence]: server/src/main/java/com/example/server/service/VideoEvidenceContextService.java
+[budget]: server/src/main/java/com/example/server/service/ai/AiPromptBudget.java
+[conversation]: server/src/main/java/com/example/server/service/VideoConversationService.java
+[dispatch]: server/src/main/java/com/example/server/service/AssistantDispatchService.java
+[runtime]: server/src/main/java/com/example/server/service/StudyAgentRuntime.java
+[tools]: server/src/main/java/com/example/server/service/StudyAgentToolDispatcher.java
+[supplement]: server/src/main/java/com/example/server/service/StudyHostSupplement.java
+[skill]: server/src/main/resources/skills/course-notes/SKILL.md
+[transaction]: server/src/main/java/com/example/server/producer/AnalysisTransactionListener.java
+[recovery]: server/src/main/java/com/example/server/service/BackgroundTaskRecoveryService.java
+[run-control]: server/src/main/java/com/example/server/service/StudyRunControl.java
+[ledger]: server/src/main/java/com/example/server/service/ai/AiCallLedger.java
+[artifact]: server/src/main/java/com/example/server/service/StudyArtifactService.java
+[auth]: scripts/auth-admin.sh
+[audit]: scripts/study-agent-p0-audit.sh
+[upgrade]: scripts/study-agent-p1-upgrade.sh
