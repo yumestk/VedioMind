@@ -196,17 +196,17 @@ watch(isStudyMode, studyMode => {
 </script>
 
 <style scoped>
-.assistant-panel { display: flex; min-height: 526px; flex-direction: column; }
-.assistant-composer { position: sticky; bottom: -26px; z-index: 2; display: grid; gap: 8px; margin-top: 20px; padding: 18px 0 0; background: linear-gradient(transparent, var(--panel) 14%); }
-.assistant-composer > select { padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); }
-.assistant-composer textarea { width: 100%; min-height: 88px; resize: vertical; padding: 12px 13px; border: 1px solid var(--border); border-radius: 11px; outline: none; background: #0e1014; color: var(--text); font: inherit; line-height: 1.5; }
-.assistant-composer textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(197, 249, 70, .08); }
+.assistant-panel { display: flex; min-height: 100%; flex-direction: column; }
+.assistant-composer { position: sticky; bottom: calc(-1 * var(--workspace-inset, 22px)); z-index: 2; display: grid; gap: 8px; margin-top: 20px; padding: 12px 0; border-top: 1px solid var(--border); background: var(--panel); }
+.assistant-composer > select { padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
+.assistant-composer textarea { width: 100%; min-height: 88px; resize: vertical; padding: 12px 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); color: var(--text); font: inherit; line-height: 1.5; }
+.assistant-composer textarea:focus { border-color: var(--accent); }
 .composer-actions { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
-.composer-actions select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; outline: none; background: #0e1014; color: var(--text); }
+.composer-actions select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
 .composer-hint, .composer-error, .route-info { font-size: 11px; }
 .composer-hint { color: var(--muted); }
 .composer-error { color: var(--danger); }
-.route-info { padding: 8px 10px; border: 1px solid rgba(197, 249, 70, .22); border-radius: 8px; background: rgba(197, 249, 70, .05); color: var(--muted); }
+.route-info { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); }
 .route-info span { margin-right: 8px; color: var(--accent); font-weight: 700; }
 @media (max-width: 620px) {
   .composer-actions { grid-template-columns: 1fr auto; }

@@ -73,7 +73,8 @@ const changeVisibility = () => mutate(() => setCourseVisibility(props.courseId, 
 </script>
 <style scoped>
 .course-detail { padding-block:32px 70px; } .course-section { margin-top:24px; padding:24px; border:1px solid var(--border); border-radius:14px; background:var(--panel); }
-.material-row,.organize-form { display:flex; align-items:center; gap:14px; margin-top:16px; } .material-row { justify-content:space-between; }
+.material-row,.organize-form { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:16px; } .material-row { justify-content:space-between; }
+.material-row + .material-row { padding-top: 12px; border-top: 1px solid var(--border); }
 a { color:var(--accent); overflow-wrap:anywhere; } p { color:var(--muted); } [role=alert] { color:var(--danger); }
-input,select { min-width:0; max-width:70%; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); }
+input,select { min-width:0; max-width:100%; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
 </style>

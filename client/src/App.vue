@@ -1,6 +1,5 @@
 <template>
   <div class="app-shell">
-    <div class="ambient-grid"></div>
     <header class="site-header">
       <div class="header-inner">
         <router-link class="brand" to="/">
@@ -55,21 +54,25 @@ const retrySession = async () => {
 </script>
 
 <style scoped>
-.session-warning { padding: 12px 24px; margin: 0; background: #33290f; color: #ffe1a8; }
+.session-warning { padding: 12px 24px; margin: 0; background: var(--warning-surface); color: var(--warning); }
 .app-shell { position: relative; min-height: 100vh; }
-.ambient-grid { position: fixed; inset: 0; z-index: -1; pointer-events: none; background-image: linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px), radial-gradient(circle at 18% 0%, rgba(197,249,70,.08), transparent 28%); background-size: 42px 42px, 42px 42px, auto; mask-image: linear-gradient(to bottom, black, transparent 80%); }
-.site-header { position: sticky; top: 0; z-index: 100; border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(10, 11, 14, .82); backdrop-filter: blur(18px); }
+.site-header { position: sticky; top: 0; z-index: 100; border-bottom: 1px solid var(--border); background: var(--bg); }
 .header-inner { display: flex; width: min(1440px, calc(100% - 40px)); min-height: 70px; align-items: center; justify-content: space-between; gap: 20px; margin: auto; }
 .brand { display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 20px; letter-spacing: -.04em; }
-.brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; background: var(--accent); color: #0b0d08; font: 700 12px var(--mono); letter-spacing: 0; }
+.brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; background: var(--accent); color: var(--on-accent); font: 700 12px var(--mono); letter-spacing: 0; }
 .brand small { margin-left: 2px; color: var(--accent); font: 9px var(--mono); letter-spacing: .12em; }
 .header-actions, .account-chip { display: flex; align-items: center; gap: 12px; }
+.header-actions > a:hover, .header-actions > a.router-link-active { color: var(--accent); }
 .system-state { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; }
-.system-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.system-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
 .account-chip { padding: 5px 5px 5px 12px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font-size: 12px; }
-.toast-message { position: fixed; right: 24px; bottom: 24px; z-index: 1200; max-width: min(420px, calc(100vw - 48px)); padding: 14px 18px; border: 1px solid rgba(197,249,70,.3); border-radius: 12px; background: rgba(24, 28, 19, .96); box-shadow: var(--shadow); color: var(--text); }
-.toast-message.error { border-color: rgba(255,107,107,.35); background: rgba(35,15,18,.96); color: #ffc1c1; }
+.toast-message { position: fixed; right: 24px; bottom: 24px; z-index: 1200; max-width: min(420px, calc(100vw - 48px)); padding: 14px 18px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow); color: var(--text); }
+.toast-message.error { border-color: var(--danger); background: var(--danger-surface); color: var(--danger); }
 .toast-enter-active, .toast-leave-active { transition: opacity .2s, transform .2s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(10px); }
-@media (max-width: 600px) { .system-state { display: none; } .header-inner { width: min(100% - 24px, 1440px); } }
+@media (max-width: 600px) {
+  .system-state { display: none; }
+  .header-inner { width: min(100% - 24px, 1440px); gap: 8px 14px; flex-wrap: wrap; padding-block: 10px; }
+  .header-actions { gap: 10px; font-size: .875rem; }
+}
 </style>

@@ -234,22 +234,23 @@ const formatTime = (milliseconds) => {
 .result-content { display: grid; gap: 5px; }
 .result-content strong { overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
 .result-content small { color: var(--muted); }
-.timeline-section { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: rgba(255, 255, 255, .012); }
-.timeline-section.active { border-color: rgba(197, 249, 70, .34); }
+.timeline-section { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.timeline-section.active { border-color: var(--border-strong); }
 .section-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; }
 .section-toggle, .section-time { border: 0; background: transparent; }
 .section-toggle { display: grid; grid-template-columns: 30px minmax(0, 1fr) 20px; align-items: center; gap: 10px; padding: 15px 10px 15px 14px; color: var(--text); text-align: left; }
-.section-toggle:hover, .section-time:hover { background: var(--surface); }
+.section-toggle:hover, .section-time:hover { background: var(--panel); }
+.timeline-section.active .section-header { background: var(--accent-selected); }
 .section-index { color: var(--muted); font: 10px var(--mono); }
 .section-title { overflow-wrap: anywhere; font-size: 14px; font-weight: 700; line-height: 1.45; }
 .section-caret { color: var(--muted); font-size: 18px; text-align: center; }
 .section-time { padding: 0 14px; border-left: 1px solid var(--border); }
 .section-content { border-top: 1px solid var(--border); }
 .paragraph-list { display: grid; padding: 0 10px 10px; }
-.paragraph-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 12px; width: 100%; padding: 14px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: #cdd0d5; text-align: left; }
+.paragraph-row { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 12px; width: 100%; padding: 14px 10px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; }
 .paragraph-row:last-of-type { border-bottom: 0; }
 .paragraph-row:hover { background: var(--surface); }
-.paragraph-row.active { background: rgba(197, 249, 70, .08); color: var(--text); }
+.paragraph-row.active { background: var(--accent-selected); color: var(--text); }
 .paragraph-text { overflow-wrap: anywhere; line-height: 1.8; }
 .paragraph-list .no-results { padding: 18px 10px 8px; }
 @media (max-width: 640px) {

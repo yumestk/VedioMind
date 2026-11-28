@@ -51,9 +51,21 @@ const save = async () => {
 <style scoped>
 .note-card { display:grid; gap:12px; padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
 header { display:flex; justify-content:space-between; gap:12px; }
-p { line-height:1.75; white-space:pre-wrap; }
+h2, h3, p { margin: 0; overflow-wrap: anywhere; }
+h2 { font-size: 1.25rem; }
+h3 { margin-bottom: 4px; font-size: .975rem; }
+p { line-height: 1.75; white-space: pre-wrap; }
+article + article, details { padding-top: 12px; border-top: 1px solid var(--border); }
+header span, li { color: var(--muted); }
+ul { margin: 0; padding-left: 20px; line-height: 1.65; }
+summary { color: var(--accent); cursor: pointer; }
+details > div { margin-top: 10px; }
+details p { margin-top: 4px; color: var(--muted); }
+[role=alert] { color: var(--danger); }
 label { display:grid; gap:8px; margin-bottom:10px; }
 input,textarea { width:100%; box-sizing:border-box; background:var(--surface); color:var(--text); border:1px solid var(--border); padding:10px; border-radius:6px; }
 textarea { min-height:100px; resize:vertical; }
-button { margin-right:8px; }
+button { justify-self: start; min-height: 34px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
+button:hover:not(:disabled) { border-color: var(--border-strong); }
+details button { color: var(--accent); }
 </style>

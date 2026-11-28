@@ -87,16 +87,17 @@ const stageClass = (index) => {
 .analysis-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .analysis-heading h3 { margin: 4px 0 0; font-size: 17px; }
 .progress-value { color: var(--accent); font-family: var(--mono); }
-.progress-track { overflow: hidden; height: 6px; border-radius: 99px; background: #272b31; }
+.progress-track { overflow: hidden; height: 6px; border-radius: 99px; background: var(--border); }
 .progress-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width .35s ease; }
 .stage-list { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
 .stage { display: grid; justify-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
 .stage span { width: 8px; height: 8px; border: 1px solid var(--border-strong); border-radius: 50%; }
 .stage.active, .stage.completed { color: var(--text); }
-.stage.active span { border-color: var(--accent); box-shadow: 0 0 12px var(--accent); }
-.stage.completed span { border-color: var(--accent); background: var(--accent); }
+.stage.active span { border-color: var(--accent); }
+.stage.completed span { border-color: var(--success); background: var(--success); }
 .stage.failed { color: var(--danger); }
 .stage.failed span { border-color: var(--danger); background: var(--danger); }
 .status-note { margin: 0; color: var(--warning); font-size: 12px; }
+.analysis-panel > button { justify-self: start; }
 .analysis-error { margin: 0; color: var(--danger); font-size: 13px; }
 </style>

@@ -206,20 +206,20 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 </script>
 
 <style scoped>
-.agent-run-card { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: #0e1014; }
+.agent-run-card { display: grid; gap: 14px; min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
 .run-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.run-heading h3 { margin: 4px 0 0; line-height: 1.5; }
+.run-heading h3 { margin: 4px 0 0; font-size: 1rem; line-height: 1.5; overflow-wrap: anywhere; }
 .run-kicker { margin: 0; color: var(--accent); font: 10px var(--mono); letter-spacing: .1em; }
 .run-status { flex: none; padding: 6px 9px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); font: 10px var(--mono); }
-.run-status.succeeded { color: var(--accent); }
-.run-status.partial { color: #e6b96d; }
+.run-status.succeeded { color: var(--success); }
+.run-status.partial { color: var(--warning); }
 .run-status.failed { color: var(--danger); }
 .run-progress, .run-error, .result-block { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
 .progress-track { overflow: hidden; height: 5px; border-radius: 99px; background: var(--surface); }
 .progress-track span { display: block; height: 100%; background: var(--accent); transition: width .25s; }
 .run-progress p, .run-error p { margin: 10px 0 0; color: var(--muted); }
 .result-core h2 { margin: 8px 0 10px; font-size: 20px; }
-.result-block > p:not(.run-kicker), .knowledge-point p, .quiz-item p { color: #d8dadd; line-height: 1.75; white-space: pre-wrap; }
+.result-block > p:not(.run-kicker), .knowledge-point p, .quiz-item p { color: var(--text); line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .knowledge-point, .quiz-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
 .knowledge-point:last-child, .quiz-item:last-child { padding-bottom: 0; border-bottom: 0; }
 .knowledge-point h3 { margin: 0; font-size: 15px; }
@@ -230,7 +230,7 @@ onBeforeUnmount(() => clearTimeout(pollTimer))
 .evidence-details summary::after { content: '＋'; color: var(--accent); font-size: 14px; }
 .evidence-details[open] summary::after { content: '−'; }
 .evidence-list { display: grid; gap: 6px; margin-top: 6px; }
-.evidence-list button { overflow: hidden; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #0e1014; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.evidence-list button { overflow: hidden; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .evidence-list button:hover { border-color: var(--border-strong); color: var(--text); }
 .evidence-list span { margin-right: 7px; color: var(--accent); font: 10px var(--mono); }
 .gaps-block ul { margin-bottom: 0; padding-left: 20px; color: var(--muted); line-height: 1.7; }

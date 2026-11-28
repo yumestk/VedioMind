@@ -45,9 +45,13 @@ const create = async () => {
 }
 </script>
 <style scoped>
-.courses-page { padding-block: 32px 70px; } .course-form { display:flex; gap:12px; margin:24px 0; }
-input { padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); }
-.courses-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:20px; }
+.courses-page { padding-block: 32px 70px; }
+.course-form { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0; }
+.course-form input { min-width: 0; width: min(100%, 20rem); }
+.courses-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%, 250px), 1fr)); gap:20px; }
 .course-card { padding:24px; border:1px solid var(--border); border-radius:16px; background:var(--panel); color:var(--text); overflow-wrap:anywhere; }
+.course-card:hover { border-color: var(--border-strong); }
+.course-card h2 { margin: 8px 0; font-size: 1.125rem; }
+.course-card p { margin: 0; line-height: 1.6; }
 small { color:var(--accent); } p { color:var(--muted); } [role=alert] { color:var(--danger); }
 </style>
